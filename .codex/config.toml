@@ -1,0 +1,12 @@
+# Intentionally no project-scoped runtime overrides.
+#
+# Do NOT set here:
+# - model / model_provider
+# - approval_policy
+# - sandbox_mode
+# - authentication / API keys / tokens
+# - provider endpoints
+#
+# Codex should inherit the user's trusted global configuration.
+# Project instructions live in ../AGENTS.md.
+# Repository-scoped skills live in ../.agents/skills/.

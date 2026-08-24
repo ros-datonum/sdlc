@@ -1,0 +1,195 @@
+# RAW Requirement Processor — Decision Note v0.1
+
+**Status:** Approved design decision  
+**Purpose:** Freeze the current boundary for RAW Requirement processing before designing Standard Requirement revision/change semantics.
+
+## 1. Current Requirement Relations
+
+The existing Requirement relations are sufficient for RAW-to-Standard provenance:
+
+```text
+RAW Requirement
+    └── Produces → Standard Requirement
+
+Standard Requirement
+    └── Derived From → RAW Requirement
+```
+
+These relations are many-to-many.
+
+Examples:
+
+```text
+SDLC-RAW-0007
+├── Produces → SDLC-FR-0012
+├── Produces → SDLC-NFR-0008
+└── Produces → SDLC-CON-0003
+```
+
+and:
+
+```text
+SDLC-FR-0012
+└── Derived From → SDLC-RAW-0007
+```
+
+## 2. RAW Processor Responsibility
+
+When a Requirement has:
+
+```text
+Type = RAW
+State = Process
+```
+
+the RAW Requirement Processor may:
+
+- read the RAW Requirement Root Document and its child-document tree;
+- normalize and decompose the RAW input;
+- identify candidate Standard Requirements;
+- classify Standard Requirements as:
+  - Functional Requirement;
+  - Non-Functional Requirement;
+  - Constraint;
+- create Standard Requirement candidates in `Draft`;
+- create their Root Documents under `Requirements/Draft/`;
+- establish `Produces / Derived From` provenance relations;
+- identify possible duplication, conflict, overlap, or change to existing Standard Requirements;
+- record such cases as findings for Review.
+
+## 3. No `Target Requirement` Relation
+
+Do **not** add a `Target Requirement` field/relation to the `Requirement` Database at this stage.
+
+The term would refer to a possible existing Applied Standard Requirement that a new RAW input may modify, replace, supersede, or conflict with.
+
+That concept belongs to the future Standard Requirement revision/change model, which has not yet been designed.
+
+Adding the relation now would prematurely constrain that future design.
+
+## 4. No `Operation` Field Yet
+
+Do **not** add an `Operation` field such as:
+
+```text
+CREATE
+UPDATE
+RETIRE
+SUPERSEDE
+```
+
+to the `Requirement` Database at this stage.
+
+The system has not yet defined:
+
+- how an Applied Standard Requirement is revised;
+- whether changes create a new entity or reuse the existing entity;
+- how revisions are represented;
+- how supersession works;
+- how change proposals are linked to existing Applied Requirements.
+
+Those decisions must be designed separately before introducing fields that encode them.
+
+## 5. Existing Standard Requirement Impact
+
+If the RAW Processor detects that a candidate may affect an existing Standard Requirement, it records a finding rather than mutating or formally linking the existing Requirement.
+
+Examples:
+
+```text
+POSSIBLE_DUPLICATE
+POSSIBLE_CONFLICT
+POSSIBLE_CHANGE
+POSSIBLE_SUPERSESSION
+```
+
+Example finding:
+
+```text
+Possible existing requirement impact:
+
+Existing Requirement:
+SDLC-FR-0012
+
+Finding:
+The candidate appears to modify the existing behavior rather than
+introduce an independent new requirement.
+
+Recommendation:
+Review this as a potential change to the existing requirement.
+```
+
+## 6. RAW Processor Must Not
+
+The RAW Requirement Processor must not:
+
+- modify an existing Applied Standard Requirement;
+- retire an existing Applied Standard Requirement;
+- supersede an existing Applied Standard Requirement;
+- create revision semantics;
+- invent a `Target Requirement` relation;
+- assign a formal change operation;
+- resolve requirement-change behavior before the revision model exists.
+
+## 7. Current Boundary
+
+For RAW processing v0:
+
+```text
+RAW + Process
+        ↓
+normalize / decompose
+        ↓
+0..N Standard Requirement candidates
+        ↓
+State = Draft
+        ↓
+Root Documents in Requirements/Draft/
+        ↓
+Produces / Derived From relations
+        ↓
+RAW → Review
+```
+
+If interaction with an existing Applied Standard Requirement is suspected:
+
+```text
+record finding
+→ human/agent review later
+```
+
+not:
+
+```text
+mutate existing requirement
+```
+
+## 8. Deferred Design Decision
+
+A separate design step will define:
+
+> How changes to existing Applied Standard Requirements are represented, revised, reviewed, applied, and traced.
+
+Only after that model is agreed should the SDLC consider adding fields or relations for:
+
+- target/current requirement;
+- change operation;
+- revision identity;
+- supersession;
+- replacement;
+- retirement.
+
+## 9. Final Decision
+
+For the current MVP:
+
+```text
+Keep:
+Produces / Derived From
+
+Do not add:
+Target Requirement
+Operation
+```
+
+This keeps the RAW Processor focused on decomposition and provenance while preserving flexibility for the later Standard Requirement change/revision model.

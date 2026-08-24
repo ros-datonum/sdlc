@@ -1,0 +1,35 @@
+# Python / generic runtime artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node/general
+node_modules/
+
+# IDE/OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local secrets/config
+.env
+.env.*
+!.env.example
+config/*.local.yaml
+config/*.local.yml
+
+# Claude local per-user project overrides
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Test/output artifacts
+.coverage
+htmlcov/
+tmp/
+.temp/
