@@ -27,7 +27,7 @@ class FiberyStandIn:
         self.projects = {
             record["fibery/id"]: dict(record) for record in existing_projects
         }
-        self.views = {}
+        self.folders = {}
         self.next_id = 1
 
     def __call__(self, request, timeout):
@@ -76,16 +76,14 @@ class FiberyStandIn:
         return {"fibery/id": record["fibery/id"]}
 
     def _views(self, body):
-        if body["method"] == "create-views":
-            for view in body["params"]["views"]:
-                self.views[view["fibery/id"]] = view
+        if body["method"] == "create-folders":
+            for folder in body["params"]["values"]:
+                self.folders[folder["fibery/id"]] = folder
             return []
-        wanted = body["params"].get("filter", {}).get("ids")
-        return [
-            view
-            for view in self.views.values()
-            if wanted is None or view["fibery/id"] in wanted
-        ]
+        if body["method"] == "query-folders":
+            assert body["params"] == {}, "query-folders accepts no filter"
+            return list(self.folders.values())
+        raise AssertionError(f"Unexpected views method {body['method']}")
 
 
 @pytest.fixture
@@ -122,25 +120,34 @@ def test_end_to_end_run_leaves_the_expected_fibery_state(fibery, capsys):
     assert project["SDLC/Name"] == "SDLC"
     assert project["SDLC/Code"] == "SDLC"
     assert project["workflow/state"] == {"enum/name": "Planned"}
-    assert project["SDLC/Documents Root"] in fibery.views
-    assert sorted(view["fibery/name"] for view in fibery.views.values()) == [
-        "SDLC",
-        "SDLC/Requirements",
-        "SDLC/Requirements/Approved",
-        "SDLC/Requirements/Draft",
-        "SDLC/Requirements/Raw",
-    ]
+
+    root_id = project["SDLC/Documents Root Folder ID"]
+    assert root_id in fibery.folders
+    assert fibery.folders[root_id]["fibery/name"] == "SDLC"
+    assert "fibery/Parent Folder" not in fibery.folders[root_id]
+
+    by_name = {f["fibery/name"]: f for f in fibery.folders.values()}
+    assert sorted(by_name) == ["Approved", "Draft", "Raw", "Requirements", "SDLC"]
+    requirements = by_name["Requirements"]
+    assert requirements["fibery/Parent Folder"] == {"fibery/id": root_id}
+    for stage in ("Raw", "Draft", "Approved"):
+        assert by_name[stage]["fibery/Parent Folder"] == {
+            "fibery/id": requirements["fibery/id"]
+        }
 
 
 def test_rerunning_reports_already_exists_and_changes_nothing(fibery, capsys):
     run(["project", "init", "--name", "SDLC"], capsys)
-    before = (json.dumps(fibery.projects, sort_keys=True), len(fibery.views))
+    before = (json.dumps(fibery.projects, sort_keys=True), len(fibery.folders))
 
     exit_code, out, _ = run(["project", "init", "--name", "SDLC"], capsys)
 
     assert exit_code == cli.EXIT_SUCCESS
     assert out.splitlines()[0] == "PROJECT_ALREADY_EXISTS"
-    assert (json.dumps(fibery.projects, sort_keys=True), len(fibery.views)) == before
+    assert (
+        json.dumps(fibery.projects, sort_keys=True),
+        len(fibery.folders),
+    ) == before
 
 
 def test_supplied_code_already_in_use_fails_on_stderr(fibery, capsys):

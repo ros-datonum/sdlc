@@ -30,7 +30,10 @@ PROJECT_SCHEMA = {
                     "fibery/name": "SDLC/Description",
                     "fibery/type": "Collaboration~Documents/Document",
                 },
-                {"fibery/name": "SDLC/Documents Root", "fibery/type": "fibery/url"},
+                {
+                    "fibery/name": "SDLC/Documents Root Folder ID",
+                    "fibery/type": "fibery/text",
+                },
                 {
                     "fibery/name": "workflow/state",
                     "fibery/type": "workflow/state_SDLC/Project",
@@ -156,7 +159,7 @@ def test_field_names_are_resolved_from_the_workspace_schema():
     assert query["q/select"][1:4] == [
         "SDLC/Name",
         "SDLC/Code",
-        "SDLC/Documents Root",
+        "SDLC/Documents Root Folder ID",
     ]
     assert query["q/where"] == ["=", ["SDLC/Name"], "$name"]
 
@@ -204,7 +207,7 @@ def test_project_rows_are_mapped_onto_records():
                         "fibery/id": "p1",
                         "SDLC/Name": "SDLC",
                         "SDLC/Code": "SDLC",
-                        "SDLC/Documents Root": "doc-1",
+                        "SDLC/Documents Root Folder ID": "folder-1",
                         "workflow/state": {"enum/name": "Planned"},
                     }
                 ]
@@ -215,7 +218,7 @@ def test_project_rows_are_mapped_onto_records():
     record = workspace.find_project_by_name("SDLC")
 
     assert (record.id, record.code, record.state) == ("p1", "SDLC", "Planned")
-    assert record.documents_root == "doc-1"
+    assert record.documents_root_folder_id == "folder-1"
 
 
 def test_missing_project_returns_none():
@@ -264,13 +267,16 @@ def test_unknown_state_is_reported():
         workspace.set_project_state("p1", "Planned")
 
 
-def test_documents_root_is_stored_on_the_project():
+def test_root_folder_id_is_stored_on_the_project():
     workspace, opener = build_workspace([ok({"fibery/id": "p1"})])
 
-    workspace.set_documents_root("p1", "doc-1")
+    workspace.set_documents_root_folder("p1", "folder-1")
 
     entity = opener.requests[1]["body"][0]["args"]["entity"]
-    assert entity == {"fibery/id": "p1", "SDLC/Documents Root": "doc-1"}
+    assert entity == {
+        "fibery/id": "p1",
+        "SDLC/Documents Root Folder ID": "folder-1",
+    }
 
 
 def test_description_is_written_through_the_documents_endpoint():
@@ -298,90 +304,133 @@ def test_description_is_written_through_the_documents_endpoint():
     assert put["body"] == {"content": "Bootstrap."}
 
 
-# -- documents -------------------------------------------------------------
+# -- folders ---------------------------------------------------------------
 
 
-def test_creating_a_document_creates_a_document_view_in_the_space():
+def test_creating_a_root_folder_omits_the_parent():
     workspace, opener = build_views_workspace([rpc([])])
 
-    node = workspace.create_document("SDLC/Requirements/Raw")
+    node = workspace.create_folder("SDLC", None)
 
     body = opener.requests[0]["body"]
     assert opener.requests[0]["url"].endswith("/api/views/json-rpc")
-    assert body["method"] == "create-views"
-    [view] = body["params"]["views"]
-    assert view["fibery/name"] == "SDLC/Requirements/Raw"
-    assert view["fibery/type"] == "document"
-    assert view["fibery/container-app"] == {"fibery/id": "space-uuid"}
-    assert view["fibery/id"] == node.id
+    assert body["method"] == "create-folders"
+    # create-folders takes "values"; create-views takes "views".
+    [value] = body["params"]["values"]
+    assert value["fibery/name"] == "SDLC"
+    assert value["fibery/container-app"] == {"fibery/id": "space-uuid"}
+    assert "fibery/Parent Folder" not in value
+    assert value["fibery/id"] == node.id
+    assert node.parent_id is None
 
 
-def test_finding_a_document_matches_on_the_full_path():
+def test_creating_a_child_folder_sends_the_parent_folder():
+    workspace, opener = build_views_workspace([rpc([])])
+
+    node = workspace.create_folder("Requirements", "root-1")
+
+    [value] = opener.requests[0]["body"]["params"]["values"]
+    assert value["fibery/Parent Folder"] == {"fibery/id": "root-1"}
+    assert node.parent_id == "root-1"
+
+
+def test_finding_a_folder_matches_name_and_parent():
     workspace, _ = build_views_workspace(
         [
             rpc(
                 [
                     {
-                        "fibery/id": "v1",
-                        "fibery/name": "SDLC",
-                        "fibery/type": "document",
+                        "fibery/id": "f1",
+                        "fibery/name": "Raw",
+                        "fibery/Parent Folder": {"fibery/id": "req-1"},
+                        "fibery/container-app": {"fibery/id": "space-uuid"},
                     },
-                    {"fibery/id": "v2", "fibery/name": "SDLC", "fibery/type": "board"},
+                    {
+                        "fibery/id": "f2",
+                        "fibery/name": "Raw",
+                        "fibery/Parent Folder": {"fibery/id": "other-1"},
+                        "fibery/container-app": {"fibery/id": "space-uuid"},
+                    },
                 ]
             )
         ]
     )
 
-    node = workspace.find_document("SDLC")
+    assert workspace.find_folder("Raw", "req-1").id == "f1"
+    assert workspace.find_folder("Raw", "other-1").id == "f2"
+    assert workspace.find_folder("Raw", "missing") is None
 
-    assert node.id == "v1"
-    assert workspace.find_document("SDLC/Requirements") is None
 
-
-def test_the_view_listing_is_fetched_once_and_refreshed_after_a_create():
-    workspace, opener = build_views_workspace(
+def test_finding_a_root_folder_matches_a_null_parent():
+    workspace, _ = build_views_workspace(
         [
             rpc(
-                [{"fibery/id": "v1", "fibery/name": "SDLC", "fibery/type": "document"}]
-            ),
+                [
+                    {
+                        "fibery/id": "f1",
+                        "fibery/name": "SDLC",
+                        "fibery/Parent Folder": None,
+                        "fibery/container-app": {"fibery/id": "space-uuid"},
+                    }
+                ]
+            )
+        ]
+    )
+
+    assert workspace.find_folder("SDLC", None).id == "f1"
+
+
+def test_folders_from_other_spaces_are_ignored():
+    workspace, _ = build_views_workspace(
+        [
+            rpc(
+                [
+                    {
+                        "fibery/id": "f1",
+                        "fibery/name": "SDLC",
+                        "fibery/Parent Folder": None,
+                        "fibery/container-app": {"fibery/id": "another-space"},
+                    }
+                ]
+            )
+        ]
+    )
+
+    assert workspace.find_folder("SDLC", None) is None
+
+
+def test_the_folder_listing_is_fetched_once_and_refreshed_after_a_create():
+    workspace, opener = build_views_workspace(
+        [
+            rpc([]),
             rpc([]),
             rpc(
                 [
                     {
-                        "fibery/id": "v1",
+                        "fibery/id": "f9",
                         "fibery/name": "SDLC",
-                        "fibery/type": "document",
-                    },
-                    {
-                        "fibery/id": "v2",
-                        "fibery/name": "SDLC/Requirements",
-                        "fibery/type": "document",
-                    },
+                        "fibery/Parent Folder": None,
+                        "fibery/container-app": {"fibery/id": "space-uuid"},
+                    }
                 ]
             ),
         ]
     )
 
-    workspace.find_document("SDLC")
-    workspace.find_document("SDLC")
-    workspace.create_document("SDLC/Requirements")
+    workspace.find_folder("SDLC", None)
+    workspace.find_folder("SDLC", None)
+    workspace.create_folder("SDLC", None)
 
-    assert workspace.find_document("SDLC/Requirements").id == "v2"
+    assert workspace.find_folder("SDLC", None).id == "f9"
     assert len(opener.requests) == 3
 
 
-def test_resolving_a_reference_ignores_views_that_are_not_documents():
-    workspace, opener = build_views_workspace(
-        [rpc([{"fibery/id": "v9", "fibery/name": "Roadmap", "fibery/type": "board"}])]
-    )
+def test_query_folders_sends_no_filter():
+    """query-folders accepts no filter, so narrowing happens client side."""
+    workspace, opener = build_views_workspace([rpc([])])
 
-    assert workspace.resolve_document("v9") is None
-    assert opener.requests[0]["body"]["params"] == {"filter": {"ids": ["v9"]}}
+    workspace.find_folder("SDLC", None)
 
-
-def test_resolving_a_reference_returns_the_document_path():
-    workspace, _ = build_views_workspace(
-        [rpc([{"fibery/id": "v1", "fibery/name": "SDLC", "fibery/type": "document"}])]
-    )
-
-    assert workspace.resolve_document("v1").path == "SDLC"
+    body = opener.requests[0]["body"]
+    assert body["method"] == "query-folders"
+    assert body["params"] == {}

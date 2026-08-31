@@ -2,10 +2,11 @@
 
 from fibery_fake import FakeFiberyWorkspace
 from sdlc.fibery_workspace import FiberyError
-from sdlc.project_init import initialize_project, project_document_paths
+from sdlc.project_init import folder_display_paths, initialize_project
 from sdlc.results import ResultCode
 
 PROJECT_NAME = "SDLC"
+RAW_FOLDER = "Raw"
 RAW_PATH = "SDLC/Requirements/Raw"
 
 
@@ -47,9 +48,9 @@ def test_project_creation_failure_is_a_write_failure_not_a_partial_init():
 # -- partial initialization ------------------------------------------------
 
 
-def test_document_failure_after_the_project_exists_is_a_partial_init():
+def test_folder_failure_after_the_project_exists_is_a_partial_init():
     workspace = FakeFiberyWorkspace()
-    workspace.failing_document_paths = {RAW_PATH}
+    workspace.failing_folder_names = {RAW_FOLDER}
 
     result = initialize_project(workspace, PROJECT_NAME)
 
@@ -59,37 +60,37 @@ def test_document_failure_after_the_project_exists_is_a_partial_init():
 
 def test_partial_init_reports_exactly_what_became_durable():
     workspace = FakeFiberyWorkspace()
-    workspace.failing_document_paths = {RAW_PATH}
+    workspace.failing_folder_names = {RAW_FOLDER}
 
     result = initialize_project(workspace, PROJECT_NAME)
 
     assert result.created == (
         "Project entity project-1",
         "Project State = Planned",
-        "Document SDLC",
-        "Document SDLC/Requirements",
+        "Folder SDLC",
+        "Folder SDLC/Requirements",
     )
 
 
 def test_partial_init_deletes_nothing():
     workspace = FakeFiberyWorkspace()
-    workspace.failing_document_paths = {RAW_PATH}
+    workspace.failing_folder_names = {RAW_FOLDER}
 
     initialize_project(workspace, PROJECT_NAME)
 
     assert len(workspace.projects) == 1
-    assert set(workspace.documents) == {"SDLC", "SDLC/Requirements"}
+    assert {name for name, _ in workspace.folders} == {"SDLC", "Requirements"}
 
 
 def test_partial_init_does_not_report_success():
     workspace = FakeFiberyWorkspace()
-    workspace.failures["set_documents_root"] = FiberyError("denied")
+    workspace.failures["set_documents_root_folder"] = FiberyError("denied")
 
     result = initialize_project(workspace, PROJECT_NAME)
 
     assert not result.is_normal
     assert result.code is ResultCode.PARTIAL_INIT
-    assert len(workspace.documents) == len(project_document_paths(PROJECT_NAME))
+    assert len(workspace.folders) == len(folder_display_paths(PROJECT_NAME))
 
 
 def test_state_write_failure_is_a_partial_init():
@@ -108,7 +109,7 @@ def test_description_write_failure_is_a_partial_init():
     result = initialize_project(workspace, PROJECT_NAME, description="Bootstrap.")
 
     assert result.code is ResultCode.PARTIAL_INIT
-    assert workspace.documents == {}
+    assert workspace.folders == {}
 
 
 # -- post-create validation ------------------------------------------------
@@ -124,23 +125,30 @@ def test_state_that_did_not_take_effect_fails_validation():
     assert any("State" in detail for detail in result.details)
 
 
-def test_unresolvable_documents_root_fails_validation():
+def test_root_folder_id_that_did_not_persist_fails_validation():
     workspace = FakeFiberyWorkspace()
-    workspace.failures["resolve_document"] = FiberyError("gone")
+    original = workspace.set_documents_root_folder
+
+    def swallow(project_id, folder_id):
+        original(project_id, folder_id)
+        workspace._replace(project_id, documents_root_folder_id=None)
+
+    workspace.set_documents_root_folder = swallow
 
     result = initialize_project(workspace, PROJECT_NAME)
 
     assert result.code is ResultCode.VALIDATION_FAILED
+    assert any("Documents Root Folder ID" in detail for detail in result.details)
 
 
-def test_missing_document_fails_validation():
+def test_missing_folder_fails_validation():
     workspace = FakeFiberyWorkspace()
-    original_find = workspace.find_document
+    original_find = workspace.find_folder
 
-    def forget_raw(path):
-        return None if path == RAW_PATH else original_find(path)
+    def forget_raw(name, parent_id):
+        return None if name == RAW_FOLDER else original_find(name, parent_id)
 
-    workspace.find_document = forget_raw
+    workspace.find_folder = forget_raw
 
     result = initialize_project(workspace, PROJECT_NAME)
 
@@ -182,4 +190,4 @@ def test_validation_failure_still_reports_what_was_created():
     result = initialize_project(workspace, PROJECT_NAME)
 
     assert "Project entity project-1" in result.created
-    assert result.documents == tuple(project_document_paths(PROJECT_NAME))
+    assert result.documents == folder_display_paths(PROJECT_NAME)

@@ -12,14 +12,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from sdlc.fibery_client import FiberyClient
-from sdlc.fibery_workspace import DocumentNode, FiberyError, ProjectRecord
+from sdlc.fibery_workspace import FiberyError, FolderNode, ProjectRecord
 
 PROJECT_DATABASE_NAME = "Project"
 
 FIELD_LABEL_NAME = "name"
 FIELD_LABEL_CODE = "code"
 FIELD_LABEL_DESCRIPTION = "description"
-FIELD_LABEL_DOCUMENTS_ROOT = "documents root"
+FIELD_LABEL_DOCUMENTS_ROOT_FOLDER = "documents root folder id"
 
 ID_FIELD = "fibery/id"
 FIELD_NAME_KEY = "fibery/name"
@@ -31,11 +31,16 @@ WORKFLOW_STATE_FIELD = "workflow/state"
 ENUM_NAME_FIELD = "enum/name"
 DOCUMENT_SECRET_FIELD = "Collaboration~Documents/secret"
 
-DOCUMENT_VIEW_TYPE = "document"
 VIEW_NAME_KEY = "fibery/name"
-VIEW_TYPE_KEY = "fibery/type"
-VIEW_META_KEY = "fibery/meta"
 VIEW_CONTAINER_APP_KEY = "fibery/container-app"
+
+# Folders carry the hierarchy. See Fibery-API-Constraints-v0.1 constraint 1:
+# these json-rpc methods are undocumented, and create-folders takes "values"
+# where create-views takes "views".
+FOLDER_PARENT_KEY = "fibery/Parent Folder"
+QUERY_FOLDERS_METHOD = "query-folders"
+CREATE_FOLDERS_METHOD = "create-folders"
+CREATE_FOLDERS_PARAM = "values"
 
 # Callers only need to distinguish "none", "exactly one" and "more than one".
 PROJECT_CODE_COUNT_LIMIT = 2
@@ -49,7 +54,7 @@ class _ProjectSchema:
 
     name_field: str
     code_field: str
-    documents_root_field: str
+    documents_root_folder_field: str
     description_field: str | None
     state_type: str
 
@@ -62,7 +67,7 @@ class FiberyHttpWorkspace:
         self._space = space
         self._space_id = space_id
         self._schema: _ProjectSchema | None = None
-        self._views: list[dict[str, Any]] | None = None
+        self._folders: list[dict[str, Any]] | None = None
 
     @property
     def project_database(self) -> str:
@@ -159,57 +164,48 @@ class FiberyHttpWorkspace:
             raise FiberyError("Could not read the Project Description document secret.")
         self._client.put_document(secret, description)
 
-    def set_documents_root(self, project_id: str, document_id: str) -> None:
+    def set_documents_root_folder(self, project_id: str, folder_id: str) -> None:
         schema = self._project_schema()
-        self._update_project(project_id, {schema.documents_root_field: document_id})
-
-    def create_document(self, path: str) -> DocumentNode:
-        document_id = str(uuid.uuid4())
-        self._client.views_rpc(
-            "create-views",
-            {
-                "views": [
-                    {
-                        ID_FIELD: document_id,
-                        VIEW_NAME_KEY: path,
-                        VIEW_TYPE_KEY: DOCUMENT_VIEW_TYPE,
-                        VIEW_META_KEY: {},
-                        VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._space_id},
-                    }
-                ]
-            },
+        self._update_project(
+            project_id, {schema.documents_root_folder_field: folder_id}
         )
-        self._views = None
-        return DocumentNode(id=document_id, path=path)
 
-    def find_document(self, path: str) -> DocumentNode | None:
-        for view in self._document_views():
-            if view.get(VIEW_NAME_KEY) == path:
-                return DocumentNode(id=view[ID_FIELD], path=path)
+    def create_folder(self, name: str, parent_id: str | None) -> FolderNode:
+        folder_id = str(uuid.uuid4())
+        values: dict[str, Any] = {
+            ID_FIELD: folder_id,
+            VIEW_NAME_KEY: name,
+            VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._space_id},
+        }
+        if parent_id is not None:
+            values[FOLDER_PARENT_KEY] = {ID_FIELD: parent_id}
+        self._client.views_rpc(CREATE_FOLDERS_METHOD, {CREATE_FOLDERS_PARAM: [values]})
+        self._folders = None
+        return FolderNode(id=folder_id, name=name, parent_id=parent_id)
+
+    def find_folder(self, name: str, parent_id: str | None) -> FolderNode | None:
+        for folder in self._folders_in_space():
+            if folder.get(VIEW_NAME_KEY) != name:
+                continue
+            if _parent_of(folder) == parent_id:
+                return FolderNode(id=folder[ID_FIELD], name=name, parent_id=parent_id)
         return None
 
-    def resolve_document(self, document_id: str) -> DocumentNode | None:
-        views = self._client.views_rpc(
-            "query-views", {"filter": {"ids": [document_id]}}
-        )
-        for view in views or []:
-            if view.get(VIEW_TYPE_KEY) == DOCUMENT_VIEW_TYPE:
-                return DocumentNode(id=view[ID_FIELD], path=view.get(VIEW_NAME_KEY, ""))
-        return None
+    def _folders_in_space(self) -> list[dict[str, Any]]:
+        """List this Space's Folders.
 
-    def _document_views(self) -> list[dict[str, Any]]:
-        """List the workspace's document views.
-
-        The Views API cannot filter by name, so the whole list is fetched once
-        and reused. Views are a workspace-structure collection, not a data
-        collection, so this stays small.
+        query-folders takes no filter at all, so the whole workspace is
+        fetched once and narrowed to this Space client side.
         """
-        if self._views is None:
-            views = self._client.views_rpc("query-views", {}) or []
-            self._views = [
-                view for view in views if view.get(VIEW_TYPE_KEY) == DOCUMENT_VIEW_TYPE
+        if self._folders is None:
+            folders = self._client.views_rpc(QUERY_FOLDERS_METHOD, {}) or []
+            self._folders = [
+                folder
+                for folder in folders
+                if (folder.get(VIEW_CONTAINER_APP_KEY) or {}).get(ID_FIELD)
+                == self._space_id
             ]
-        return self._views
+        return self._folders
 
     def _update_project(self, project_id: str, values: dict[str, Any]) -> None:
         self._client.command(
@@ -237,7 +233,7 @@ class FiberyHttpWorkspace:
                             ID_FIELD,
                             schema.name_field,
                             schema.code_field,
-                            schema.documents_root_field,
+                            schema.documents_root_folder_field,
                             {WORKFLOW_STATE_FIELD: [ENUM_NAME_FIELD]},
                         ],
                         "q/where": where,
@@ -255,7 +251,7 @@ class FiberyHttpWorkspace:
             name=row.get(schema.name_field) or "",
             code=row.get(schema.code_field),
             state=(row.get(WORKFLOW_STATE_FIELD) or {}).get(ENUM_NAME_FIELD),
-            documents_root=row.get(schema.documents_root_field),
+            documents_root_folder_id=row.get(schema.documents_root_folder_field),
         )
 
     def _project_schema(self) -> _ProjectSchema:
@@ -283,8 +279,8 @@ class FiberyHttpWorkspace:
             code_field=_require_field(
                 by_label, FIELD_LABEL_CODE, self.project_database
             ),
-            documents_root_field=_require_field(
-                by_label, FIELD_LABEL_DOCUMENTS_ROOT, self.project_database
+            documents_root_folder_field=_require_field(
+                by_label, FIELD_LABEL_DOCUMENTS_ROOT_FOLDER, self.project_database
             ),
             description_field=(
                 by_label[FIELD_LABEL_DESCRIPTION].get(FIELD_NAME_KEY)
@@ -325,3 +321,7 @@ def _require_field(
     if field is None:
         raise FiberyError(f"{database} has no {label!r} Field.")
     return field[FIELD_NAME_KEY]
+
+
+def _parent_of(folder: dict[str, Any]) -> str | None:
+    return (folder.get(FOLDER_PARENT_KEY) or {}).get(ID_FIELD)

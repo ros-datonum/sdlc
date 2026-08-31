@@ -76,9 +76,12 @@ Folder carrying `fibery/Parent Folder`, and a Document carrying `fibery/Folder`
 were all created, read back with correct parentage, then deleted with
 `delete-views` / `delete-folders`. The workspace was left exactly as found.
 
-Consequence: `project init` must create real Folders. Slash-path emulation is
-not a permitted substitution, and the Project Name guard added to protect it
-(`name_is_addressable`) exists only because of it.
+Consequence: `project init` creates real Folders. The slash-path emulation and
+its `name_is_addressable` guard have been removed; a `/` in a Project Name is
+now harmless because names never address anything.
+
+Creating a Field is `fibery.schema/batch` wrapping `schema.field/create` with
+`fibery/holder-type`, `fibery/name`, `fibery/type` and `fibery/meta`.
 
 ## Constraint 2 — Views and Folders cannot be filtered by name
 
@@ -178,6 +181,14 @@ public-id `"1"`, reading it back, then deleting it.
 
 A Document may carry `fibery/Folder` and entity containment at the same time;
 both were accepted on one `create-views` call.
+
+### `project init` does not use it
+
+By decision, the Project document root is the Space-level Folder tree, recorded
+in the Text Field `SDLC/Documents Root Folder ID`. No placeholder root Document
+is created, and `Project.Documents` is left for genuine Project documents.
+`Requirement.Documents` remains the mechanism for a Requirement's Root Document,
+which is placed in the right Folder through `fibery/Folder`.
 
 ### Reading it back
 

@@ -4,8 +4,9 @@ from fibery_fake import FakeFiberyWorkspace, planned_project
 from sdlc.project_code import COLLISION_SUFFIX_LIMIT, candidate_project_codes
 from sdlc.project_init import (
     PROJECT_INITIAL_STATE,
+    folder_display_paths,
     initialize_project,
-    project_document_paths,
+    project_folder_tree,
 )
 from sdlc.results import ResultCode
 
@@ -17,6 +18,7 @@ EXPECTED_PATHS = (
     "SDLC/Requirements/Draft",
     "SDLC/Requirements/Approved",
 )
+EXPECTED_FOLDER_NAMES = ("SDLC", "Requirements", "Raw", "Draft", "Approved")
 
 
 def taken_projects(codes):
@@ -50,32 +52,54 @@ def test_created_project_is_planned_and_carries_the_generated_code():
     assert record.state == PROJECT_INITIAL_STATE
 
 
-def test_documents_root_references_the_project_root_document():
+def test_documents_root_folder_id_references_the_root_folder():
     workspace = FakeFiberyWorkspace()
 
     initialize_project(workspace, PROJECT_NAME)
 
     [record] = workspace.projects.values()
-    root = workspace.documents[PROJECT_NAME]
-    assert record.documents_root == root.id
+    root = workspace.folders[(PROJECT_NAME, None)]
+    assert record.documents_root_folder_id == root.id
+    assert root.parent_id is None
 
 
-def test_document_structure_is_created_parent_before_child():
+def test_folders_are_created_parent_before_child():
     workspace = FakeFiberyWorkspace()
 
     initialize_project(workspace, PROJECT_NAME)
 
     created = [
-        mutation.removeprefix("create_document ")
+        mutation.split()[1]
         for mutation in workspace.mutations
-        if mutation.startswith("create_document ")
+        if mutation.startswith("create_folder ")
     ]
-    assert tuple(created) == EXPECTED_PATHS
+    assert tuple(created) == EXPECTED_FOLDER_NAMES
 
 
-def test_document_paths_are_derived_from_the_project_name():
-    assert project_document_paths("Design System")[0] == "Design System"
-    assert project_document_paths("Design System")[2] == (
+def test_folders_are_really_nested_not_slash_named():
+    """Fibery nests Folders through Parent Folder; names carry no path."""
+    workspace = FakeFiberyWorkspace()
+
+    initialize_project(workspace, PROJECT_NAME)
+
+    root = workspace.folders[(PROJECT_NAME, None)]
+    requirements = workspace.folders[("Requirements", root.id)]
+    assert requirements.parent_id == root.id
+    for stage in ("Raw", "Draft", "Approved"):
+        assert workspace.folders[(stage, requirements.id)].parent_id == requirements.id
+    assert all("/" not in name for name, _ in workspace.folders)
+
+
+def test_folder_tree_nests_every_stage_under_requirements():
+    tree = project_folder_tree("Design System")
+    assert tree[0] == ("Design System", None)
+    assert tree[1] == ("Requirements", 0)
+    assert [name for name, _ in tree[2:]] == ["Raw", "Draft", "Approved"]
+    assert {parent for _, parent in tree[2:]} == {1}
+
+
+def test_display_paths_are_for_output_only():
+    assert folder_display_paths("Design System")[2] == (
         "Design System/Requirements/Raw"
     )
 
@@ -123,16 +147,16 @@ def test_existing_project_returns_already_exists_without_mutating():
     assert workspace.mutations == []
 
 
-def test_existing_project_is_not_repaired_when_documents_are_missing():
+def test_existing_project_is_not_repaired_when_folders_are_missing():
     workspace = FakeFiberyWorkspace(
-        projects=[planned_project(documents_root=None)], documents=[]
+        projects=[planned_project(documents_root_folder_id=None)], folders=[]
     )
 
     result = initialize_project(workspace, PROJECT_NAME)
 
     assert result.code is ResultCode.PROJECT_ALREADY_EXISTS
     assert workspace.mutations == []
-    assert workspace.documents == {}
+    assert workspace.folders == {}
 
 
 def test_existing_project_keeps_its_code():
@@ -219,28 +243,27 @@ def test_project_name_without_letters_is_invalid_input():
     assert workspace.mutations == []
 
 
-@pytest.mark.parametrize("name", ["SDLC/Requirements", "A/B", "/SDLC", "SDLC/"])
-def test_project_name_containing_the_path_separator_is_invalid_input(name):
-    """A name with a separator would address another Project's document nodes.
-
-    Fibery cannot nest Documents, so the section 9 hierarchy is encoded as a
-    path in the document name.
-    """
+@pytest.mark.parametrize("name", ["SDLC/Requirements", "A/B", "Team / Project"])
+def test_a_slash_in_the_project_name_is_no_longer_special(name):
+    """Real Folders removed the reason to reject separators in names."""
     workspace = FakeFiberyWorkspace()
 
     result = initialize_project(workspace, name)
 
-    assert result.code is ResultCode.INVALID_INPUT
-    assert workspace.mutations == []
-    assert workspace.calls == []
+    assert result.code is ResultCode.PROJECT_INITIALIZED
+    assert workspace.folders[(name, None)].parent_id is None
 
 
-def test_a_project_cannot_hijack_another_projects_document_subtree():
+def test_two_projects_do_not_share_folders_even_with_colliding_names():
     workspace = FakeFiberyWorkspace()
     initialize_project(workspace, PROJECT_NAME)
-    documents_before = dict(workspace.documents)
 
     result = initialize_project(workspace, "SDLC/Requirements")
 
-    assert result.code is ResultCode.INVALID_INPUT
-    assert workspace.documents == documents_before
+    assert result.code is ResultCode.PROJECT_INITIALIZED
+    root = workspace.folders[(PROJECT_NAME, None)]
+    other = workspace.folders[("SDLC/Requirements", None)]
+    assert root.id != other.id
+    assert workspace.folders[("Requirements", root.id)].id != (
+        workspace.folders[("Requirements", other.id)].id
+    )

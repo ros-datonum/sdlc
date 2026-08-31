@@ -23,15 +23,20 @@ class ProjectRecord:
     name: str
     code: str | None
     state: str | None
-    documents_root: str | None
+    documents_root_folder_id: str | None
 
 
 @dataclass(frozen=True)
-class DocumentNode:
-    """One node of the Project document structure."""
+class FolderNode:
+    """One Fibery Folder in the Project document structure.
+
+    Folders are the real hierarchy: a Folder nests under another through
+    `fibery/Parent Folder`, and `parent_id` is None at the Project root.
+    """
 
     id: str
-    path: str
+    name: str
+    parent_id: str | None
 
 
 class FiberyWorkspace(Protocol):
@@ -56,17 +61,14 @@ class FiberyWorkspace(Protocol):
     def set_project_description(self, project_id: str, description: str) -> None:
         """Replace the Project Description rich text with Markdown."""
 
-    def create_document(self, path: str) -> DocumentNode:
-        """Create one document structure node addressed by its path."""
+    def create_folder(self, name: str, parent_id: str | None) -> FolderNode:
+        """Create one Folder, nested under parent_id when it is not None."""
 
-    def find_document(self, path: str) -> DocumentNode | None:
-        """Return the document structure node at this path, or None."""
+    def find_folder(self, name: str, parent_id: str | None) -> FolderNode | None:
+        """Return the Folder with this name under this parent, or None."""
 
-    def set_documents_root(self, project_id: str, document_id: str) -> None:
-        """Store the document root reference on the Project."""
+    def set_documents_root_folder(self, project_id: str, folder_id: str) -> None:
+        """Store the root Folder id on the Project."""
 
     def read_project(self, project_id: str) -> ProjectRecord | None:
         """Read a Project entity back by id."""
-
-    def resolve_document(self, document_id: str) -> DocumentNode | None:
-        """Resolve a stored document reference back to its node, or None."""

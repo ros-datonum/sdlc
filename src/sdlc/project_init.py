@@ -8,9 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from sdlc.fibery_workspace import (
-    DocumentNode,
     FiberyError,
     FiberyWorkspace,
+    FolderNode,
     ProjectRecord,
 )
 from sdlc.project_code import (
@@ -22,34 +22,44 @@ from sdlc.project_code import (
 from sdlc.results import InitResult, ResultCode
 
 PROJECT_INITIAL_STATE = "Planned"
-DOCUMENT_PATH_SEPARATOR = "/"
+DISPLAY_PATH_SEPARATOR = "/"
 REQUIREMENTS_FOLDER_NAME = "Requirements"
 REQUIREMENT_STAGE_FOLDER_NAMES = ("Raw", "Draft", "Approved")
 
+ROOT_FOLDER_INDEX = 0
+REQUIREMENTS_FOLDER_INDEX = 1
 
-def name_is_addressable(project_name: str) -> bool:
-    """Reject Project Names that would corrupt the document addressing scheme.
 
-    Fibery cannot nest sidebar Documents (Fibery-API-Constraints-v0.1,
-    constraint 1), so the hierarchy of section 9 is encoded as a path in the
-    document name. A Project Name containing the separator would therefore
-    address nodes inside another Project's structure.
+def project_folder_tree(project_name: str) -> tuple[tuple[str, int | None], ...]:
+    """Return the folder structure of section 9 as (name, parent index) pairs.
+
+    The parent index refers to an earlier position in this same tuple, so
+    walking it in order always creates a parent before its children. The root
+    has no parent.
     """
-    return DOCUMENT_PATH_SEPARATOR not in project_name
-
-
-def project_document_paths(project_name: str) -> tuple[str, ...]:
-    """Return the document structure of section 9, root first.
-
-    Paths are ordered so that every node appears after its parent.
-    """
-    root = project_name
-    requirements = f"{root}{DOCUMENT_PATH_SEPARATOR}{REQUIREMENTS_FOLDER_NAME}"
-    stages = tuple(
-        f"{requirements}{DOCUMENT_PATH_SEPARATOR}{stage}"
-        for stage in REQUIREMENT_STAGE_FOLDER_NAMES
+    return (
+        (project_name, None),
+        (REQUIREMENTS_FOLDER_NAME, ROOT_FOLDER_INDEX),
+        *(
+            (stage, REQUIREMENTS_FOLDER_INDEX)
+            for stage in REQUIREMENT_STAGE_FOLDER_NAMES
+        ),
     )
-    return (root, requirements, *stages)
+
+
+def folder_display_paths(project_name: str) -> tuple[str, ...]:
+    """Human readable paths for the same tree, for output only.
+
+    Folder names in Fibery are the leaf names; these joined paths are never
+    used to address anything.
+    """
+    tree = project_folder_tree(project_name)
+    paths: list[str] = []
+    for name, parent in tree:
+        paths.append(
+            name if parent is None else f"{paths[parent]}{DISPLAY_PATH_SEPARATOR}{name}"
+        )
+    return tuple(paths)
 
 
 class _StageFailed(Exception):
@@ -89,19 +99,9 @@ def initialize_project(
             message="Project Name is required.",
             project_name=project_name,
         )
-    if not name_is_addressable(project_name):
-        return InitResult(
-            code=ResultCode.INVALID_INPUT,
-            message=(
-                f"Project Name {project_name!r} must not contain "
-                f"{DOCUMENT_PATH_SEPARATOR!r}, which separates document path "
-                "segments."
-            ),
-            project_name=project_name,
-        )
 
     journal = _Journal()
-    documents: list[DocumentNode] = []
+    folders: list[FolderNode] = []
     project_code: str | None = None
 
     try:
@@ -120,23 +120,25 @@ def initialize_project(
             _apply_description(workspace, project_id, description)
             journal.created.append("Project Description")
 
-        documents = _create_document_structure(workspace, project_name, journal)
+        folders = _create_folder_structure(workspace, project_name, journal)
 
-        _link_documents_root(workspace, project_id, documents[0])
-        journal.created.append(f"Project Documents Root -> {documents[0].id}")
+        _link_documents_root_folder(workspace, project_id, folders[ROOT_FOLDER_INDEX])
+        journal.created.append(
+            f"Project Documents Root Folder ID = {folders[ROOT_FOLDER_INDEX].id}"
+        )
 
         _validate_created_state(
-            workspace, project_id, project_name, project_code, documents
+            workspace, project_id, project_name, project_code, folders
         )
     except _StageFailed as failure:
-        return _failure_result(failure, journal, project_name, project_code, documents)
+        return _failure_result(failure, journal, project_name, project_code, folders)
 
     return InitResult(
         code=ResultCode.PROJECT_INITIALIZED,
         message=f"Project {project_name!r} initialized.",
         project_name=project_name,
         project_code=project_code,
-        documents=tuple(node.path for node in documents),
+        documents=folder_display_paths(project_name),
         created=tuple(journal.created),
     )
 
@@ -155,7 +157,7 @@ def _failure_result(
     journal: _Journal,
     project_name: str,
     project_code: str | None,
-    documents: list[DocumentNode],
+    folders: list[FolderNode],
 ) -> InitResult:
     """Map a stage failure onto a spec result code.
 
@@ -168,7 +170,7 @@ def _failure_result(
             message=failure.message,
             project_name=project_name,
             project_code=project_code,
-            documents=tuple(node.path for node in documents),
+            documents=folder_display_paths(project_name),
             created=tuple(journal.created),
             details=failure.causes,
         )
@@ -180,7 +182,7 @@ def _failure_result(
             ),
             project_name=project_name,
             project_code=project_code,
-            documents=tuple(node.path for node in documents),
+            documents=folder_display_paths(project_name),
             created=tuple(journal.created),
             failed=(failure.code.value,),
             details=(failure.message, *failure.causes),
@@ -295,34 +297,36 @@ def _apply_description(
         ) from error
 
 
-def _create_document_structure(
+def _create_folder_structure(
     workspace: FiberyWorkspace, project_name: str, journal: _Journal
-) -> list[DocumentNode]:
-    """Create every document node, recording each one as it becomes durable."""
-    created: list[DocumentNode] = []
-    for path in project_document_paths(project_name):
+) -> list[FolderNode]:
+    """Create every Folder, recording each one as it becomes durable."""
+    created: list[FolderNode] = []
+    display = folder_display_paths(project_name)
+    for index, (name, parent) in enumerate(project_folder_tree(project_name)):
+        parent_id = None if parent is None else created[parent].id
         try:
-            node = workspace.create_document(path)
+            folder = workspace.create_folder(name, parent_id)
         except FiberyError as error:
             raise _StageFailed(
                 ResultCode.DOCUMENT_STRUCTURE_CREATE_FAILED,
-                f"Could not create the document {path!r}.",
+                f"Could not create the folder {display[index]!r}.",
                 (str(error),),
             ) from error
-        created.append(node)
-        journal.created.append(f"Document {path}")
+        created.append(folder)
+        journal.created.append(f"Folder {display[index]}")
     return created
 
 
-def _link_documents_root(
-    workspace: FiberyWorkspace, project_id: str, root: DocumentNode
+def _link_documents_root_folder(
+    workspace: FiberyWorkspace, project_id: str, root: FolderNode
 ) -> None:
     try:
-        workspace.set_documents_root(project_id, root.id)
+        workspace.set_documents_root_folder(project_id, root.id)
     except FiberyError as error:
         raise _StageFailed(
             ResultCode.FIBERY_WRITE_FAILED,
-            f"Could not store the Documents Root reference to {root.path!r}.",
+            f"Could not store the root Folder id for {root.name!r}.",
             (str(error),),
         ) from error
 
@@ -333,8 +337,7 @@ class _CreatedState:
 
     project: ProjectRecord | None
     projects_with_code: int
-    documents_by_path: dict[str, DocumentNode | None]
-    documents_root: DocumentNode | None
+    folders_by_index: dict[int, FolderNode | None]
 
 
 def _validate_created_state(
@@ -342,13 +345,11 @@ def _validate_created_state(
     project_id: str,
     project_name: str,
     project_code: str,
-    documents: list[DocumentNode],
+    folders: list[FolderNode],
 ) -> None:
     """Read the created state back and fail unless it matches the request."""
-    state = _read_created_state(workspace, project_id, project_code, documents)
-    problems = _collect_validation_problems(
-        state, project_name, project_code, documents
-    )
+    state = _read_created_state(workspace, project_id, project_code, folders)
+    problems = _collect_validation_problems(state, project_name, project_code, folders)
     if problems:
         raise _StageFailed(
             ResultCode.VALIDATION_FAILED,
@@ -361,30 +362,29 @@ def _read_created_state(
     workspace: FiberyWorkspace,
     project_id: str,
     project_code: str,
-    documents: list[DocumentNode],
+    folders: list[FolderNode],
 ) -> _CreatedState:
     try:
         project = workspace.read_project(project_id)
         projects_with_code = workspace.count_projects_with_code(project_code)
-        documents_by_path = {
-            node.path: workspace.find_document(node.path) for node in documents
+        folders_by_index = {
+            index: workspace.find_folder(folder.name, folder.parent_id)
+            for index, folder in enumerate(folders)
         }
-        reference = project.documents_root if project else None
-        root = workspace.resolve_document(reference) if reference else None
     except FiberyError as error:
         raise _StageFailed(
             ResultCode.VALIDATION_FAILED,
             "Could not read the created state back from Fibery.",
             (str(error),),
         ) from error
-    return _CreatedState(project, projects_with_code, documents_by_path, root)
+    return _CreatedState(project, projects_with_code, folders_by_index)
 
 
 def _collect_validation_problems(
     state: _CreatedState,
     project_name: str,
     project_code: str,
-    documents: list[DocumentNode],
+    folders: list[FolderNode],
 ) -> list[str]:
     project = state.project
     if project is None:
@@ -406,32 +406,39 @@ def _collect_validation_problems(
         problems.append(
             f"Project State is {project.state!r}, expected {PROJECT_INITIAL_STATE!r}."
         )
-    problems.extend(_document_problems(state, documents))
+    problems.extend(_folder_problems(state, project, project_name, folders))
     return problems
 
 
-def _document_problems(
-    state: _CreatedState, documents: list[DocumentNode]
+def _folder_problems(
+    state: _CreatedState,
+    project: ProjectRecord,
+    project_name: str,
+    folders: list[FolderNode],
 ) -> list[str]:
+    """Check every Folder exists under the right parent, and the root link."""
     problems: list[str] = []
-    for node in documents:
-        found = state.documents_by_path.get(node.path)
+    display = folder_display_paths(project_name)
+    for index, folder in enumerate(folders):
+        found = state.folders_by_index.get(index)
         if found is None:
-            problems.append(f"Document {node.path!r} does not exist.")
-        elif found.id != node.id:
+            problems.append(f"Folder {display[index]!r} does not exist.")
+        elif found.id != folder.id:
             problems.append(
-                f"Document {node.path!r} resolves to {found.id!r}, expected "
-                f"{node.id!r}."
+                f"Folder {display[index]!r} resolves to {found.id!r}, expected "
+                f"{folder.id!r}."
             )
 
-    root_path = documents[0].path
-    if state.documents_root is None:
+    root = folders[ROOT_FOLDER_INDEX]
+    stored = project.documents_root_folder_id
+    if not stored:
+        problems.append("Documents Root Folder ID is empty.")
+    elif stored != root.id:
         problems.append(
-            f"Documents Root does not resolve to the document {root_path!r}."
+            f"Documents Root Folder ID is {stored!r}, expected {root.id!r}."
         )
-    elif state.documents_root.path != root_path:
+    elif state.folders_by_index.get(ROOT_FOLDER_INDEX) is None:
         problems.append(
-            f"Documents Root resolves to {state.documents_root.path!r}, "
-            f"expected {root_path!r}."
+            f"Documents Root Folder ID {stored!r} does not resolve to a Folder."
         )
     return problems
