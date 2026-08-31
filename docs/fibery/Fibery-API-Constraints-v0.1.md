@@ -282,10 +282,12 @@ document name  ZZIN2-RAW-0001 — Repository Handoff and Development Workflow
 
 `Fibery-Schema-v0.1.md` documents `RAW | STANDARD`. The workspace enum
 `SDLC/Type_Agentic SDLC/Requirement` actually holds `Raw` and `Standard`, and
-options resolve by exact `enum/name`. Category holds `FUNCTIONAL`,
-`NON-FONCTIONAL` and `CONSTRAINT` — the middle one is misspelled in the
-workspace. `project requirement add` leaves Category empty, so only Type
-matters today.
+options resolve by exact `enum/name`.
+
+Category previously held a misspelled `NON-FONCTIONAL` option. That has been
+corrected in the workspace; the options are now `FUNCTIONAL`, `NON_FUNCTIONAL`
+and `CONSTRAINT`, matching `Fibery-Schema-v0.1.md`. No Requirement had used the
+misspelled option, so no data was affected and no adapter mapping is needed.
 
 Requirement workflow states are `Draft`, `Process`, `Review`, `Ready`, `Apply`,
 `Applied`, and `Draft` is already the Fibery default.
@@ -314,3 +316,59 @@ duplicate exists.
 allocated by Fibery on entity creation, and holds a digit string. RAW Requirement
 IDs derive from it, which makes numbering sparse per Project and safe under
 concurrency.
+
+## Constraint 15 — `entity/create` silently ignores collection fields
+
+A collection Field passed inside `fibery.entity/create` is accepted and
+discarded. The command returns `success: true` and the collection reads back
+empty.
+
+Verified live on `SDLC/Derived From`: an entity created with
+`"SDLC/Derived From": [{"fibery/id": <raw>}]` returned success, and the field
+read back as `{"fibery/id": []}`. The same entity linked afterwards through
+`fibery.entity/add-collection-items` read back as
+`{"fibery/id": ["<raw>"]}`, which calibrates the read and proves the create
+wrote nothing.
+
+There is no error to detect. Code that sets a relation during creation and
+trusts the success flag will silently produce unlinked entities.
+
+Collections are written with:
+
+```text
+fibery.entity/add-collection-items
+  args: { type, field, entity: { "<entity uuid>": ["<item uuid>", ...] } }
+```
+
+(the command is plural; `add-collection-item` does not exist). Setting one side
+populates the inverse automatically, since `Produces` and `Derived From` share
+relation id `8002c1d0-9e2c-11f1-91a5-45a5f32849ca`.
+
+## Constraint 16 — `/api/commands` batches are not transactional
+
+The endpoint takes an array of commands and executes them in order, but a
+failure part-way through does **not** roll back earlier commands.
+
+Verified live: a batch of `[create valid entity, create into a nonexistent
+database]` returned `[true, false]`, and the first entity was still present
+afterwards.
+
+Consequence: `[create entity, add-collection-items]` in one request is *not* an
+atomic way to create an entity with its relation. There is a real window in
+which the entity exists without its provenance.
+
+## Constraint 17 — the client may supply `fibery/id` on create
+
+`fibery.entity/create` accepts a caller-generated `fibery/id` and honours it,
+the same way `create-views` and `create-folders` do. Verified live.
+
+This makes entity identity client-determined, which is the usual way to make a
+create idempotent without a server-side uniqueness constraint.
+
+## Constraint 18 — collection sub-selects cannot include secured Fields
+
+`q/select` of the form `{"SDLC/Produces": ["fibery/id", "SDLC/Title"]}` fails
+with `entity.error/query-with-permissions-field-expression-invalid`, because
+`SDLC/Title` is `fibery/secured?`. Selecting `["fibery/id"]` alone works and
+returns `{"fibery/id": [...]}` — an object wrapping the list, not a list of
+objects.
