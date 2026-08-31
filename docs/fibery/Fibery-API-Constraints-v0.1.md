@@ -56,6 +56,46 @@ only `board` appears in its examples. The value `document` used by
 and must be checked against a real workspace before the first live run. It is
 the single most likely cause of a first-run failure.
 
+The same applies to the nesting question itself. `fibery/meta` is documented as
+an opaque object, and it is the one place a parent reference could plausibly
+live. Reading an existing, manually nested Document and inspecting its
+`fibery/meta` is the decisive experiment. `scripts/fibery_document_probe.py`
+performs exactly that, read-only, and needs only the `FIBERY_*` variables.
+
+## Constraint 1a — the Fibery MCP server cannot create Documents at all
+
+Checked against the official `Fibery-inc/fibery-mcp-server`, v0.1.8, commit
+`3d21ca04e771bad91aa2d9799d29ed3583362326` (2026-05-13).
+
+It registers exactly seven tools:
+
+```text
+current_date
+list_databases
+describe_database
+query_database
+create_entity
+create_entities_batch
+update_entity
+```
+
+Its client touches only `/api/schema`, `/api/commands`, `/api/documents/<secret>`
+and `/api/documents/commands`. The source contains no reference to
+`views/json-rpc`, `create-views`, `query-views`, `container-app`, `folder`,
+`parent` or any hierarchy concept.
+
+"Document" in that server's vocabulary means the rich text Field type
+`Collaboration~Documents/Document` on an entity — not a sidebar Document View.
+
+Consequence: MCP is not an escape hatch for the nesting problem. It is strictly
+weaker than the HTTP Views API `project init` already uses, so routing Document
+creation through MCP would lose capability rather than gain it.
+
+Incidental finding: that server writes rich text through
+`POST /api/documents/commands` with `create-or-update-documents` /
+`create-or-append-documents`, where `sdlc` uses `PUT /api/documents/<secret>`.
+Both are first-party; no reason to switch.
+
 ## Constraint 2 — Views cannot be filtered by name
 
 `query-views` filters on `ids`, `publicIds`, `isPrivate` and `container` only
