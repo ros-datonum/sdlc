@@ -30,6 +30,40 @@ Do not expand the implementation scope unless a current approved specification, 
 - `docs/fibery/Fibery-Schema-v0.1.md`
 - `docs/runtime/Local-OAuth-Model-Runtime-Spec-v0.1.md`
 
+## Running `sdlc project init`
+
+```bash
+uv sync
+
+export FIBERY_HOST=<workspace>.fibery.io
+export FIBERY_TOKEN=<api token>
+export FIBERY_SPACE=<Space holding the SDLC Databases>
+export FIBERY_SPACE_ID=<UUID of that Space>
+
+sdlc project init --name "SDLC" [--code SDLC] [--description "..."]
+```
+
+Configuration is read from the environment only; no credentials are stored in
+this repository.
+
+Verification:
+
+```bash
+uv sync --locked
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest
+```
+
+`.python-version` pins 3.12.13 rather than the 3.12.14 named by the shared
+Python standard, because the pinned uv (0.11.21) publishes no 3.12.14 download.
+
+## Fibery interface notes
+
+`docs/fibery/Fibery-API-Constraints-v0.1.md` records the Fibery API limits that
+shape the implementation, including the fact that sidebar Documents cannot be
+nested through the public API.
+
 ## Development agents
 
 Claude Code project agents live in `.claude/agents/`.
