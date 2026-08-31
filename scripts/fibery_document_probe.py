@@ -11,7 +11,9 @@ It answers the three open integration questions from
 2. whether ``fibery/type: "document"`` is the value this workspace uses;
 3. what the ``Project.Documents Root`` Field type is and what it stores.
 
-Run it once the FIBERY_* environment variables are set:
+Only FIBERY_HOST and FIBERY_TOKEN are required. Section 0 reports the
+candidate FIBERY_SPACE_ID values, because Fibery documents no command that maps
+a Space name to its UUID:
 
     uv run python scripts/fibery_document_probe.py
 """
@@ -19,6 +21,7 @@ Run it once the FIBERY_* environment variables are set:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections import Counter
 
@@ -26,36 +29,93 @@ from collections import Counter
 # Fibery's view JSON, so it cannot presuppose a narrower type for it.
 from typing import Any
 
-from sdlc.config import ConfigurationError, load_fibery_settings
+from sdlc.config import (
+    ENV_HOST,
+    ENV_SPACE,
+    ENV_TOKEN,
+    FiberySettings,
+)
 from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_workspace import FiberyError
 
 PROJECT_DATABASE_NAME = "Project"
+CONTAINER_APP_KEY = "fibery/container-app"
+ID_KEY = "fibery/id"
+NAME_KEY = "fibery/name"
+VIEWS_PER_SPACE = 12
 SAMPLE_VIEWS_PER_TYPE = 3
 NESTING_KEY_HINTS = ("parent", "folder", "container", "tree", "path", "ancestor")
 SEPARATOR = "=" * 72
 
 
 def main() -> int:
-    try:
-        settings = load_fibery_settings()
-    except ConfigurationError as error:
-        print(error, file=sys.stderr)
+    """Probe the workspace read-only.
+
+    Only FIBERY_HOST and FIBERY_TOKEN are required. FIBERY_SPACE_ID is
+    deliberately not required: discovering it is one of the things the probe
+    is for, and Fibery documents no command mapping a Space name to its id.
+    """
+    host = (os.environ.get(ENV_HOST) or "").strip()
+    token = (os.environ.get(ENV_TOKEN) or "").strip()
+    space = (os.environ.get(ENV_SPACE) or "").strip()
+    if not host or not token:
         print(
-            "\nThe probe needs read access to the real workspace. It writes nothing.",
+            f"Set {ENV_HOST} and {ENV_TOKEN}. {ENV_SPACE} additionally enables "
+            "the Project schema sections.",
             file=sys.stderr,
         )
+        print("\nThe probe only reads. It writes nothing.", file=sys.stderr)
         return 1
 
-    client = FiberyClient(settings)
+    client = FiberyClient(
+        FiberySettings(host=host, token=token, space=space, space_id="")
+    )
     try:
         views = _report_views(client)
+        _report_space_ids(views)
         _report_nesting_evidence(views)
-        _report_project_schema(client, settings.space)
+        if space:
+            _report_project_schema(client, space)
+        else:
+            _heading("4-5. Project schema — skipped")
+            print(f"  Set {ENV_SPACE} to the Space name to include these sections.")
     except FiberyError as error:
         print(f"\nFibery call failed: {error}", file=sys.stderr)
         return 1
     return 0
+
+
+def _report_space_ids(views: list[dict[str, Any]]) -> None:
+    """Answer 'what is my FIBERY_SPACE_ID?' from the views themselves.
+
+    Every View names the Space that contains it, so grouping Views by their
+    container yields each Space's UUID. The View names printed under each id
+    identify which Space it is.
+    """
+    _heading("0. Space ids (candidate FIBERY_SPACE_ID values)")
+    by_space: dict[str | None, list[str]] = {}
+    for view in views:
+        container = view.get(CONTAINER_APP_KEY)
+        space_id = container.get(ID_KEY) if isinstance(container, dict) else None
+        by_space.setdefault(space_id, []).append(str(view.get(NAME_KEY)))
+
+    if not by_space:
+        print("  No views returned, so no Space id could be derived.")
+        return
+    if list(by_space) == [None]:
+        print(
+            f"  query-views did not return {CONTAINER_APP_KEY!r}.\n"
+            "  Read the raw JSON in section 2 for another field carrying the Space."
+        )
+        return
+
+    for space_id, names in sorted(by_space.items(), key=lambda item: -len(item[1])):
+        print(f"\n  FIBERY_SPACE_ID = {space_id}   ({len(names)} views)")
+        for name in sorted(names)[:VIEWS_PER_SPACE]:
+            print(f"      - {name}")
+        if len(names) > VIEWS_PER_SPACE:
+            print(f"      ... and {len(names) - VIEWS_PER_SPACE} more")
+    print("\n  Pick the id whose view names match the Space holding your Databases.")
 
 
 def _report_views(client: FiberyClient) -> list[dict[str, Any]]:
