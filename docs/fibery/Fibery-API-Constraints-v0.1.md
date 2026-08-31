@@ -289,3 +289,28 @@ matters today.
 
 Requirement workflow states are `Draft`, `Process`, `Review`, `Ready`, `Apply`,
 `Applied`, and `Draft` is already the Fibery default.
+
+## Constraint 14 — no field-level uniqueness on this plan; public-id is the safe allocator
+
+`Requirement ID` carries no uniqueness constraint, and Fibery does not enforce
+one. Verified by creating two Requirements with the same `SDLC/Requirement ID`:
+both returned `success: true` and both persisted. (Both deleted.)
+
+Fibery does support unique text fields through
+`fibery/meta: {"fibery/case-insensitive-text-unique?": true}`, but this
+workspace cannot use it:
+
+```text
+commands.error/account-capability-was-revoked
+Workspace capability "uniqueFieldValues" is missing. Upgrade your license plan.
+```
+
+Consequence: a "highest id in use plus one" allocator is unsafe here, and
+post-write duplicate detection does not rescue it — a collision created after
+validation runs is never observed, so one writer can report success while a
+duplicate exists.
+
+`fibery/public-id` is the workable atomic counter. It is `fibery/text`, readonly,
+allocated by Fibery on entity creation, and holds a digit string. RAW Requirement
+IDs derive from it, which makes numbering sparse per Project and safe under
+concurrency.

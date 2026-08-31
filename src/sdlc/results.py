@@ -83,7 +83,7 @@ class AddResult:
 
     `created` and `failed` let a PARTIAL_ADD report exactly what became durable
     in Fibery and exactly what did not, as required by
-    Project-Requirement-Add-Spec-v0.2 section 22.
+    Project-Requirement-Add-Spec-v0.3 section 22.
     """
 
     code: AddResultCode

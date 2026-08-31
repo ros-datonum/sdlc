@@ -79,7 +79,7 @@ class RawRequirementSource:
 
     `body` is what is written to the Root Document: the title and every content
     section, with `## Export Metadata` removed. That section is transport
-    metadata under schema.md section 5, and Project-Requirement-Add-Spec-v0.2
+    metadata under schema.md section 5, and Project-Requirement-Add-Spec-v0.3
     section 15 permits removing exactly that.
 
     `fingerprint` is taken over `body`, so re-exporting the same requirement is

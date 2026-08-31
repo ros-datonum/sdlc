@@ -24,7 +24,7 @@ Do not expand the implementation scope unless a current approved specification, 
 ## Current specs
 
 - `docs/specs/Project-Init-Spec-v0.3.md`
-- `docs/specs/Project-Requirement-Add-Spec-v0.2.md`
+- `docs/specs/Project-Requirement-Add-Spec-v0.3.md`
 - `docs/specs/RAW-Requirement-Processor-Decision-v0.1.md`
 - `docs/architecture/SDLC-MVP-v0.4-Frozen-Architecture.md`
 - `docs/fibery/Fibery-Schema-v0.1.md`

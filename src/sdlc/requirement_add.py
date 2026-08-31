@@ -1,6 +1,6 @@
 """`sdlc project requirement add` — deterministic RAW Requirement ingest.
 
-Implements Project-Requirement-Add-Spec-v0.2. No model is invoked anywhere in
+Implements Project-Requirement-Add-Spec-v0.3. No model is invoked anywhere in
 this flow.
 """
 
@@ -27,7 +27,7 @@ from sdlc.raw_source import (
     content_equivalent,
     parse_raw_requirement,
 )
-from sdlc.requirement_id import next_sequence, raw_requirement_id
+from sdlc.requirement_id import InvalidPublicId, raw_requirement_id
 from sdlc.results import AddResult, AddResultCode
 
 REQUIREMENT_TYPE_RAW = "Raw"
@@ -101,10 +101,8 @@ def add_raw_requirement(
         if duplicate is not None:
             return _already_added_result(resolved, duplicate)
 
-        allocated_id = _allocate_requirement_id(workspace, resolved)
-        requirement = _create_requirement(
-            workspace, resolved, allocated_id, parsed, journal
-        )
+        requirement = _create_requirement(workspace, resolved, parsed, journal)
+        allocated_id = _assign_requirement_id(workspace, resolved, requirement, journal)
         _apply_type_and_state(workspace, requirement, journal)
 
         document = _create_document(
@@ -323,36 +321,21 @@ def _find_duplicate(
         ) from error
 
 
-def _allocate_requirement_id(
-    workspace: RequirementWorkspace, project: ProjectRecord
-) -> str:
+def _create_requirement(
+    workspace: RequirementWorkspace,
+    project: ProjectRecord,
+    parsed: RawRequirementSource,
+    journal: _Journal,
+) -> RequirementRecord:
+    """Create the entity so Fibery allocates its public id."""
     if not project.code:
         raise _StageFailed(
             AddResultCode.REQUIREMENT_ID_ALLOCATION_FAILED,
             f"Project {project.name!r} has no Code to build a Requirement ID from.",
         )
     try:
-        existing = workspace.requirement_ids_in_project(project.id)
-    except FiberyError as error:
-        raise _StageFailed(
-            AddResultCode.REQUIREMENT_ID_ALLOCATION_FAILED,
-            "Could not read the Requirement IDs already used in the Project.",
-            (str(error),),
-        ) from error
-    return raw_requirement_id(project.code, next_sequence(project.code, existing))
-
-
-def _create_requirement(
-    workspace: RequirementWorkspace,
-    project: ProjectRecord,
-    requirement_id: str,
-    parsed: RawRequirementSource,
-    journal: _Journal,
-) -> RequirementRecord:
-    try:
         record = workspace.create_requirement(
             project_id=project.id,
-            requirement_id=requirement_id,
             title=parsed.title,
             revision=INITIAL_REVISION,
             fingerprint=parsed.fingerprint,
@@ -360,16 +343,45 @@ def _create_requirement(
     except FiberyError as error:
         raise _StageFailed(
             AddResultCode.FIBERY_WRITE_FAILED,
-            f"Could not create the Requirement entity {requirement_id}.",
+            f"Could not create the Requirement entity for {parsed.title!r}.",
             (str(error),),
         ) from error
-    journal.created.append(f"Requirement entity {requirement_id} ({record.id})")
+    journal.created.append(f"Requirement entity {record.id}")
     if not record.public_id:
         raise _StageFailed(
-            AddResultCode.FIBERY_WRITE_FAILED,
-            f"Requirement {requirement_id} has no public id to attach a Document to.",
+            AddResultCode.REQUIREMENT_ID_ALLOCATION_FAILED,
+            "Fibery allocated no public id for the created Requirement.",
         )
     return record
+
+
+def _assign_requirement_id(
+    workspace: RequirementWorkspace,
+    project: ProjectRecord,
+    requirement: RequirementRecord,
+    journal: _Journal,
+) -> str:
+    """Derive the Requirement ID from the public id and write it.
+
+    The entity already exists at this point, so any failure here leaves durable
+    state and is reported as PARTIAL_ADD rather than a clean failure.
+    """
+    try:
+        requirement_id = raw_requirement_id(project.code or "", requirement.public_id)
+    except InvalidPublicId as error:
+        raise _StageFailed(
+            AddResultCode.REQUIREMENT_ID_ALLOCATION_FAILED, str(error)
+        ) from error
+    try:
+        workspace.set_requirement_id(requirement.id, requirement_id)
+    except FiberyError as error:
+        raise _StageFailed(
+            AddResultCode.FIBERY_WRITE_FAILED,
+            f"Could not write Requirement ID {requirement_id} onto the entity.",
+            (str(error),),
+        ) from error
+    journal.created.append(f"Requirement ID {requirement_id}")
+    return requirement_id
 
 
 def _apply_type_and_state(
@@ -451,7 +463,6 @@ class _CreatedState:
     """Everything section 19 validation compares against, read from Fibery."""
 
     requirement: RequirementRecord | None
-    requirements_with_id: int
     document: DocumentNode | None
     attached: list[DocumentNode]
     content: str
@@ -470,9 +481,6 @@ def _validate(
     try:
         state = _CreatedState(
             requirement=workspace.read_requirement(requirement.id),
-            requirements_with_id=workspace.count_requirements_with_requirement_id(
-                requirement_id
-            ),
             document=workspace.resolve_document(document.id),
             attached=workspace.documents_attached_to_requirement(requirement.public_id),
             content=workspace.read_document_content(document.secret or ""),
@@ -511,11 +519,6 @@ def _validation_problems(
     if record.requirement_id != requirement_id:
         problems.append(
             f"Requirement ID is {record.requirement_id!r}, expected {requirement_id!r}."
-        )
-    if state.requirements_with_id != 1:
-        problems.append(
-            f"Requirement ID {requirement_id!r} is used by "
-            f"{state.requirements_with_id} Requirements, expected exactly 1."
         )
     if record.title != parsed.title:
         problems.append(f"Title is {record.title!r}, expected {parsed.title!r}.")

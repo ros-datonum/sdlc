@@ -120,11 +120,10 @@ def test_create_requirement_sends_the_specified_initial_fields():
         ]
     )
 
-    record = workspace.create_requirement("p1", "SDLC-RAW-0001", "T", 1, "abc")
+    record = workspace.create_requirement("p1", "T", 1, "abc")
 
     entity = opener.requests[1]["body"][0]["args"]["entity"]
     assert entity == {
-        "SDLC/Requirement ID": "SDLC-RAW-0001",
         "SDLC/Title": "T",
         "SDLC/Revision": 1,
         "SDLC/Source Fingerprint": "abc",
@@ -139,10 +138,12 @@ def test_create_requirement_never_writes_the_readonly_name_field():
         [ok({"fibery/id": "r1"}), ok([{"fibery/id": "r1", "fibery/public-id": "7"}])]
     )
 
-    workspace.create_requirement("p1", "SDLC-RAW-0001", "T", 1, "abc")
+    workspace.create_requirement("p1", "T", 1, "abc")
 
     entity = opener.requests[1]["body"][0]["args"]["entity"]
     assert "SDLC/Name" not in entity
+    # The id is derived from the public id Fibery allocates on this call.
+    assert "SDLC/Requirement ID" not in entity
 
 
 def test_setting_type_resolves_the_option_entity_first():

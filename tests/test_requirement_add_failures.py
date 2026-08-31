@@ -36,14 +36,33 @@ def test_duplicate_check_failure_is_a_read_failure():
     assert workspace.mutations == []
 
 
-def test_id_allocation_read_failure_has_its_own_result():
+def test_a_non_numeric_public_id_fails_allocation():
+    """Rather than inventing a fallback allocator."""
     workspace, _ = workspace_with_project()
-    workspace.failures["requirement_ids_in_project"] = FiberyError("offline")
+    workspace.next_public_ids = ["not-a-number"]
 
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
-    assert result.code is AddResultCode.REQUIREMENT_ID_ALLOCATION_FAILED
-    assert workspace.mutations == []
+    assert result.code is AddResultCode.PARTIAL_ADD
+    assert AddResultCode.REQUIREMENT_ID_ALLOCATION_FAILED.value in result.failed
+    # The entity exists and is reported; it is never silently deleted.
+    assert len(workspace.requirements) == 1
+    assert any("Requirement entity" in item for item in result.created)
+
+
+def test_requirement_id_write_failure_is_a_partial_add():
+    """The entity exists before the id is written, so this is durable state."""
+    workspace, _ = workspace_with_project()
+    workspace.failures["set_requirement_id"] = FiberyError("denied")
+
+    result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    assert result.code is AddResultCode.PARTIAL_ADD
+    assert AddResultCode.FIBERY_WRITE_FAILED.value in result.failed
+    [record] = workspace.requirements.values()
+    assert record.requirement_id is None
+    assert record.public_id == "1"
+    assert result.created == ("Requirement entity requirement-1",)
 
 
 def test_requirement_create_failure_is_not_a_partial_add():
@@ -77,7 +96,8 @@ def test_partial_add_reports_exactly_what_became_durable():
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
     assert result.created == (
-        "Requirement entity SDLC-RAW-0001 (requirement-1)",
+        "Requirement entity requirement-1",
+        "Requirement ID SDLC-RAW-0001",
         "Requirement Type = Raw",
         "Requirement State = Draft",
     )
@@ -110,7 +130,10 @@ def test_type_write_failure_is_a_partial_add():
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
     assert result.code is AddResultCode.PARTIAL_ADD
-    assert result.created == ("Requirement entity SDLC-RAW-0001 (requirement-1)",)
+    assert result.created == (
+        "Requirement entity requirement-1",
+        "Requirement ID SDLC-RAW-0001",
+    )
 
 
 def test_attachment_to_the_wrong_entity_is_an_attachment_failure():
@@ -184,14 +207,20 @@ def test_content_that_did_not_persist_fails_validation():
     assert any("content" in detail for detail in result.details)
 
 
-def test_requirement_id_that_is_not_unique_fails_validation():
+def test_requirement_id_that_did_not_persist_fails_validation():
     workspace, _ = workspace_with_project()
-    workspace.count_requirements_with_requirement_id = lambda _: 2
+    original = workspace.read_requirement
+
+    def forgot_the_id(entity_id):
+        found = original(entity_id)
+        return RequirementRecord(**{**found.__dict__, "requirement_id": None})
+
+    workspace.read_requirement = forgot_the_id
 
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
     assert result.code is AddResultCode.VALIDATION_FAILED
-    assert any("expected exactly 1" in detail for detail in result.details)
+    assert any("Requirement ID" in detail for detail in result.details)
 
 
 def test_document_in_the_wrong_folder_fails_validation():
@@ -279,3 +308,61 @@ def test_stored_body_is_what_the_fingerprint_covers():
     parsed = parse_raw_requirement(VALID_SOURCE)
     assert workspace.content[document.secret] == parsed.body
     assert record.source_fingerprint == parsed.fingerprint
+
+
+# -- retry after a partial add ---------------------------------------------
+
+
+def test_retry_after_partial_add_creates_no_second_requirement():
+    """The safety property that stops a failed run duplicating work.
+
+    Verified live against Fibery; pinned deterministically here.
+    """
+    workspace, _ = workspace_with_project()
+    workspace.failures["create_requirement_document"] = FiberyError("denied")
+    first = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+    assert first.code is AddResultCode.PARTIAL_ADD
+
+    second = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    assert second.code is AddResultCode.REQUIREMENT_ALREADY_ADDED
+    assert second.requirement_id == first.requirement_id
+    assert len(workspace.requirements) == 1
+
+
+def test_retry_after_partial_add_mutates_nothing():
+    workspace, _ = workspace_with_project()
+    workspace.failures["write_document_content"] = FiberyError("denied")
+    add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+    mutations = list(workspace.mutations)
+    documents = list(workspace.documents)
+
+    add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    assert workspace.mutations == mutations
+    assert workspace.documents == documents
+
+
+def test_retry_after_partial_add_does_not_repair_the_requirement():
+    """Repair stays future work; the incomplete state is left as it is."""
+    workspace, _ = workspace_with_project()
+    workspace.failures["create_requirement_document"] = FiberyError("denied")
+    add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    assert workspace.documents == []
+    assert workspace.content == {}
+
+
+def test_a_requirement_left_without_an_id_still_blocks_a_duplicate_retry():
+    """The fingerprint is written with the entity, so it guards even here."""
+    workspace, _ = workspace_with_project()
+    workspace.failures["set_requirement_id"] = FiberyError("denied")
+    first = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+    assert first.code is AddResultCode.PARTIAL_ADD
+
+    second = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    assert second.code is AddResultCode.REQUIREMENT_ALREADY_ADDED
+    assert len(workspace.requirements) == 1

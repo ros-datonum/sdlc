@@ -11,6 +11,7 @@ from sdlc.requirement_add import (
     add_raw_requirement,
     requirement_document_name,
 )
+from sdlc.requirement_id import raw_requirement_id
 from sdlc.results import AddResultCode
 
 RAW_FOLDER_ID = "folder-raw"
@@ -311,7 +312,7 @@ def test_the_same_artifact_in_another_project_is_not_a_duplicate():
     result = add_raw_requirement(workspace, "BBB", VALID_SOURCE)
 
     assert result.code is AddResultCode.RAW_REQUIREMENT_ADDED
-    assert result.requirement_id == "BBB-RAW-0001"
+    assert result.requirement_id.startswith("BBB-RAW-")
 
 
 # -- id allocation ---------------------------------------------------------
@@ -327,12 +328,22 @@ def test_ids_increment_within_the_project():
     assert ids == ["SDLC-RAW-0001", "SDLC-RAW-0002", "SDLC-RAW-0003"]
 
 
-def test_allocation_continues_past_gaps_and_never_reuses_an_id():
+def test_ids_come_from_the_fibery_public_id_not_from_counting():
+    """Gaps are expected: the number is Fibery's, not a per-project counter."""
+    workspace, _ = workspace_with_project()
+    workspace.next_public_ids = ["137"]
+
+    result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    assert result.requirement_id == "SDLC-RAW-0137"
+
+
+def test_existing_requirements_do_not_influence_allocation():
     project, folders = project_with_structure()
     existing = RequirementRecord(
         id="r-old",
         public_id="99",
-        requirement_id="SDLC-RAW-0007",
+        requirement_id="SDLC-RAW-0099",
         title="Older",
         type_name="Raw",
         state="Draft",
@@ -343,26 +354,104 @@ def test_allocation_continues_past_gaps_and_never_reuses_an_id():
     workspace = FakeRequirementWorkspace(
         projects=[project], folders=folders, requirements=[existing]
     )
+    workspace.next_public_ids = ["5"]
 
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
-    assert result.requirement_id == "SDLC-RAW-0008"
+    assert result.requirement_id == "SDLC-RAW-0005"
 
 
-def test_allocation_ignores_ids_belonging_to_other_projects():
-    workspace, _ = workspace_with_project(code="SDLC")
-    workspace.requirements["foreign"] = RequirementRecord(
-        id="foreign",
-        public_id="50",
-        requirement_id="OTHER-RAW-0042",
-        title="Elsewhere",
-        type_name="Raw",
-        state="Draft",
-        revision=1,
-        project_id="another-project",
-        source_fingerprint="x",
+def test_a_large_public_id_is_not_truncated():
+    workspace, _ = workspace_with_project()
+    workspace.next_public_ids = ["12045"]
+
+    result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    assert result.requirement_id == "SDLC-RAW-12045"
+
+
+def test_requirement_id_is_written_after_creation():
+    workspace, _ = workspace_with_project()
+
+    add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    order = [m.split()[0] for m in workspace.mutations]
+    assert order.index("create_requirement") < order.index("set_requirement_id")
+    [record] = workspace.requirements.values()
+    assert record.requirement_id == "SDLC-RAW-0001"
+
+
+# -- concurrency ------------------------------------------------------------
+
+
+def test_concurrent_writers_cannot_derive_the_same_requirement_id():
+    """The interleaving that broke the previous allocator.
+
+    Both writers read the Project state before either has written. The old
+    allocator counted existing RAW ids and both chose SDLC-RAW-0001. Deriving
+    from the public id Fibery allocates makes that impossible.
+    """
+    project, folders = project_with_structure()
+    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
+    workspace.next_public_ids = ["101", "102"]
+
+    first = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+    second = add_raw_requirement(
+        workspace, "SDLC", VALID_SOURCE.replace(TITLE, "A Second Requirement")
     )
 
-    result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+    assert first.code is AddResultCode.RAW_REQUIREMENT_ADDED
+    assert second.code is AddResultCode.RAW_REQUIREMENT_ADDED
+    assert first.requirement_id == "SDLC-RAW-0101"
+    assert second.requirement_id == "SDLC-RAW-0102"
+    assert first.requirement_id != second.requirement_id
 
-    assert result.requirement_id == "SDLC-RAW-0001"
+
+def test_no_two_requirements_ever_share_a_requirement_id():
+    project, folders = project_with_structure()
+    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
+    workspace.next_public_ids = [str(n) for n in range(200, 210)]
+
+    for index in range(10):
+        add_raw_requirement(
+            workspace, "SDLC", VALID_SOURCE.replace(TITLE, f"{TITLE} {index}")
+        )
+
+    ids = [r.requirement_id for r in workspace.requirements.values()]
+    assert len(ids) == 10
+    assert len(set(ids)) == 10
+
+
+def test_allocation_does_not_depend_on_reading_other_requirements():
+    """No read-then-write window exists to lose."""
+    workspace, _ = workspace_with_project()
+
+    add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
+
+    assert "requirement_ids_in_project" not in workspace.calls
+    assert "count_requirements_with_requirement_id" not in workspace.calls
+
+
+def test_interleaved_writers_cannot_collide_even_when_both_create_first():
+    """The exact interleaving that produced two durable SDLC-RAW-0001 entities.
+
+    Both entities exist before either Requirement ID is written. The old
+    allocator counted existing ids and both writers read zero, so both chose
+    0001. Deriving from the public id removes the read entirely.
+    """
+    project, folders = project_with_structure()
+    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
+    workspace.next_public_ids = ["101", "102"]
+
+    a = workspace.create_requirement(project.id, "A", 1, "fp-a")
+    b = workspace.create_requirement(project.id, "B", 1, "fp-b")
+    assert a.requirement_id is None and b.requirement_id is None
+
+    id_a = raw_requirement_id(project.code, a.public_id)
+    id_b = raw_requirement_id(project.code, b.public_id)
+    workspace.set_requirement_id(a.id, id_a)
+    workspace.set_requirement_id(b.id, id_b)
+
+    assert id_a != id_b
+    stored = [r.requirement_id for r in workspace.requirements.values()]
+    assert len(set(stored)) == len(stored)

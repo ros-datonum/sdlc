@@ -139,21 +139,17 @@ class RequirementWorkspace(Protocol):
     ) -> RequirementRecord | None:
         """The Requirement already ingested from this source, if any."""
 
-    def requirement_ids_in_project(self, project_id: str) -> list[str]:
-        """Every Requirement ID already used in this Project."""
-
-    def count_requirements_with_requirement_id(self, requirement_id: str) -> int:
-        """Count Requirements carrying this Requirement ID, for uniqueness."""
-
     def create_requirement(
-        self,
-        project_id: str,
-        requirement_id: str,
-        title: str,
-        revision: int,
-        fingerprint: str,
+        self, project_id: str, title: str, revision: int, fingerprint: str
     ) -> RequirementRecord:
-        """Create the Requirement entity and return it, including its public id."""
+        """Create the Requirement entity and return it, including its public id.
+
+        The Requirement ID is not supplied: it is derived from the public id
+        Fibery allocates here, then written by set_requirement_id.
+        """
+
+    def set_requirement_id(self, entity_id: str, requirement_id: str) -> None:
+        """Write the derived Requirement ID onto the created entity."""
 
     def set_requirement_type(self, requirement_id: str, type_name: str) -> None:
         """Set the Type single-select by option name."""

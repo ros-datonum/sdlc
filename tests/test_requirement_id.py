@@ -1,72 +1,71 @@
 import pytest
 
 from sdlc.requirement_id import (
-    next_sequence,
-    raw_id_prefix,
+    MINIMUM_DIGITS,
+    InvalidPublicId,
     raw_requirement_id,
-    sequence_of,
 )
 
 
 @pytest.mark.parametrize(
-    ("code", "sequence", "expected"),
+    ("code", "public_id", "expected"),
     [
-        ("SDLC", 1, "SDLC-RAW-0001"),
-        ("SDLC", 2, "SDLC-RAW-0002"),
-        ("DES", 42, "DES-RAW-0042"),
-        ("A1", 9999, "A1-RAW-9999"),
-        ("SDLC", 10000, "SDLC-RAW-10000"),
+        ("SDLC", "1", "SDLC-RAW-0001"),
+        ("SDLC", "37", "SDLC-RAW-0037"),
+        ("SDLC", "137", "SDLC-RAW-0137"),
+        ("SDLC", "9999", "SDLC-RAW-9999"),
+        ("DES", "42", "DES-RAW-0042"),
+        ("A1", "7", "A1-RAW-0007"),
     ],
 )
-def test_renders_the_specified_format(code, sequence, expected):
-    assert raw_requirement_id(code, sequence) == expected
-
-
-def test_sequence_below_one_is_rejected():
-    with pytest.raises(ValueError, match="Sequence must be"):
-        raw_requirement_id("SDLC", 0)
-
-
-def test_prefix_matches_the_rendered_id():
-    assert raw_requirement_id("SDLC", 1).startswith(raw_id_prefix("SDLC"))
+def test_pads_the_public_id_to_four_digits(code, public_id, expected):
+    assert raw_requirement_id(code, public_id) == expected
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
+    ("public_id", "expected"),
     [
-        ("SDLC-RAW-0001", 1),
-        ("SDLC-RAW-0042", 42),
-        ("  SDLC-RAW-0007  ", 7),
-        ("OTHER-RAW-0001", None),
-        ("SDLC-FR-0001", None),
-        ("SDLC-RAW-", None),
-        ("SDLC-RAW-abc", None),
+        ("10000", "SDLC-RAW-10000"),
+        ("12045", "SDLC-RAW-12045"),
+        ("987654321", "SDLC-RAW-987654321"),
     ],
 )
-def test_reads_back_only_this_projects_raw_ids(value, expected):
-    assert sequence_of("SDLC", value) == expected
+def test_larger_public_ids_keep_every_digit(public_id, expected):
+    """Four digits is a presentation width, never a ceiling."""
+    assert raw_requirement_id("SDLC", public_id) == expected
 
 
-def test_first_allocation_is_one():
-    assert next_sequence("SDLC", []) == 1
+def test_the_public_id_is_recoverable_from_the_requirement_id():
+    for public_id in ("1", "137", "12045"):
+        rendered = raw_requirement_id("SDLC", public_id)
+        assert int(rendered.rsplit("-", 1)[1]) == int(public_id)
 
 
-def test_allocation_follows_the_highest_used_sequence():
-    assert next_sequence("SDLC", ["SDLC-RAW-0001", "SDLC-RAW-0002"]) == 3
+def test_surrounding_whitespace_is_tolerated():
+    assert raw_requirement_id("SDLC", "  137  ") == "SDLC-RAW-0137"
 
 
-def test_allocation_does_not_fill_gaps():
-    """A deleted Requirement must not have its identifier reused."""
-    assert next_sequence("SDLC", ["SDLC-RAW-0001", "SDLC-RAW-0005"]) == 6
+def test_leading_zeros_are_canonicalized():
+    assert raw_requirement_id("SDLC", "0007") == raw_requirement_id("SDLC", "7")
 
 
-def test_allocation_ignores_other_projects_and_other_kinds():
-    existing = ["OTHER-RAW-0099", "SDLC-FR-0003", "SDLC-RAW-0002"]
+@pytest.mark.parametrize("public_id", ["", "   ", "abc", "12a", "1.0", "-1", None])
+def test_a_non_numeric_public_id_is_refused(public_id):
+    """Rather than inventing a fallback allocator."""
+    with pytest.raises(InvalidPublicId):
+        raw_requirement_id("SDLC", public_id)
 
-    assert next_sequence("SDLC", existing) == 3
+
+def test_distinct_public_ids_always_give_distinct_requirement_ids():
+    """The property that makes the allocator concurrency safe."""
+    rendered = {raw_requirement_id("SDLC", str(n)) for n in range(1, 500)}
+
+    assert len(rendered) == 499
 
 
-def test_allocation_is_deterministic():
-    existing = ["SDLC-RAW-0003", "SDLC-RAW-0001"]
+def test_ids_are_namespaced_by_project_code():
+    assert raw_requirement_id("AAA", "1") != raw_requirement_id("BBB", "1")
 
-    assert next_sequence("SDLC", existing) == next_sequence("SDLC", existing)
+
+def test_minimum_width_is_four():
+    assert MINIMUM_DIGITS == 4

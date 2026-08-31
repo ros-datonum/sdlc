@@ -5,7 +5,7 @@
 In this order:
 
 1. `project init` from `docs/specs/Project-Init-Spec-v0.3.md`
-2. `project requirement add` from `docs/specs/Project-Requirement-Add-Spec-v0.2.md`
+2. `project requirement add` from `docs/specs/Project-Requirement-Add-Spec-v0.3.md`
 3. RAW Requirement Processor, bounded by `docs/specs/RAW-Requirement-Processor-Decision-v0.1.md`
 
 ## Do not design next

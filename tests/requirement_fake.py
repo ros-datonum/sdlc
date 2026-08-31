@@ -44,8 +44,12 @@ class FakeRequirementWorkspace:
         self.failures: dict[str, FiberyError] = {}
         # Simulate Fibery rejecting a uuid where a public id is required.
         self.reject_uuid_attachment = True
+        # Public ids Fibery will hand out, in order. Fibery allocates these
+        # atomically, so two writers never receive the same one.
+        self.next_public_ids: list[str] = []
 
         self._ids = itertools.count(1)
+        self._public_ids = itertools.count(1)
 
     # -- projects and folders ------------------------------------------
 
@@ -80,34 +84,19 @@ class FakeRequirementWorkspace:
             None,
         )
 
-    def requirement_ids_in_project(self, project_id: str) -> list[str]:
-        self._record("requirement_ids_in_project")
-        return [
-            r.requirement_id
-            for r in self.requirements.values()
-            if r.project_id == project_id and r.requirement_id
-        ]
-
-    def count_requirements_with_requirement_id(self, requirement_id: str) -> int:
-        self._record("count_requirements_with_requirement_id")
-        return sum(
-            1 for r in self.requirements.values() if r.requirement_id == requirement_id
-        )
-
     def create_requirement(
-        self,
-        project_id: str,
-        requirement_id: str,
-        title: str,
-        revision: int,
-        fingerprint: str,
+        self, project_id: str, title: str, revision: int, fingerprint: str
     ) -> RequirementRecord:
         self._record("create_requirement")
-        number = next(self._ids)
+        public_id = (
+            self.next_public_ids.pop(0)
+            if self.next_public_ids
+            else str(next(self._public_ids))
+        )
         record = RequirementRecord(
-            id=f"requirement-{number}",
-            public_id=str(number),
-            requirement_id=requirement_id,
+            id=f"requirement-{next(self._ids)}",
+            public_id=public_id,
+            requirement_id=None,
             title=title,
             type_name=None,
             state=DRAFT_STATE,
@@ -116,8 +105,13 @@ class FakeRequirementWorkspace:
             source_fingerprint=fingerprint,
         )
         self.requirements[record.id] = record
-        self.mutations.append(f"create_requirement {requirement_id}")
+        self.mutations.append(f"create_requirement public_id={public_id}")
         return record
+
+    def set_requirement_id(self, entity_id: str, requirement_id: str) -> None:
+        self._record("set_requirement_id")
+        self.mutations.append(f"set_requirement_id {requirement_id}")
+        self._replace(entity_id, requirement_id=requirement_id)
 
     def set_requirement_type(self, requirement_id: str, type_name: str) -> None:
         self._record("set_requirement_type")
@@ -188,12 +182,12 @@ class FakeRequirementWorkspace:
         if failure is not None:
             raise failure
 
-    def _replace(self, requirement_id: str, **changes: object) -> None:
-        current = self.requirements[requirement_id]
-        self.requirements[requirement_id] = RequirementRecord(
+    def _replace(self, entity_id: str, **changes: object) -> None:
+        current = self.requirements[entity_id]
+        self.requirements[entity_id] = RequirementRecord(
             id=current.id,
             public_id=current.public_id,
-            requirement_id=current.requirement_id,
+            requirement_id=changes.get("requirement_id", current.requirement_id),
             title=current.title,
             type_name=changes.get("type_name", current.type_name),
             state=changes.get("state", current.state),

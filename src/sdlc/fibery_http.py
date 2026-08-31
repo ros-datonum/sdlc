@@ -445,38 +445,8 @@ class FiberyRequirementWorkspace:
         )
         return self._to_requirement(schema, rows[0]) if rows else None
 
-    def requirement_ids_in_project(self, project_id: str) -> list[str]:
-        schema = self._requirement_schema()
-        rows = self._query_requirements(
-            schema,
-            ["=", [schema.project_field, ID_FIELD], "$project"],
-            {"$project": project_id},
-            REQUIREMENT_QUERY_LIMIT,
-        )
-        return [
-            row[schema.requirement_id_field]
-            for row in rows
-            if row.get(schema.requirement_id_field)
-        ]
-
-    def count_requirements_with_requirement_id(self, requirement_id: str) -> int:
-        schema = self._requirement_schema()
-        return len(
-            self._query_requirements(
-                schema,
-                ["=", [schema.requirement_id_field], "$rid"],
-                {"$rid": requirement_id},
-                2,
-            )
-        )
-
     def create_requirement(
-        self,
-        project_id: str,
-        requirement_id: str,
-        title: str,
-        revision: int,
-        fingerprint: str,
+        self, project_id: str, title: str, revision: int, fingerprint: str
     ) -> RequirementRecord:
         schema = self._requirement_schema()
         created = self._client.command(
@@ -484,7 +454,6 @@ class FiberyRequirementWorkspace:
             {
                 "type": self.requirement_database,
                 "entity": {
-                    schema.requirement_id_field: requirement_id,
                     schema.title_field: title,
                     schema.revision_field: revision,
                     schema.fingerprint_field: fingerprint,
@@ -501,6 +470,12 @@ class FiberyRequirementWorkspace:
         if record is None:
             raise FiberyError("The created Requirement could not be read back.")
         return record
+
+    def set_requirement_id(self, entity_id: str, requirement_id: str) -> None:
+        schema = self._requirement_schema()
+        self._update_requirement(
+            entity_id, {schema.requirement_id_field: requirement_id}
+        )
 
     def set_requirement_type(self, requirement_id: str, type_name: str) -> None:
         schema = self._requirement_schema()
