@@ -86,7 +86,7 @@ Global/local Codex policy remains authoritative.
 Configuration lives in:
 
 ```text
-config/sdlc.yaml
+config/sdlc.toml
 ```
 
 Selection precedence:
@@ -95,22 +95,23 @@ Selection precedence:
 explicit run/CLI override
 → role-specific runtime/model
 → project default runtime/model
-→ local CLI default model when model is null
+→ local CLI default model when no model is configured
 ```
 
 Example:
 
-```yaml
-model_runtime:
-  default:
-    runtime: claude
-    model: null
+```toml
+[model_runtime.default]
+runtime = "claude"
+# model omitted: use the local CLI default model
 
-  roles:
-    raw_requirement_processor:
-      runtime: codex
-      model: gpt-5.6-sol
+[model_runtime.roles.raw_requirement_processor]
+runtime = "codex"
+model = "gpt-5.6-sol"
 ```
+
+TOML has no null, so "use the local CLI default model" is expressed by omitting
+the `model` key.
 
 Model IDs/aliases are configuration data, not hard-coded into agent logic.
 

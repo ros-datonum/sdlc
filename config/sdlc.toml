@@ -1,0 +1,41 @@
+version = 1
+
+# Model runtime configuration.
+#
+# TOML has no null. Omitting `model` means: use that local CLI's own default
+# model. Omitting a role means: fall back to [model_runtime.default].
+#
+# This file contains no credentials. Authentication is whatever the local CLI
+# already holds; see docs/runtime/Local-OAuth-Model-Runtime-Spec-v0.1.md.
+
+[model_runtime]
+transport = "local_cli_oauth"
+
+# Used when a role defines no runtime of its own.
+[model_runtime.default]
+runtime = "claude"
+# model = "..."   # omitted: use the local CLI default model
+
+[model_runtime.runtimes.claude]
+executable = "claude"
+auth_check_args = ["auth", "status"]
+invocation_mode = "print"
+# Reject Console/API-billing auth: the runtime requires subscription login.
+forbid_console_api_auth = true
+
+[model_runtime.runtimes.codex]
+executable = "codex"
+auth_check_args = ["login", "status"]
+invocation_mode = "exec"
+# Reject API-key auth: the runtime requires ChatGPT OAuth login.
+require_chatgpt_oauth = true
+
+[model_runtime.roles.raw_requirement_processor]
+runtime = "claude"
+# model = "..."   # omitted: use the local CLI default model
+
+# Selection precedence:
+#   1. explicit run/CLI override
+#   2. role runtime/model above
+#   3. model_runtime.default
+#   4. local CLI default model when model is omitted
