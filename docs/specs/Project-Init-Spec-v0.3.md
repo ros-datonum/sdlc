@@ -193,21 +193,28 @@ SDLC/
     └── Approved/
 ```
 
-## 10. Documents Root
+## 10. Documents
 
-After the Project root is created, store its reference in:
+After the Project root is created, associate it with the Project through the
+Fibery Documents field:
 
 ```text
-Project.Documents Root
+Project.Documents
 ```
 
-`Documents Root` points to:
+`Documents` holds the Project root Document, which sits at the top of:
 
 ```text
 <Project Name>/
 ```
 
-The exact technical representation may use the Fibery-supported document/folder URL or identifier.
+Fibery represents this natively. The document hierarchy is built from Fibery
+**Folders** (`fibery/Parent Folder`), Documents join a Folder through
+`fibery/Folder`, and a Document is associated with the Project entity by being
+contained by it (`fibery/container-type: "object"`).
+
+See `docs/fibery/Fibery-API-Constraints-v0.1.md` for the verified representation.
+Slash-delimited names are not a valid substitute for real Folders.
 
 The command must verify that the stored reference resolves correctly before reporting success.
 
@@ -327,7 +334,7 @@ Project State = Planned
 <Project Name>/Requirements/Raw/ exists
 <Project Name>/Requirements/Draft/ exists
 <Project Name>/Requirements/Approved/ exists
-Project.Documents Root resolves to <Project Name>/
+Project.Documents holds the <Project Name>/ root Document
 ```
 
 The command must read the created state back from Fibery rather than assume successful writes.
@@ -474,7 +481,7 @@ Requirements/Draft exists
 +
 Requirements/Approved exists
 +
-Project.Documents Root references the root
+Project.Documents references the root Document
 +
 post-create validation succeeds
 ```

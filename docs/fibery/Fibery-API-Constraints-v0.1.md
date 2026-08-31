@@ -133,37 +133,58 @@ A Document's content secret is at `fibery/meta.documentSecret` on the View —
 distinct from the `Collaboration~Documents/secret` used for an entity's rich
 text Field.
 
-## Constraint 8 — `Project.Documents Root` does not exist — VERIFIED
+## Constraint 8 — the Project Documents field is `documents/documents` — VERIFIED
 
-`Fibery-Schema-v0.1.md` specifies `Documents Root - URL/reference` on Project.
-**No such Field exists in the workspace.** The Project Database's Fields are:
+The Fibery Field is named **Documents**, not "Documents Root". An earlier
+revision of this document wrongly concluded the Field was missing, after a
+single failed relation query. `Fibery-Schema-v0.1.md` and
+`Project-Init-Spec-v0.3.md` have been corrected to say `Documents`.
+
+On `SDLC/Project` it appears as:
 
 ```text
-SDLC/Name            fibery/text
-SDLC/Code            fibery/text
-SDLC/Description     Collaboration~Documents/Document
-SDLC/Phases          SDLC/Project Phase
-SDLC/Requirements    SDLC/Requirement
-SDLC/Milestones      SDLC/Milestone
-SDLC/Epics           SDLC/Epic
-SDLC/User Stories    SDLC/User Story
-SDLC/Tasks           SDLC/Task
-workflow/state       workflow/state_SDLC/Project
-documents/documents  fibery/view          (collection, Fibery-internal)
-Collaboration~Documents/References
-fibery/id, fibery/public-id, fibery/rank, fibery/created-by,
-fibery/creation-date, fibery/modification-date
+documents/documents   fibery/view   { fibery/collection?: true }
 ```
 
-`documents/documents` is a Fibery-internal collection of Views. It is **not**
-usable as a substitute: `fibery.entity/query` rejects selecting it with
-`entity.error/schema-type-field-relation-not-found` - "There is no relation for
-\"SDLC/Project\" database \"documents/documents\" field."
+It is provided by the Fibery mixin `documents/documents-mixin`
+(`019ea722-efc4-7033-a7cf-041efa3d475a`), the same mechanism behind
+`Requirement.Documents`.
 
-Consequence: `project init` cannot store the root reference until this is
-resolved. It currently fails at schema resolution before any mutation, which is
-the correct loud failure, but it means the command cannot run against this
-workspace as it stands.
+### It is not readable through the entity API
+
+`fibery.entity/query` refuses to select it:
+
+```text
+entity.error/schema-type-field-relation-not-found
+"There is no relation for \"SDLC/Project\" database \"documents/documents\" field."
+```
+
+The membership lives on the **View**, not on the entity. A Document is
+associated with an entity by being contained by it:
+
+```text
+fibery/container-type          "object"
+fibery/container-entity-type   { fibery/id: <Database type id> }
+fibery/container-entity-id     <the entity's fibery/public-id>
+```
+
+### `container-entity-id` takes the public-id, not the UUID — VERIFIED
+
+This is the least guessable part of the whole interface. Passing the entity's
+`fibery/id` (a UUID) fails with `parent-entity-not-found`; passing its
+`fibery/public-id` (e.g. `"1"`) succeeds. Verified by creating a Document
+against `SDLC/Project` type `2d4bba0c-5eb7-4dc2-b406-0f10404ef31f`, entity
+public-id `"1"`, reading it back, then deleting it.
+
+A Document may carry `fibery/Folder` and entity containment at the same time;
+both were accepted on one `create-views` call.
+
+### Reading it back
+
+`query-views`'s `container` filter did not return entity-attached Documents in
+testing. The reliable read is `query-views` by `ids`, or listing views and
+matching `fibery/container-entity-id` client side — consistent with
+Constraint 2.
 
 Only the Project Database was audited. The other Databases in
 `Fibery-Schema-v0.1.md` may have comparable drift.

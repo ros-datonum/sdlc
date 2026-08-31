@@ -281,7 +281,7 @@ These are populated later by the appropriate processing/analysis agents.
 Resolve:
 
 ```text
-Project.Documents Root
+Project.Documents
 ```
 
 Then create the Requirement Root Document under:
