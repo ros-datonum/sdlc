@@ -19,7 +19,7 @@ Fields:
 - Code — Text, globally unique, immutable after creation
 - State — Workflow
 - Description — Rich Text
-- Documents Root — URL/reference
+- Documents — Fibery Documents field; holds the Project root Document
 
 Relations:
 - Phases — 1:N Project Phase
