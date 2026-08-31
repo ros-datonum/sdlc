@@ -1,7 +1,14 @@
-# Project Requirement Add Specification v0.2
+# Project Requirement Add Specification v0.3
 
 **Status:** Approved MVP contract  
-**Supersedes:** `Project-Requirement-Add-Spec-v0.1.md`
+**Supersedes:** `Project-Requirement-Add-Spec-v0.2.md`
+
+v0.3 changes only Requirement ID allocation (section 7). v0.2 specified the
+highest sequence in use plus one, which has a read-then-write race: two writers
+can read the same highest value and durably store the same Requirement ID.
+Post-write duplicate detection cannot close that window, because a collision
+created after validation runs is never seen. Allocation now derives the number
+from Fibery's atomically allocated `fibery/public-id`.
 
 ## 1. Purpose
 
@@ -166,29 +173,33 @@ INVALID_REQUIREMENT_SOURCE
 
 ## 7. Requirement ID Allocation
 
-The Requirement ID is derived from the Project Code.
+The Requirement ID is namespaced by the Project Code and numbered by Fibery.
 
 Format:
 
 ```text
-<PROJECT_CODE>-RAW-<SEQUENCE>
+<PROJECT_CODE>-RAW-<PUBLIC_ID>
 ```
 
-Recommended sequence formatting:
+The numeric component is the entity's `fibery/public-id`, which Fibery allocates
+atomically when the entity is created. The identifier is therefore assigned
+after creation:
 
 ```text
-0001
-0002
-0003
-...
+create Requirement entity
+→ Fibery allocates public-id
+→ derive <PROJECT_CODE>-RAW-<PUBLIC_ID>
+→ write Requirement ID onto the entity
 ```
 
-Examples:
+The public id is zero padded to at least four digits for readability. Larger
+values keep every digit:
 
 ```text
-SDLC-RAW-0001
-SDLC-RAW-0002
-DES-RAW-0001
+1      → SDLC-RAW-0001
+37     → SDLC-RAW-0037
+137    → SDLC-RAW-0137
+12045  → SDLC-RAW-12045
 ```
 
 ### Requirements
@@ -197,11 +208,54 @@ The allocated Requirement ID must be:
 
 - globally unique;
 - unique within the Project namespace;
-- immutable after creation.
+- immutable after successful assignment;
+- human searchable.
 
-The exact sequence allocation mechanism is an implementation detail, but it must be concurrency-safe.
+### Numbering is sparse
 
----
+Because the public id is allocated per Fibery Database rather than per Project,
+numbering within a Project has gaps. This is valid and expected:
+
+```text
+SDLC-RAW-0003
+SDLC-RAW-0009
+SDLC-RAW-0014
+```
+
+Per-project contiguous numbering is **not** required. Identifiers of deleted
+Requirements are never reused.
+
+### Concurrency
+
+Uniqueness comes from the allocator, not from checking afterwards. Two
+concurrent writers receive different public ids and therefore cannot derive the
+same Requirement ID.
+
+An allocator that reads the highest identifier in use and adds one must not be
+used. Fibery enforces no uniqueness constraint on the Requirement ID Field on
+the current workspace plan, so a lost race there leaves two durable
+Requirements sharing an identifier, and post-write detection does not prevent
+it. Post-write validation still confirms the created Requirement carries the
+expected Requirement ID, but that is validation, not allocation.
+
+### Failure after creation
+
+Because the identifier is assigned after the entity exists, a failure to write
+it leaves durable state:
+
+```text
+Requirement entity created
+→ public-id obtained
+→ Requirement ID write fails
+→ PARTIAL_ADD
+```
+
+The command reports the created Requirement and does not delete it. Recovery is
+not part of this capability.
+
+If Fibery returns a public id that is not the expected numeric form, the command
+returns `REQUIREMENT_ID_ALLOCATION_FAILED` rather than substituting another
+allocation scheme.
 
 ## 8. Requirement Title
 
@@ -598,7 +652,7 @@ A dedicated repair/reconciliation capability may be added later if required by r
 
 ## 23. Explicit Non-Goals
 
-`project requirement add v0.2` does not:
+`project requirement add v0.3` does not:
 
 - create Projects;
 - create Project Phases;
@@ -658,7 +712,7 @@ RAW Processor
 
 ## 25. Definition of Done
 
-`project requirement add v0.2` is complete when:
+`project requirement add v0.3` is complete when:
 
 ```text
 existing Project is resolved
@@ -667,7 +721,7 @@ source artifact validates
 +
 duplicate source is not already present
 +
-unique RAW Requirement ID is allocated
+RAW Requirement ID is derived from the Fibery public id
 +
 Requirement entity exists
 +

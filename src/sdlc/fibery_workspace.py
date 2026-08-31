@@ -27,6 +27,37 @@ class ProjectRecord:
 
 
 @dataclass(frozen=True)
+class RequirementRecord:
+    """A Requirement entity as read back from Fibery."""
+
+    id: str
+    public_id: str
+    requirement_id: str | None
+    title: str | None
+    type_name: str | None
+    state: str | None
+    revision: int | None
+    project_id: str | None
+    source_fingerprint: str | None
+
+
+@dataclass(frozen=True)
+class DocumentNode:
+    """One Fibery Document (a View of type "document").
+
+    `folder_id` is the Folder it sits in; `entity_public_id` is the public id of
+    the entity it is attached to, which is how Fibery models the Documents
+    field. Both are None when Fibery has not set them.
+    """
+
+    id: str
+    name: str
+    folder_id: str | None
+    entity_public_id: str | None
+    secret: str | None = None
+
+
+@dataclass(frozen=True)
 class FolderNode:
     """One Fibery Folder in the Project document structure.
 
@@ -77,3 +108,71 @@ class FiberyWorkspace(Protocol):
 
     def read_project(self, project_id: str) -> ProjectRecord | None:
         """Read a Project entity back by id."""
+
+
+class RequirementWorkspace(Protocol):
+    """Operations `project requirement add` performs against Fibery.
+
+    Kept separate from FiberyWorkspace so the frozen `project init` contract
+    stays exactly as reviewed.
+    """
+
+    def find_project_by_code(self, code: str) -> ProjectRecord | None:
+        """Return the Project with this exact Code, or None."""
+
+    def find_projects_by_name(self, name: str) -> list[ProjectRecord]:
+        """Every Project with this exact Name, so ambiguity can be detected."""
+
+    def resolve_folder(self, folder_id: str) -> FolderNode | None:
+        """Read one Folder back by its own id, or None if it is gone."""
+
+    def child_folders(self, parent_id: str) -> list[FolderNode]:
+        """Every Folder directly under this parent.
+
+        Returns all of them rather than one match by name: Fibery permits
+        sibling Folders sharing a name, and the caller must treat that as an
+        invalid structure rather than silently picking one.
+        """
+
+    def find_requirement_by_fingerprint(
+        self, project_id: str, fingerprint: str
+    ) -> RequirementRecord | None:
+        """The Requirement already ingested from this source, if any."""
+
+    def create_requirement(
+        self, project_id: str, title: str, revision: int, fingerprint: str
+    ) -> RequirementRecord:
+        """Create the Requirement entity and return it, including its public id.
+
+        The Requirement ID is not supplied: it is derived from the public id
+        Fibery allocates here, then written by set_requirement_id.
+        """
+
+    def set_requirement_id(self, entity_id: str, requirement_id: str) -> None:
+        """Write the derived Requirement ID onto the created entity."""
+
+    def set_requirement_type(self, requirement_id: str, type_name: str) -> None:
+        """Set the Type single-select by option name."""
+
+    def set_requirement_state(self, requirement_id: str, state: str) -> None:
+        """Set the Requirement workflow state by state name."""
+
+    def read_requirement(self, requirement_id: str) -> RequirementRecord | None:
+        """Read a Requirement entity back by id."""
+
+    def create_requirement_document(
+        self, name: str, folder_id: str, requirement_public_id: str
+    ) -> DocumentNode:
+        """Create the Root Document in a Folder, attached to the Requirement."""
+
+    def resolve_document(self, document_id: str) -> DocumentNode | None:
+        """Read one Document back by its own id, or None."""
+
+    def documents_attached_to_requirement(self, public_id: str) -> list[DocumentNode]:
+        """Every Document attached to this Requirement, for the count-of-1 check."""
+
+    def write_document_content(self, secret: str, markdown: str) -> None:
+        """Replace a Document's Markdown content."""
+
+    def read_document_content(self, secret: str) -> str:
+        """Read a Document's Markdown content back."""

@@ -66,7 +66,11 @@ class StubOpener:
                 "method": request.method,
                 "url": request.full_url,
                 "headers": dict(request.headers),
-                "body": json.loads(request.data.decode("utf-8")),
+                "body": (
+                    json.loads(request.data.decode("utf-8"))
+                    if request.data is not None
+                    else None
+                ),
             }
         )
         if not self.payloads:

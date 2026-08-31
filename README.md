@@ -24,7 +24,7 @@ Do not expand the implementation scope unless a current approved specification, 
 ## Current specs
 
 - `docs/specs/Project-Init-Spec-v0.3.md`
-- `docs/specs/Project-Requirement-Add-Spec-v0.2.md`
+- `docs/specs/Project-Requirement-Add-Spec-v0.3.md`
 - `docs/specs/RAW-Requirement-Processor-Decision-v0.1.md`
 - `docs/architecture/SDLC-MVP-v0.4-Frozen-Architecture.md`
 - `docs/fibery/Fibery-Schema-v0.1.md`
@@ -41,7 +41,12 @@ export FIBERY_SPACE=<Space holding the SDLC Databases>
 export FIBERY_SPACE_ID=<UUID of that Space>
 
 sdlc project init --name "SDLC" [--code SDLC] [--description "..."]
+
+sdlc project requirement add --project SDLC --source raw-requirements-topic.md
 ```
+
+`project requirement add` ingests one artifact produced by the global
+`requirements-export` skill. It is deterministic and invokes no model.
 
 Configuration is read from the environment only; no credentials are stored in
 this repository.
