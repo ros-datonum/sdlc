@@ -230,3 +230,62 @@ no reference to `views/json-rpc`, Folders, or any hierarchy concept.
 `Collaboration~Documents/Document` on an entity, not a sidebar Document View.
 
 MCP is therefore strictly weaker than the HTTP API `project init` already uses.
+
+## Constraint 10 — a Document's content secret must be supplied by the client
+
+`create-views` does **not** allocate a `documentSecret`. A Document created with
+`fibery/meta: {}` reads back with `fibery/meta: {}` and has no addressable body,
+so `PUT /api/documents/<secret>` has nothing to write to.
+
+The client generates the secret and passes it at creation:
+
+```json
+"fibery/meta": {"documentSecret": "<uuid>"}
+```
+
+It then reads back on the View and works for both `PUT` and `GET`. Verified
+live: the first ingest attempt failed with `CONTENT_WRITE_FAILED` precisely
+because the created Document exposed no secret.
+
+Note the two different secrets: an entity rich-text Field's secret comes from
+`Collaboration~Documents/secret` on the entity (constraint 5), while a sidebar
+Document's comes from `fibery/meta.documentSecret` on the View.
+
+## Constraint 11 — Fibery re-serializes stored Markdown
+
+Content read back from `/api/documents/<secret>?format=md` is not byte-identical
+to what was written. Verified live: `-` list bullets come back as `*`, and the
+trailing newline is dropped.
+
+Post-write validation therefore compares content modulo that re-serialization
+(`sdlc.raw_source.content_equivalent`) rather than byte for byte. Anything
+Fibery does not merely re-serialize still fails the check.
+
+## Constraint 12 — Requirement Name is a read-only formula
+
+`SDLC/Name` on Requirement carries `formula/formula?: true` and
+`fibery/readonly?: true`. Its expression is:
+
+```text
+concat(concat(Requirement ID, " - "), Title)
+```
+
+It cannot be written, and it uses a plain hyphen. The Root Document name uses
+the em dash the spec shows, so the two differ by design:
+
+```text
+entity name    ZZIN2-RAW-0001 - Repository Handoff and Development Workflow
+document name  ZZIN2-RAW-0001 — Repository Handoff and Development Workflow
+```
+
+## Constraint 13 — Requirement Type option names are `Raw` and `Standard`
+
+`Fibery-Schema-v0.1.md` documents `RAW | STANDARD`. The workspace enum
+`SDLC/Type_Agentic SDLC/Requirement` actually holds `Raw` and `Standard`, and
+options resolve by exact `enum/name`. Category holds `FUNCTIONAL`,
+`NON-FONCTIONAL` and `CONSTRAINT` — the middle one is misspelled in the
+workspace. `project requirement add` leaves Category empty, so only Type
+matters today.
+
+Requirement workflow states are `Draft`, `Process`, `Review`, `Ready`, `Apply`,
+`Applied`, and `Draft` is already the Fibery default.

@@ -8,13 +8,15 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TextIO
 
 from sdlc.config import ConfigurationError, load_fibery_settings
 from sdlc.fibery_client import FiberyClient
-from sdlc.fibery_http import FiberyHttpWorkspace
+from sdlc.fibery_http import FiberyHttpWorkspace, FiberyRequirementWorkspace
 from sdlc.project_init import initialize_project
-from sdlc.results import InitResult, ResultCode
+from sdlc.requirement_add import add_raw_requirement
+from sdlc.results import AddResult, AddResultCode, InitResult, ResultCode
 
 PROGRAM_NAME = "sdlc"
 EXIT_SUCCESS = 0
@@ -39,6 +41,19 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--code", help="Project Code. Generated when omitted.")
     init.add_argument("--description", help="Project Description.")
     init.set_defaults(handler=_run_project_init)
+
+    requirement = project_commands.add_parser(
+        "requirement", help="Requirement level commands."
+    )
+    requirement_commands = requirement.add_subparsers(dest="action", required=True)
+    add = requirement_commands.add_parser(
+        "add", help="Ingest one RAW requirements Markdown artifact."
+    )
+    add.add_argument("--project", required=True, help="Project Code or Project Name.")
+    add.add_argument(
+        "--source", required=True, help="Path to the RAW requirements Markdown file."
+    )
+    add.set_defaults(handler=_run_requirement_add)
 
     return parser
 
@@ -71,6 +86,83 @@ def _run_project_init(
     )
     render_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _run_requirement_add(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    try:
+        settings = load_fibery_settings()
+    except ConfigurationError as error:
+        print(str(error), file=error_out)
+        return EXIT_FAILURE
+
+    source = Path(arguments.source)
+    try:
+        source_text = source.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        print(AddResultCode.SOURCE_FILE_NOT_FOUND.value, file=error_out)
+        print(f"\nNo such source file: {source}", file=error_out)
+        return EXIT_FAILURE
+    except (OSError, UnicodeDecodeError) as error:
+        print(AddResultCode.SOURCE_FILE_UNREADABLE.value, file=error_out)
+        print(f"\nCould not read {source}: {error}", file=error_out)
+        return EXIT_FAILURE
+
+    workspace = FiberyRequirementWorkspace(
+        client=FiberyClient(settings),
+        space=settings.space,
+        space_id=settings.space_id,
+    )
+    result = add_raw_requirement(
+        workspace, project=arguments.project, source_text=source_text
+    )
+    render_add_result(result, out if result.is_normal else error_out)
+    return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def render_add_result(result: AddResult, stream: TextIO) -> None:
+    """Print the result code first, then the human readable detail."""
+    print(result.code.value, file=stream)
+    print(file=stream)
+
+    if result.code is AddResultCode.RAW_REQUIREMENT_ADDED:
+        print("RAW requirement added.\n", file=stream)
+        print(f"Project: {result.project_name}", file=stream)
+        print(f"Project Code: {result.project_code}\n", file=stream)
+        print("Requirement:", file=stream)
+        print(f"{result.requirement_id} — {result.title}\n", file=stream)
+        print("State: Draft", file=stream)
+        print("Revision: 1\n", file=stream)
+        print("Document:", file=stream)
+        print(f"{result.document_path}\n", file=stream)
+        print("Next:", file=stream)
+        print("Review the RAW Requirement in Fibery.", file=stream)
+        print("When ready, move it from Draft → Process.", file=stream)
+        return
+
+    print(result.message, file=stream)
+    if result.code is AddResultCode.REQUIREMENT_ALREADY_ADDED:
+        print("\nExisting Requirement:", file=stream)
+        print(f"{result.requirement_id}", file=stream)
+        return
+
+    _render_add_sections(result, stream)
+
+
+def _render_add_sections(result: AddResult, stream: TextIO) -> None:
+    if result.created:
+        print("\nCreated in Fibery (left in place):", file=stream)
+        for item in result.created:
+            print(f"- {item}", file=stream)
+    if result.failed:
+        print("\nFailed:", file=stream)
+        for item in result.failed:
+            print(f"- {item}", file=stream)
+    if result.details:
+        print("\nDetails:", file=stream)
+        for item in result.details:
+            print(f"- {item}", file=stream)
 
 
 def render_result(result: InitResult, stream: TextIO) -> None:

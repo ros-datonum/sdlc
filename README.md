@@ -41,7 +41,12 @@ export FIBERY_SPACE=<Space holding the SDLC Databases>
 export FIBERY_SPACE_ID=<UUID of that Space>
 
 sdlc project init --name "SDLC" [--code SDLC] [--description "..."]
+
+sdlc project requirement add --project SDLC --source raw-requirements-topic.md
 ```
+
+`project requirement add` ingests one artifact produced by the global
+`requirements-export` skill. It is deterministic and invokes no model.
 
 Configuration is read from the environment only; no credentials are stored in
 this repository.

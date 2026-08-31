@@ -88,6 +88,13 @@ class FiberyClient:
             {"content": content},
         )
 
+    def get_document(self, secret: str) -> str:
+        """Read a collaborative document's Markdown content."""
+        body = self._request(
+            "GET", f"{DOCUMENTS_PATH}/{secret}?format={DOCUMENT_FORMAT}", None
+        )
+        return (body or {}).get("content", "")
+
     def _post(self, path: str, payload: Any) -> Any:
         return self._request("POST", path, payload)
 
@@ -95,7 +102,7 @@ class FiberyClient:
         request = urllib.request.Request(
             url=f"{self._settings.base_url}{path}",
             method=method,
-            data=json.dumps(payload).encode("utf-8"),
+            data=None if payload is None else json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"{AUTH_SCHEME} {self._settings.token}",
                 "Content-Type": CONTENT_TYPE,
