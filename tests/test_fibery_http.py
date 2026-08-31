@@ -334,8 +334,8 @@ def test_creating_a_child_folder_sends_the_parent_folder():
     assert node.parent_id == "root-1"
 
 
-def test_finding_a_folder_matches_name_and_parent():
-    workspace, _ = build_views_workspace(
+def test_resolving_a_folder_asks_fibery_for_that_exact_id():
+    workspace, opener = build_views_workspace(
         [
             rpc(
                 [
@@ -343,94 +343,58 @@ def test_finding_a_folder_matches_name_and_parent():
                         "fibery/id": "f1",
                         "fibery/name": "Raw",
                         "fibery/Parent Folder": {"fibery/id": "req-1"},
-                        "fibery/container-app": {"fibery/id": "space-uuid"},
-                    },
-                    {
-                        "fibery/id": "f2",
-                        "fibery/name": "Raw",
-                        "fibery/Parent Folder": {"fibery/id": "other-1"},
-                        "fibery/container-app": {"fibery/id": "space-uuid"},
-                    },
-                ]
-            )
-        ]
-    )
-
-    assert workspace.find_folder("Raw", "req-1").id == "f1"
-    assert workspace.find_folder("Raw", "other-1").id == "f2"
-    assert workspace.find_folder("Raw", "missing") is None
-
-
-def test_finding_a_root_folder_matches_a_null_parent():
-    workspace, _ = build_views_workspace(
-        [
-            rpc(
-                [
-                    {
-                        "fibery/id": "f1",
-                        "fibery/name": "SDLC",
-                        "fibery/Parent Folder": None,
-                        "fibery/container-app": {"fibery/id": "space-uuid"},
                     }
                 ]
             )
         ]
     )
 
-    assert workspace.find_folder("SDLC", None).id == "f1"
-
-
-def test_folders_from_other_spaces_are_ignored():
-    workspace, _ = build_views_workspace(
-        [
-            rpc(
-                [
-                    {
-                        "fibery/id": "f1",
-                        "fibery/name": "SDLC",
-                        "fibery/Parent Folder": None,
-                        "fibery/container-app": {"fibery/id": "another-space"},
-                    }
-                ]
-            )
-        ]
-    )
-
-    assert workspace.find_folder("SDLC", None) is None
-
-
-def test_the_folder_listing_is_fetched_once_and_refreshed_after_a_create():
-    workspace, opener = build_views_workspace(
-        [
-            rpc([]),
-            rpc([]),
-            rpc(
-                [
-                    {
-                        "fibery/id": "f9",
-                        "fibery/name": "SDLC",
-                        "fibery/Parent Folder": None,
-                        "fibery/container-app": {"fibery/id": "space-uuid"},
-                    }
-                ]
-            ),
-        ]
-    )
-
-    workspace.find_folder("SDLC", None)
-    workspace.find_folder("SDLC", None)
-    workspace.create_folder("SDLC", None)
-
-    assert workspace.find_folder("SDLC", None).id == "f9"
-    assert len(opener.requests) == 3
-
-
-def test_query_folders_sends_no_filter():
-    """query-folders accepts no filter, so narrowing happens client side."""
-    workspace, opener = build_views_workspace([rpc([])])
-
-    workspace.find_folder("SDLC", None)
+    node = workspace.resolve_folder("f1")
 
     body = opener.requests[0]["body"]
     assert body["method"] == "query-folders"
-    assert body["params"] == {}
+    assert body["params"] == {"filter": {"ids": ["f1"]}}
+    assert (node.id, node.name, node.parent_id) == ("f1", "Raw", "req-1")
+
+
+def test_resolving_a_root_folder_reports_a_null_parent():
+    workspace, _ = build_views_workspace(
+        [
+            rpc(
+                [
+                    {
+                        "fibery/id": "f1",
+                        "fibery/name": "SDLC",
+                        "fibery/Parent Folder": None,
+                    }
+                ]
+            )
+        ]
+    )
+
+    assert workspace.resolve_folder("f1").parent_id is None
+
+
+def test_resolving_a_deleted_folder_returns_none():
+    workspace, _ = build_views_workspace([rpc([])])
+
+    assert workspace.resolve_folder("gone") is None
+
+
+def test_resolving_ignores_any_folder_fibery_returns_with_another_id():
+    """Read-back must never accept a same-named sibling in place of the id."""
+    workspace, _ = build_views_workspace(
+        [
+            rpc(
+                [
+                    {
+                        "fibery/id": "other",
+                        "fibery/name": "SDLC",
+                        "fibery/Parent Folder": None,
+                    }
+                ]
+            )
+        ]
+    )
+
+    assert workspace.resolve_folder("mine") is None

@@ -19,7 +19,10 @@ class FakeFiberyWorkspace:
         known_states: tuple[str, ...] = (PLANNED_STATE,),
     ) -> None:
         self.projects = {record.id: record for record in projects or []}
-        self.folders = {(f.name, f.parent_id): f for f in folders or []}
+        # A list, not dict[(name, parent_id)]: Fibery allows sibling Folders
+        # with the same name under the same parent, and a keyed dict would
+        # silently collapse them and hide that production failure.
+        self.folders: list[FolderNode] = list(folders or [])
         self.descriptions: dict[str, str] = {}
         self.known_states = known_states
         self.mutations: list[str] = []
@@ -49,9 +52,13 @@ class FakeFiberyWorkspace:
         self._record_call("read_project")
         return self.projects.get(project_id)
 
-    def find_folder(self, name: str, parent_id: str | None) -> FolderNode | None:
-        self._record_call("find_folder")
-        return self.folders.get((name, parent_id))
+    def resolve_folder(self, folder_id: str) -> FolderNode | None:
+        self._record_call("resolve_folder")
+        return next((f for f in self.folders if f.id == folder_id), None)
+
+    def folder_named(self, name: str, parent_id: str | None) -> list[FolderNode]:
+        """Test helper: every Folder with this name under this parent."""
+        return [f for f in self.folders if f.name == name and f.parent_id == parent_id]
 
     # -- writes --------------------------------------------------------
 
@@ -89,7 +96,7 @@ class FakeFiberyWorkspace:
         folder = FolderNode(
             id=f"folder-{next(self._ids)}", name=name, parent_id=parent_id
         )
-        self.folders[(name, parent_id)] = folder
+        self.folders.append(folder)
         self.mutations.append(f"create_folder {name} parent={parent_id}")
         return folder
 

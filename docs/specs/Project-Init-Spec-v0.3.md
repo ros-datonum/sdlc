@@ -403,6 +403,32 @@ VALIDATION_FAILED
 PARTIAL_INIT
 ```
 
+### 17.1 `PARTIAL_INIT` versus `VALIDATION_FAILED`
+
+These two are distinguished by whether the write sequence finished, because
+that is what changes the operator's next action.
+
+```text
+PARTIAL_INIT
+  the write sequence did not complete
+  expected durable objects are missing
+```
+
+```text
+VALIDATION_FAILED
+  the intended write sequence completed
+  read-back verification disagreed with the expected final state
+  nothing is known to be missing
+```
+
+Both must report the durable state that was created, so either can be
+diagnosed without querying Fibery by hand.
+
+Read-back must identify objects this run created by their own Fibery id.
+Resolving them by name is not sufficient: Fibery permits sibling Folders with
+identical names, so a name lookup can return a pre-existing object and report a
+false `VALIDATION_FAILED`.
+
 ## 18. Partial Initialization
 
 If creation fails after some durable objects were created:

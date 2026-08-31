@@ -86,8 +86,23 @@ Creating a Field is `fibery.schema/batch` wrapping `schema.field/create` with
 ## Constraint 2 — Views and Folders cannot be filtered by name
 
 `query-views` filters on `ids`, `publicIds`, `isPrivate` and `container` only.
-`query-folders` accepts no filter at all. Locating a Document or Folder by name
-requires listing and matching client side.
+Locating a Document or Folder by name requires listing and matching client side.
+
+`query-folders` does accept `{"filter": {"ids": [...]}}`, the same shape as
+`query-views` — verified against the workspace, and undocumented. It ignores a
+bare `{"ids": [...]}` and returns everything, so the `filter` wrapper matters.
+
+## Constraint 2a — Folder names are not unique — VERIFIED
+
+Fibery permits sibling Folders with the same name under the same parent. The
+workspace contains a hand-made top-level Folder named `SDLC`, and `project init`
+for a Project named `SDLC` legitimately creates a second one.
+
+Consequence: an object this run created must be read back by its own id.
+`project init` resolves each created Folder with
+`query-folders {"filter": {"ids": [<id>]}}` and checks its name and parent.
+Resolving by `(name, parent)` returned the older Folder and produced a false
+`VALIDATION_FAILED` while the created hierarchy was correct.
 
 ## Constraint 3 — a Space name and a Space id are both needed
 

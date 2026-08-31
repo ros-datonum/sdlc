@@ -368,7 +368,7 @@ def _read_created_state(
         project = workspace.read_project(project_id)
         projects_with_code = workspace.count_projects_with_code(project_code)
         folders_by_index = {
-            index: workspace.find_folder(folder.name, folder.parent_id)
+            index: workspace.resolve_folder(folder.id)
             for index, folder in enumerate(folders)
         }
     except FiberyError as error:
@@ -416,17 +416,27 @@ def _folder_problems(
     project_name: str,
     folders: list[FolderNode],
 ) -> list[str]:
-    """Check every Folder exists under the right parent, and the root link."""
+    """Check every created Folder reads back intact, and the root link.
+
+    Each Folder is resolved by the id creation returned, never by name:
+    Fibery allows sibling Folders with the same name under the same parent,
+    so a name lookup can resolve someone else's Folder.
+    """
     problems: list[str] = []
     display = folder_display_paths(project_name)
     for index, folder in enumerate(folders):
         found = state.folders_by_index.get(index)
         if found is None:
-            problems.append(f"Folder {display[index]!r} does not exist.")
-        elif found.id != folder.id:
+            problems.append(f"Folder {display[index]!r} ({folder.id}) does not exist.")
+            continue
+        if found.name != folder.name:
             problems.append(
-                f"Folder {display[index]!r} resolves to {found.id!r}, expected "
-                f"{folder.id!r}."
+                f"Folder {folder.id} is named {found.name!r}, expected {folder.name!r}."
+            )
+        if found.parent_id != folder.parent_id:
+            problems.append(
+                f"Folder {display[index]!r} has parent {found.parent_id!r}, "
+                f"expected {folder.parent_id!r}."
             )
 
     root = folders[ROOT_FOLDER_INDEX]

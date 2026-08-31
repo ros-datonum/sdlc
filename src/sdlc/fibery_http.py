@@ -39,6 +39,8 @@ VIEW_CONTAINER_APP_KEY = "fibery/container-app"
 # where create-views takes "views".
 FOLDER_PARENT_KEY = "fibery/Parent Folder"
 QUERY_FOLDERS_METHOD = "query-folders"
+FOLDER_FILTER_KEY = "filter"
+FOLDER_IDS_FILTER_KEY = "ids"
 CREATE_FOLDERS_METHOD = "create-folders"
 CREATE_FOLDERS_PARAM = "values"
 
@@ -67,7 +69,6 @@ class FiberyHttpWorkspace:
         self._space = space
         self._space_id = space_id
         self._schema: _ProjectSchema | None = None
-        self._folders: list[dict[str, Any]] | None = None
 
     @property
     def project_database(self) -> str:
@@ -180,32 +181,23 @@ class FiberyHttpWorkspace:
         if parent_id is not None:
             values[FOLDER_PARENT_KEY] = {ID_FIELD: parent_id}
         self._client.views_rpc(CREATE_FOLDERS_METHOD, {CREATE_FOLDERS_PARAM: [values]})
-        self._folders = None
         return FolderNode(id=folder_id, name=name, parent_id=parent_id)
 
-    def find_folder(self, name: str, parent_id: str | None) -> FolderNode | None:
-        for folder in self._folders_in_space():
-            if folder.get(VIEW_NAME_KEY) != name:
-                continue
-            if _parent_of(folder) == parent_id:
-                return FolderNode(id=folder[ID_FIELD], name=name, parent_id=parent_id)
-        return None
+    def resolve_folder(self, folder_id: str) -> FolderNode | None:
+        """Read one Folder back by id.
 
-    def _folders_in_space(self) -> list[dict[str, Any]]:
-        """List this Space's Folders.
-
-        query-folders takes no filter at all, so the whole workspace is
-        fetched once and narrowed to this Space client side.
+        query-folders accepts the same {"filter": {"ids": [...]}} shape as
+        query-views, so this asks Fibery for exactly one Folder rather than
+        matching a name that siblings may share.
         """
-        if self._folders is None:
-            folders = self._client.views_rpc(QUERY_FOLDERS_METHOD, {}) or []
-            self._folders = [
-                folder
-                for folder in folders
-                if (folder.get(VIEW_CONTAINER_APP_KEY) or {}).get(ID_FIELD)
-                == self._space_id
-            ]
-        return self._folders
+        folders = self._client.views_rpc(
+            QUERY_FOLDERS_METHOD,
+            {FOLDER_FILTER_KEY: {FOLDER_IDS_FILTER_KEY: [folder_id]}},
+        )
+        for folder in folders or []:
+            if folder.get(ID_FIELD) == folder_id:
+                return _to_folder(folder)
+        return None
 
     def _update_project(self, project_id: str, values: dict[str, Any]) -> None:
         self._client.command(
@@ -323,5 +315,9 @@ def _require_field(
     return field[FIELD_NAME_KEY]
 
 
-def _parent_of(folder: dict[str, Any]) -> str | None:
-    return (folder.get(FOLDER_PARENT_KEY) or {}).get(ID_FIELD)
+def _to_folder(folder: dict[str, Any]) -> FolderNode:
+    return FolderNode(
+        id=folder[ID_FIELD],
+        name=folder.get(VIEW_NAME_KEY) or "",
+        parent_id=(folder.get(FOLDER_PARENT_KEY) or {}).get(ID_FIELD),
+    )

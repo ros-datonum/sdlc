@@ -81,8 +81,12 @@ class FiberyStandIn:
                 self.folders[folder["fibery/id"]] = folder
             return []
         if body["method"] == "query-folders":
-            assert body["params"] == {}, "query-folders accepts no filter"
-            return list(self.folders.values())
+            wanted = body["params"].get("filter", {}).get("ids")
+            return [
+                folder
+                for folder in self.folders.values()
+                if wanted is None or folder["fibery/id"] in wanted
+            ]
         raise AssertionError(f"Unexpected views method {body['method']}")
 
 

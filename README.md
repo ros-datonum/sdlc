@@ -60,9 +60,17 @@ Python standard, because the pinned uv (0.11.21) publishes no 3.12.14 download.
 
 ## Fibery interface notes
 
-`docs/fibery/Fibery-API-Constraints-v0.1.md` records the Fibery API limits that
-shape the implementation, including the fact that sidebar Documents cannot be
-nested through the public API.
+`docs/fibery/Fibery-API-Constraints-v0.1.md` records the Fibery interface
+behaviour verified against the workspace.
+
+Folders are real and nestable. `/api/views/json-rpc` exposes `query-folders`,
+`create-folders`, `update-folders` and `delete-folders`; a Folder nests under
+another through `fibery/Parent Folder`, and a Document is placed in a Folder
+through `fibery/Folder`. These Folder methods are not covered by the published
+Views API reference.
+
+Folder names are not unique: siblings may share a name. Folders created by a
+run are therefore read back by their own id, never by name.
 
 ## Development agents
 

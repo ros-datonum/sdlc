@@ -64,8 +64,13 @@ class FiberyWorkspace(Protocol):
     def create_folder(self, name: str, parent_id: str | None) -> FolderNode:
         """Create one Folder, nested under parent_id when it is not None."""
 
-    def find_folder(self, name: str, parent_id: str | None) -> FolderNode | None:
-        """Return the Folder with this name under this parent, or None."""
+    def resolve_folder(self, folder_id: str) -> FolderNode | None:
+        """Read one Folder back by its own id, or None if it is gone.
+
+        Fibery allows sibling Folders with identical names, so this is the
+        only unambiguous way to verify a Folder this run created. Name-based
+        lookup is for discovery, never for read-back.
+        """
 
     def set_documents_root_folder(self, project_id: str, folder_id: str) -> None:
         """Store the root Folder id on the Project."""

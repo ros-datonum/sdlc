@@ -1,7 +1,7 @@
 """Failure, validation and partial-initialization behaviour of `project init`."""
 
 from fibery_fake import FakeFiberyWorkspace
-from sdlc.fibery_workspace import FiberyError
+from sdlc.fibery_workspace import FiberyError, FolderNode
 from sdlc.project_init import folder_display_paths, initialize_project
 from sdlc.results import ResultCode
 
@@ -79,7 +79,7 @@ def test_partial_init_deletes_nothing():
     initialize_project(workspace, PROJECT_NAME)
 
     assert len(workspace.projects) == 1
-    assert {name for name, _ in workspace.folders} == {"SDLC", "Requirements"}
+    assert {f.name for f in workspace.folders} == {"SDLC", "Requirements"}
 
 
 def test_partial_init_does_not_report_success():
@@ -109,7 +109,7 @@ def test_description_write_failure_is_a_partial_init():
     result = initialize_project(workspace, PROJECT_NAME, description="Bootstrap.")
 
     assert result.code is ResultCode.PARTIAL_INIT
-    assert workspace.folders == {}
+    assert workspace.folders == []
 
 
 # -- post-create validation ------------------------------------------------
@@ -143,17 +143,36 @@ def test_root_folder_id_that_did_not_persist_fails_validation():
 
 def test_missing_folder_fails_validation():
     workspace = FakeFiberyWorkspace()
-    original_find = workspace.find_folder
+    original_resolve = workspace.resolve_folder
 
-    def forget_raw(name, parent_id):
-        return None if name == RAW_FOLDER else original_find(name, parent_id)
+    def forget_raw(folder_id):
+        found = original_resolve(folder_id)
+        return None if found is not None and found.name == RAW_FOLDER else found
 
-    workspace.find_folder = forget_raw
+    workspace.resolve_folder = forget_raw
 
     result = initialize_project(workspace, PROJECT_NAME)
 
     assert result.code is ResultCode.VALIDATION_FAILED
     assert any(RAW_PATH in detail for detail in result.details)
+
+
+def test_folder_that_reads_back_under_the_wrong_parent_fails_validation():
+    workspace = FakeFiberyWorkspace()
+    original_resolve = workspace.resolve_folder
+
+    def reparent(folder_id):
+        found = original_resolve(folder_id)
+        if found is not None and found.name == RAW_FOLDER:
+            return FolderNode(id=found.id, name=found.name, parent_id="elsewhere")
+        return found
+
+    workspace.resolve_folder = reparent
+
+    result = initialize_project(workspace, PROJECT_NAME)
+
+    assert result.code is ResultCode.VALIDATION_FAILED
+    assert any("parent" in detail for detail in result.details)
 
 
 def test_code_that_is_not_globally_unique_fails_validation():

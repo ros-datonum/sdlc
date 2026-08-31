@@ -1,9 +1,12 @@
 import pytest
 
 from fibery_fake import FakeFiberyWorkspace, planned_project
+from sdlc.fibery_workspace import FolderNode
 from sdlc.project_code import COLLISION_SUFFIX_LIMIT, candidate_project_codes
 from sdlc.project_init import (
     PROJECT_INITIAL_STATE,
+    REQUIREMENT_STAGE_FOLDER_NAMES,
+    REQUIREMENTS_FOLDER_NAME,
     folder_display_paths,
     initialize_project,
     project_folder_tree,
@@ -19,6 +22,12 @@ EXPECTED_PATHS = (
     "SDLC/Requirements/Approved",
 )
 EXPECTED_FOLDER_NAMES = ("SDLC", "Requirements", "Raw", "Draft", "Approved")
+
+
+def only(folders):
+    """The single Folder matching a name/parent, asserting there is exactly one."""
+    assert len(folders) == 1, f"expected exactly 1 folder, got {len(folders)}"
+    return folders[0]
 
 
 def taken_projects(codes):
@@ -58,7 +67,7 @@ def test_documents_root_folder_id_references_the_root_folder():
     initialize_project(workspace, PROJECT_NAME)
 
     [record] = workspace.projects.values()
-    root = workspace.folders[(PROJECT_NAME, None)]
+    root = only(workspace.folder_named(PROJECT_NAME, None))
     assert record.documents_root_folder_id == root.id
     assert root.parent_id is None
 
@@ -82,12 +91,15 @@ def test_folders_are_really_nested_not_slash_named():
 
     initialize_project(workspace, PROJECT_NAME)
 
-    root = workspace.folders[(PROJECT_NAME, None)]
-    requirements = workspace.folders[("Requirements", root.id)]
+    root = only(workspace.folder_named(PROJECT_NAME, None))
+    requirements = only(workspace.folder_named("Requirements", root.id))
     assert requirements.parent_id == root.id
     for stage in ("Raw", "Draft", "Approved"):
-        assert workspace.folders[(stage, requirements.id)].parent_id == requirements.id
-    assert all("/" not in name for name, _ in workspace.folders)
+        assert (
+            only(workspace.folder_named(stage, requirements.id)).parent_id
+            == requirements.id
+        )
+    assert all("/" not in folder.name for folder in workspace.folders)
 
 
 def test_folder_tree_nests_every_stage_under_requirements():
@@ -156,7 +168,7 @@ def test_existing_project_is_not_repaired_when_folders_are_missing():
 
     assert result.code is ResultCode.PROJECT_ALREADY_EXISTS
     assert workspace.mutations == []
-    assert workspace.folders == {}
+    assert workspace.folders == []
 
 
 def test_existing_project_keeps_its_code():
@@ -251,7 +263,7 @@ def test_a_slash_in_the_project_name_is_no_longer_special(name):
     result = initialize_project(workspace, name)
 
     assert result.code is ResultCode.PROJECT_INITIALIZED
-    assert workspace.folders[(name, None)].parent_id is None
+    assert only(workspace.folder_named(name, None)).parent_id is None
 
 
 def test_two_projects_do_not_share_folders_even_with_colliding_names():
@@ -261,9 +273,82 @@ def test_two_projects_do_not_share_folders_even_with_colliding_names():
     result = initialize_project(workspace, "SDLC/Requirements")
 
     assert result.code is ResultCode.PROJECT_INITIALIZED
-    root = workspace.folders[(PROJECT_NAME, None)]
-    other = workspace.folders[("SDLC/Requirements", None)]
+    root = only(workspace.folder_named(PROJECT_NAME, None))
+    other = only(workspace.folder_named("SDLC/Requirements", None))
     assert root.id != other.id
-    assert workspace.folders[("Requirements", root.id)].id != (
-        workspace.folders[("Requirements", other.id)].id
+    assert only(workspace.folder_named("Requirements", root.id)).id != (
+        only(workspace.folder_named("Requirements", other.id)).id
     )
+
+
+# -- regression: sibling folders may share a name --------------------------
+
+
+def test_preexisting_root_folder_with_the_same_name_does_not_break_init():
+    """The defect this guards against.
+
+    Fibery allows sibling Folders with identical names. The workspace already
+    held a hand-made top-level 'SDLC' folder, so validating by (name, parent)
+    resolved that older folder instead of the one this run created and
+    reported a false VALIDATION_FAILED.
+    """
+    preexisting = FolderNode(id="preexisting-root", name=PROJECT_NAME, parent_id=None)
+    workspace = FakeFiberyWorkspace(folders=[preexisting])
+
+    result = initialize_project(workspace, PROJECT_NAME)
+
+    assert result.code is ResultCode.PROJECT_INITIALIZED
+
+    roots = workspace.folder_named(PROJECT_NAME, None)
+    assert len(roots) == 2, "the run must add its own root, not reuse the old one"
+    created_root = next(folder for folder in roots if folder.id != preexisting.id)
+
+    [record] = workspace.projects.values()
+    assert record.documents_root_folder_id == created_root.id
+
+
+def test_preexisting_sibling_is_left_untouched():
+    preexisting = FolderNode(id="preexisting-root", name=PROJECT_NAME, parent_id=None)
+    workspace = FakeFiberyWorkspace(folders=[preexisting])
+
+    initialize_project(workspace, PROJECT_NAME)
+
+    assert preexisting in workspace.folders
+    assert not any(
+        mutation.startswith(("update_folder", "delete_folder"))
+        for mutation in workspace.mutations
+    )
+    # Nothing was created under the pre-existing root.
+    assert workspace.folder_named(REQUIREMENTS_FOLDER_NAME, preexisting.id) == []
+
+
+def test_nested_tree_hangs_off_the_newly_created_root():
+    preexisting = FolderNode(id="preexisting-root", name=PROJECT_NAME, parent_id=None)
+    workspace = FakeFiberyWorkspace(folders=[preexisting])
+
+    initialize_project(workspace, PROJECT_NAME)
+
+    created_root = next(
+        folder
+        for folder in workspace.folder_named(PROJECT_NAME, None)
+        if folder.id != preexisting.id
+    )
+    requirements = only(
+        workspace.folder_named(REQUIREMENTS_FOLDER_NAME, created_root.id)
+    )
+    for stage in REQUIREMENT_STAGE_FOLDER_NAMES:
+        assert only(workspace.folder_named(stage, requirements.id)).parent_id == (
+            requirements.id
+        )
+
+
+def test_validation_resolves_created_folders_by_id_not_by_name():
+    """Read-back must ask for the created id, never a name lookup."""
+    preexisting = FolderNode(id="preexisting-root", name=PROJECT_NAME, parent_id=None)
+    workspace = FakeFiberyWorkspace(folders=[preexisting])
+
+    initialize_project(workspace, PROJECT_NAME)
+
+    resolved = [call for call in workspace.calls if call == "resolve_folder"]
+    assert len(resolved) == len(project_folder_tree(PROJECT_NAME))
+    assert "find_folder" not in workspace.calls
