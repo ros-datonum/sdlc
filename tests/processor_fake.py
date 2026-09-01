@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 
 from sdlc.fibery_workspace import (
     DocumentNode,
@@ -20,6 +21,25 @@ from sdlc.fibery_workspace import (
     RequirementRecord,
 )
 from sdlc.model_runtime import ModelResponse
+
+# Fibery re-serializes stored Markdown (Fibery-API-Constraints constraint 11):
+# a "-" bullet is read back as "*". Modelled narrowly so post-write validation
+# is exercised against what Fibery actually returns, not what was written.
+# Two behaviours, both verified live: the bullet marker changes, and a blank
+# line is inserted between a paragraph and a list that directly follows it.
+BULLET_WRITTEN = re.compile(r"^(\s*)-\s", re.MULTILINE)
+BULLET_STORED = r"\1* "
+# Only a paragraph followed by a list gains the blank line; consecutive list
+# items do not.
+PARAGRAPH_THEN_LIST = re.compile(
+    r"^(?!\s*[-*+]\s)(?P<paragraph>.*\S)\n(?=\s*[-*+]\s)", re.MULTILINE
+)
+
+
+def reserialize_like_fibery(markdown: str) -> str:
+    spaced = PARAGRAPH_THEN_LIST.sub(r"\g<paragraph>\n\n", markdown)
+    return BULLET_WRITTEN.sub(BULLET_STORED, spaced)
+
 
 KNOWN_TYPES = ("Raw", "Standard")
 KNOWN_STATES = ("Draft", "Process", "Review", "Ready", "Apply", "Applied")
@@ -58,6 +78,8 @@ class FakeProcessorWorkspace:
         self.mutations: list[str] = []
         self.calls: list[str] = []
         self.failures: dict[str, FiberyError] = {}
+        # Fibery always re-serializes; a test may disable it to isolate a case.
+        self.reserializes = True
         self._ids = itertools.count(1)
         self._public = itertools.count(30)
 
@@ -92,7 +114,8 @@ class FakeProcessorWorkspace:
 
     def read_document_content(self, secret):
         self._record("read_document_content")
-        return self.content.get(secret, "")
+        stored = self.content.get(secret, "")
+        return reserialize_like_fibery(stored) if self.reserializes else stored
 
     def standard_requirements_in_project(self, project_id):
         self._record("standard_requirements_in_project")

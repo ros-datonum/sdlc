@@ -254,8 +254,17 @@ Document's comes from `fibery/meta.documentSecret` on the View.
 ## Constraint 11 — Fibery re-serializes stored Markdown
 
 Content read back from `/api/documents/<secret>?format=md` is not byte-identical
-to what was written. Verified live: `-` list bullets come back as `*`, and the
-trailing newline is dropped.
+to what was written. Verified live, three behaviours:
+
+- `-` list bullets come back as `*`;
+- the trailing newline is dropped;
+- a blank line is **inserted** between a paragraph and a list that directly
+  follows it, so `Intro:\n- item` is stored as `Intro:\n\n* item`.
+
+The third was found only by writing a rendered Standard Requirement document to
+the live workspace. A comparison that handles bullet markers alone still fails
+on ordinary requirement prose, because a lead-in sentence followed by a list is
+the normal shape of a requirement.
 
 Post-write validation therefore compares content modulo that re-serialization
 (`sdlc.raw_source.content_equivalent`) rather than byte for byte. Anything

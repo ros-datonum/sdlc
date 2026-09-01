@@ -34,6 +34,7 @@ from sdlc.processing_result import (
 from sdlc.project_init import REQUIREMENT_STAGE_FOLDER_NAMES, REQUIREMENTS_FOLDER_NAME
 from sdlc.raw_processing import InvalidModelOutput, parse_model_output
 from sdlc.raw_prompt import build_prompt
+from sdlc.raw_source import content_equivalent
 from sdlc.requirement_id import namespaced_requirement_id
 from sdlc.results import ProcessResult, ProcessResultCode
 
@@ -678,8 +679,13 @@ def _validate_candidate(
         problems.append("the Root Document is not in Requirements/Draft")
     if [node.id for node in attached] != [document.id]:
         problems.append("Requirement.Documents does not hold exactly this Document")
-    if keyed.candidate.requirement not in content:
-        problems.append("the Root Document content was not written")
+    # Fibery re-serializes stored Markdown (constraint 11): "-" bullets read
+    # back as "*". Comparing the full rendered document canonically is what the
+    # frozen `project requirement add` already does; a substring check would
+    # reject ordinary bullet lists forever, because a retry rewrites the same
+    # content and fails identically.
+    if not content_equivalent(content, keyed.candidate.document(requirement_id)):
+        problems.append("the Root Document content does not match the candidate")
 
     if problems:
         raise _StageFailed(
@@ -695,10 +701,22 @@ def _transition_to_review(
     """Move the RAW to Review, only once every candidate is complete."""
     try:
         workspace.set_requirement_state(context.raw.id, REVIEW_STATE)
+        stored = workspace.read_requirement(context.raw.id)
     except FiberyError as error:
         raise _StageFailed(
             ProcessResultCode.FIBERY_WRITE_FAILED,
             f"Could not move {context.raw.requirement_id} to {REVIEW_STATE}.",
             (str(error),),
         ) from error
+
+    # A write that returns success but does not apply would otherwise be
+    # reported as a completed run while the RAW never left Process.
+    if stored is None or stored.state != REVIEW_STATE:
+        raise _StageFailed(
+            ProcessResultCode.VALIDATION_FAILED,
+            f"{context.raw.requirement_id} is still in State "
+            f"{stored.state!r} after the transition to {REVIEW_STATE}."
+            if stored
+            else f"{context.raw.requirement_id} could not be read back.",
+        )
     journal.created.append(f"RAW State = {REVIEW_STATE}")
