@@ -58,11 +58,13 @@ METADATA_PATTERN = re.compile(r"^-\s+(?P<key>[^:]+):\s*(?P<value>.*?)\s*$")
 
 FINGERPRINT_ALGORITHM = "sha-256"
 
-# Fibery re-serializes Markdown when it stores a document: observed against the
-# live workspace, "-" bullets come back as "*". Content read back is therefore
-# compared modulo that re-serialization, never byte for byte.
+# Fibery re-serializes Markdown when it stores a document. Verified against the
+# live workspace: "-" bullets come back as "*", and a blank line is inserted
+# between a paragraph and a list that directly follows it. Content read back is
+# therefore compared modulo that re-serialization, never byte for byte.
 BULLET_PATTERN = re.compile(r"^(\s*)[*+]\s", flags=re.MULTILINE)
 CANONICAL_BULLET = r"\1- "
+BLANK_LINE_PATTERN = re.compile(r"\n\s*\n+")
 
 
 class InvalidRequirementSource(ValueError):
@@ -148,7 +150,14 @@ def content_equivalent(stored: str, expected: str) -> bool:
 
 
 def _canonical_markdown(text: str) -> str:
-    return BULLET_PATTERN.sub(CANONICAL_BULLET, normalize_for_fingerprint(text))
+    """Canonicalize what Fibery is known to re-serialize.
+
+    Blank-line placement is collapsed because Fibery inserts one before a list
+    that follows a paragraph. Every line of actual content is still compared, so
+    missing or altered text is still detected.
+    """
+    bullets = BULLET_PATTERN.sub(CANONICAL_BULLET, normalize_for_fingerprint(text))
+    return BLANK_LINE_PATTERN.sub("\n", bullets)
 
 
 def _normalize_line_endings(text: str) -> str:

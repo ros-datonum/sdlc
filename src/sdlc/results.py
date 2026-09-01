@@ -77,6 +77,49 @@ class InitResult:
         return self.code in NORMAL_OUTCOMES
 
 
+class ProcessResultCode(StrEnum):
+    """Every outcome the RAW Requirement Processor is allowed to report."""
+
+    RAW_REQUIREMENT_PROCESSED = "RAW_REQUIREMENT_PROCESSED"
+    REQUIREMENT_NOT_FOUND = "REQUIREMENT_NOT_FOUND"
+    NOT_A_RAW_REQUIREMENT = "NOT_A_RAW_REQUIREMENT"
+    REQUIREMENT_NOT_IN_PROCESS = "REQUIREMENT_NOT_IN_PROCESS"
+    PROJECT_STRUCTURE_INVALID = "PROJECT_STRUCTURE_INVALID"
+    PROCESSING_STATE_CONFLICT = "PROCESSING_STATE_CONFLICT"
+    INVALID_PROCESSING_RESULT = "INVALID_PROCESSING_RESULT"
+    MODEL_RUNTIME_FAILED = "MODEL_RUNTIME_FAILED"
+    INVALID_MODEL_OUTPUT = "INVALID_MODEL_OUTPUT"
+    PROCESSING_RESULT_WRITE_FAILED = "PROCESSING_RESULT_WRITE_FAILED"
+    FIBERY_READ_FAILED = "FIBERY_READ_FAILED"
+    FIBERY_WRITE_FAILED = "FIBERY_WRITE_FAILED"
+    DOCUMENT_CREATE_FAILED = "DOCUMENT_CREATE_FAILED"
+    CONTENT_WRITE_FAILED = "CONTENT_WRITE_FAILED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    PARTIAL_PROCESSING = "PARTIAL_PROCESSING"
+
+
+NORMAL_PROCESS_OUTCOMES = frozenset({ProcessResultCode.RAW_REQUIREMENT_PROCESSED})
+
+
+@dataclass(frozen=True)
+class ProcessResult:
+    """Outcome of one RAW Requirement processing run."""
+
+    code: ProcessResultCode
+    message: str
+    raw_requirement_id: str | None = None
+    candidates: tuple[str, ...] = ()
+    findings: tuple[str, ...] = ()
+    no_candidate_reason: str | None = None
+    model_invoked: bool = False
+    created: tuple[str, ...] = ()
+    details: tuple[str, ...] = field(default=())
+
+    @property
+    def is_normal(self) -> bool:
+        return self.code in NORMAL_PROCESS_OUTCOMES
+
+
 @dataclass(frozen=True)
 class AddResult:
     """Outcome of one `project requirement add` invocation.

@@ -55,6 +55,7 @@ class DocumentNode:
     folder_id: str | None
     entity_public_id: str | None
     secret: str | None = None
+    parent_document_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -176,3 +177,86 @@ class RequirementWorkspace(Protocol):
 
     def read_document_content(self, secret: str) -> str:
         """Read a Document's Markdown content back."""
+
+
+class RawProcessorWorkspace(Protocol):
+    """Operations the RAW Requirement Processor performs against Fibery.
+
+    Kept separate from the frozen capabilities' protocols so their reviewed
+    contracts stay exactly as they are.
+    """
+
+    def read_requirement(self, entity_id: str) -> RequirementRecord | None:
+        """Read one Requirement entity by id."""
+
+    def find_requirement_by_requirement_id(
+        self, requirement_id: str
+    ) -> RequirementRecord | None:
+        """Resolve a Requirement by its human Requirement ID."""
+
+    def read_project(self, project_id: str) -> ProjectRecord | None:
+        """Read the Project a Requirement belongs to."""
+
+    def documents_attached_to_requirement(self, public_id: str) -> list[DocumentNode]:
+        """Documents attached to this Requirement entity."""
+
+    def child_documents(self, parent_document_id: str) -> list[DocumentNode]:
+        """Documents nested directly under this Document."""
+
+    def read_document_content(self, secret: str) -> str:
+        """Read a Document's Markdown content."""
+
+    def write_document_content(self, secret: str, markdown: str) -> None:
+        """Replace a Document's Markdown content."""
+
+    def create_child_document(self, name: str, parent_document_id: str) -> DocumentNode:
+        """Create a Document nested under another Document."""
+
+    def standard_requirements_in_project(
+        self, project_id: str
+    ) -> list[RequirementRecord]:
+        """Existing Standard Requirements, for duplicate/conflict findings."""
+
+    def create_requirement_with_id(
+        self,
+        entity_id: str,
+        project_id: str,
+        title: str,
+        revision: int,
+        category: str,
+    ) -> RequirementRecord:
+        """Create a Standard Requirement at an exact, caller-chosen entity id.
+
+        Fibery rejects a second create at the same id, which is what makes a
+        retry safe.
+        """
+
+    def set_requirement_id(self, entity_id: str, requirement_id: str) -> None:
+        """Write the derived Requirement ID onto the entity."""
+
+    def set_requirement_type(self, entity_id: str, type_name: str) -> None:
+        """Set the Type single-select by option name."""
+
+    def set_requirement_state(self, entity_id: str, state: str) -> None:
+        """Set the Requirement workflow state by state name."""
+
+    def add_derived_from(self, entity_id: str, raw_entity_id: str) -> None:
+        """Link a Standard Requirement to the RAW it came from.
+
+        Fibery populates the inverse `Produces` automatically. Collections
+        cannot be written during entity creation, so this is a separate call.
+        """
+
+    def create_requirement_document(
+        self, name: str, folder_id: str, requirement_public_id: str
+    ) -> DocumentNode:
+        """Create a Root Document in a Folder, attached to a Requirement."""
+
+    def resolve_document(self, document_id: str) -> DocumentNode | None:
+        """Read one Document back by id."""
+
+    def resolve_folder(self, folder_id: str) -> FolderNode | None:
+        """Read one Folder back by id."""
+
+    def child_folders(self, parent_id: str) -> list[FolderNode]:
+        """Folders directly under this parent."""

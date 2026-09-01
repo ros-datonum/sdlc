@@ -77,6 +77,25 @@ Views API reference.
 Folder names are not unique: siblings may share a name. Folders created by a
 run are therefore read back by their own id, never by name.
 
+## Model runtime
+
+The RAW Requirement Processor is the first capability allowed to invoke a model.
+Execution goes through the user's locally authenticated `claude` or `codex` CLI;
+there is no API-key, provider-SDK or OpenRouter path, and no fallback.
+
+Runtime and model selection live in `config/sdlc.toml` (TOML, read with stdlib
+`tomllib`, so the project keeps zero runtime dependencies). Precedence:
+
+```text
+explicit run override -> role config -> project default -> local CLI default model
+```
+
+Check local authentication with:
+
+```bash
+bash scripts/check-local-model-auth.sh
+```
+
 ## Development agents
 
 Claude Code project agents live in `.claude/agents/`.
