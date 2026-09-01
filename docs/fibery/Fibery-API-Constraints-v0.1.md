@@ -400,3 +400,22 @@ untouched. Verified live.
 Combined with constraint 17 (the client may choose the id) this makes
 `create` a safe existence check: a caller can derive an entity id
 deterministically and retry a create without risking a duplicate.
+
+## Constraint 21 — deleting a single-select Field is a four-step cascade
+
+Removing a single-select Field is not one command. Verified live while removing
+the unused `Requirement.Operation` Field:
+
+1. delete the option entities from the option database, or
+   `commands.error/schema-delete-type-having-entities-failed`;
+2. delete the Field itself, **and** the matching relation end on the option
+   database, in one batch, or `entity.error/schema-relation-invalid` naming the
+   dangling end;
+3. delete the option database in the same batch, or
+   `commands.error/schema-type-components-orphans`;
+4. `schema.field/delete` takes `holder-type` and `name`;
+   `schema.type/delete` takes `name`. Neither accepts the `fibery/`-prefixed
+   forms that `schema.field/create` uses.
+
+A single-select Field is modelled as a relation to a per-Field option Database
+(`<Space>/<Field>_<Space>/<Database>`), which is why the cascade exists.
