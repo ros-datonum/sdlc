@@ -29,6 +29,10 @@ FIELD_LABEL_TYPE = "type"
 FIELD_LABEL_REVISION = "revision"
 FIELD_LABEL_PROJECT = "project"
 FIELD_LABEL_SOURCE_FINGERPRINT = "source fingerprint"
+FIELD_LABEL_CATEGORY = "category"
+FIELD_LABEL_DERIVED_FROM = "derived from"
+STANDARD_TYPE_NAME = "Standard"
+VIEW_PARENT_PAGE_KEY = "fibery/parent-page-id"
 
 PUBLIC_ID_FIELD = "fibery/public-id"
 DOCUMENT_VIEW_TYPE = "document"
@@ -388,6 +392,11 @@ class _RequirementSchema:
     fingerprint_field: str
     state_database: str
     type_id: str
+    # Only the RAW processor needs these; requirement add must keep working
+    # against a Database that does not expose them.
+    category_field: str | None = None
+    category_database: str | None = None
+    derived_from_field: str | None = None
 
 
 class FiberyRequirementWorkspace:
@@ -675,6 +684,8 @@ class FiberyRequirementWorkspace:
         type_field = by_label.get(FIELD_LABEL_TYPE)
         if type_field is None:
             raise FiberyError(f"{self.requirement_database} has no 'type' Field.")
+        category_field = by_label.get(FIELD_LABEL_CATEGORY)
+        derived_from_field = by_label.get(FIELD_LABEL_DERIVED_FROM)
 
         return _RequirementSchema(
             requirement_id_field=_require_field(
@@ -696,6 +707,13 @@ class FiberyRequirementWorkspace:
             ),
             state_database=state_field[FIELD_TYPE_KEY],
             type_id=entry[ID_FIELD],
+            category_field=(category_field[FIELD_NAME_KEY] if category_field else None),
+            category_database=(
+                category_field[FIELD_TYPE_KEY] if category_field else None
+            ),
+            derived_from_field=(
+                derived_from_field[FIELD_NAME_KEY] if derived_from_field else None
+            ),
         )
 
 
@@ -708,3 +726,136 @@ def _to_document(view: dict[str, Any]) -> DocumentNode:
         entity_public_id=view.get(VIEW_CONTAINER_ENTITY_ID_KEY),
         secret=meta.get(DOCUMENT_SECRET_META_KEY),
     )
+
+
+class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
+    """Fibery access for the RAW Requirement Processor.
+
+    Extends the requirement-add adapter with the reads and writes decomposition
+    needs. Collections cannot be written during entity creation (constraint 15),
+    so provenance is a separate call.
+    """
+
+    def read_project(self, project_id: str) -> ProjectRecord | None:
+        return self._projects.read_project(project_id)
+
+    def find_requirement_by_requirement_id(
+        self, requirement_id: str
+    ) -> RequirementRecord | None:
+        schema = self._requirement_schema()
+        rows = self._query_requirements(
+            schema,
+            ["=", [schema.requirement_id_field], "$r"],
+            {"$r": requirement_id},
+            2,
+        )
+        return self._to_requirement(schema, rows[0]) if rows else None
+
+    def standard_requirements_in_project(
+        self, project_id: str
+    ) -> list[RequirementRecord]:
+        schema = self._requirement_schema()
+        rows = self._query_requirements(
+            schema,
+            ["=", [schema.project_field, ID_FIELD], "$project"],
+            {"$project": project_id},
+            REQUIREMENT_QUERY_LIMIT,
+        )
+        records = [self._to_requirement(schema, row) for row in rows]
+        return [r for r in records if r.type_name == STANDARD_TYPE_NAME]
+
+    def child_documents(self, parent_document_id: str) -> list[DocumentNode]:
+        views = self._client.views_rpc(QUERY_VIEWS_METHOD, {}) or []
+        return [
+            _to_document(view)
+            for view in views
+            if view.get(VIEW_TYPE_KEY) == DOCUMENT_VIEW_TYPE
+            and view.get(VIEW_PARENT_PAGE_KEY) == parent_document_id
+        ]
+
+    def create_child_document(self, name: str, parent_document_id: str) -> DocumentNode:
+        """Create a Document nested under another Document.
+
+        `fibery/parent-page-id` is undocumented but accepted and read back.
+        """
+        document_id = str(uuid.uuid4())
+        secret = str(uuid.uuid4())
+        self._client.views_rpc(
+            CREATE_VIEWS_METHOD,
+            {
+                CREATE_VIEWS_PARAM: [
+                    {
+                        ID_FIELD: document_id,
+                        VIEW_NAME_KEY: name,
+                        VIEW_TYPE_KEY: DOCUMENT_VIEW_TYPE,
+                        VIEW_META_KEY: {DOCUMENT_SECRET_META_KEY: secret},
+                        VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._space_id},
+                        VIEW_PARENT_PAGE_KEY: parent_document_id,
+                    }
+                ]
+            },
+        )
+        resolved = self.resolve_document(document_id)
+        if resolved is None:
+            raise FiberyError(f"The child Document {name!r} could not be read back.")
+        return resolved
+
+    def create_requirement_with_id(
+        self,
+        entity_id: str,
+        project_id: str,
+        title: str,
+        revision: int,
+        category: str,
+    ) -> RequirementRecord:
+        """Create a Standard Requirement at an exact caller-chosen id.
+
+        Fibery rejects a second create at the same id, so this doubles as the
+        existence check a retry depends on.
+        """
+        schema = self._requirement_schema()
+        if not schema.category_field or not schema.category_database:
+            raise FiberyError(
+                f"{self.requirement_database} has no Category Field to classify "
+                "a Standard Requirement with."
+            )
+        option = self._enum_option(schema.category_database, category)
+        self._client.command(
+            "fibery.entity/create",
+            {
+                "type": self.requirement_database,
+                "entity": {
+                    ID_FIELD: entity_id,
+                    schema.title_field: title,
+                    schema.revision_field: revision,
+                    schema.project_field: {ID_FIELD: project_id},
+                    schema.category_field: {ID_FIELD: option},
+                },
+            },
+        )
+        record = self.read_requirement(entity_id)
+        if record is None:
+            raise FiberyError(
+                "The created Standard Requirement could not be read back."
+            )
+        return record
+
+    def add_derived_from(self, entity_id: str, raw_entity_id: str) -> None:
+        """Link a Standard Requirement to its RAW.
+
+        Fibery populates the inverse `Produces` automatically, because both
+        sides share one relation.
+        """
+        schema = self._requirement_schema()
+        if not schema.derived_from_field:
+            raise FiberyError(
+                f"{self.requirement_database} has no 'Derived From' Field."
+            )
+        self._client.command(
+            "fibery.entity/add-collection-items",
+            {
+                "type": self.requirement_database,
+                "field": schema.derived_from_field,
+                "entity": {entity_id: [raw_entity_id]},
+            },
+        )

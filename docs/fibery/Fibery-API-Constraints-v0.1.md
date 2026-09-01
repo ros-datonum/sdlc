@@ -372,3 +372,22 @@ with `entity.error/query-with-permissions-field-expression-invalid`, because
 `SDLC/Title` is `fibery/secured?`. Selecting `["fibery/id"]` alone works and
 returns `{"fibery/id": [...]}` — an object wrapping the list, not a list of
 objects.
+
+## Constraint 19 — Documents can nest under Documents
+
+`create-views` accepts `fibery/parent-page-id` pointing at another Document, and
+reads it back. Verified live. A nested child carries no `fibery/Folder`: its
+placement comes from its parent.
+
+This is what makes a per-RAW process artifact possible without a new Database.
+It appears in no published documentation, like the Folder API.
+
+## Constraint 20 — a duplicate `fibery/id` create is rejected
+
+Creating an entity at an id that already exists fails with
+`entity.error/schema-field-unique-failed`, and the existing entity is left
+untouched. Verified live.
+
+Combined with constraint 17 (the client may choose the id) this makes
+`create` a safe existence check: a caller can derive an entity id
+deterministically and retry a create without risking a duplicate.

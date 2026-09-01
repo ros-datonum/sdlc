@@ -13,10 +13,29 @@ from typing import TextIO
 
 from sdlc.config import ConfigurationError, load_fibery_settings
 from sdlc.fibery_client import FiberyClient
-from sdlc.fibery_http import FiberyHttpWorkspace, FiberyRequirementWorkspace
+from sdlc.fibery_http import (
+    FiberyHttpWorkspace,
+    FiberyRawProcessorWorkspace,
+    FiberyRequirementWorkspace,
+)
+from sdlc.model_runtime import LocalCliModelRuntime
+from sdlc.model_runtime_config import (
+    RAW_REQUIREMENT_PROCESSOR_ROLE,
+    ModelRuntimeConfigError,
+    load_model_runtime_config,
+    select_runtime,
+)
 from sdlc.project_init import initialize_project
+from sdlc.raw_processor import process_raw_requirement
 from sdlc.requirement_add import add_raw_requirement
-from sdlc.results import AddResult, AddResultCode, InitResult, ResultCode
+from sdlc.results import (
+    AddResult,
+    AddResultCode,
+    InitResult,
+    ProcessResult,
+    ProcessResultCode,
+    ResultCode,
+)
 
 PROGRAM_NAME = "sdlc"
 EXIT_SUCCESS = 0
@@ -54,6 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--source", required=True, help="Path to the RAW requirements Markdown file."
     )
     add.set_defaults(handler=_run_requirement_add)
+
+    process = requirement_commands.add_parser(
+        "process", help="Decompose a RAW Requirement into Standard candidates."
+    )
+    process.add_argument(
+        "--requirement", required=True, help="RAW Requirement entity id."
+    )
+    process.add_argument("--runtime", help="Override the configured model runtime.")
+    process.add_argument("--model", help="Override the configured model.")
+    process.set_defaults(handler=_run_requirement_process)
 
     return parser
 
@@ -119,6 +148,64 @@ def _run_requirement_add(
     )
     render_add_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _run_requirement_process(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    try:
+        settings = load_fibery_settings()
+        runtime_config = load_model_runtime_config()
+        selection = select_runtime(
+            runtime_config,
+            RAW_REQUIREMENT_PROCESSOR_ROLE,
+            runtime_override=arguments.runtime,
+            model_override=arguments.model,
+        )
+    except (ConfigurationError, ModelRuntimeConfigError) as error:
+        print(str(error), file=error_out)
+        return EXIT_FAILURE
+
+    workspace = FiberyRawProcessorWorkspace(
+        client=FiberyClient(settings),
+        space=settings.space,
+        space_id=settings.space_id,
+    )
+    result = process_raw_requirement(
+        workspace, LocalCliModelRuntime(selection), arguments.requirement
+    )
+    render_process_result(result, out if result.is_normal else error_out)
+    return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def render_process_result(result: ProcessResult, stream: TextIO) -> None:
+    """Print the result code first, then the human readable detail."""
+    print(result.code.value, file=stream)
+    print(file=stream)
+    print(result.message, file=stream)
+
+    if result.code is ProcessResultCode.RAW_REQUIREMENT_PROCESSED:
+        print(f"\nModel invoked: {'yes' if result.model_invoked else 'no (resumed)'}")
+        if result.candidates:
+            print("\nStandard candidates:", file=stream)
+            for item in result.candidates:
+                print(f"- {item}", file=stream)
+        if result.no_candidate_reason:
+            print(f"\nNo candidates: {result.no_candidate_reason}", file=stream)
+        if result.findings:
+            print("\nFindings for review (nothing was modified):", file=stream)
+            for item in result.findings:
+                print(f"- {item}", file=stream)
+        return
+
+    if result.created:
+        print("\nCreated in Fibery (left in place):", file=stream)
+        for item in result.created:
+            print(f"- {item}", file=stream)
+    if result.details:
+        print("\nDetails:", file=stream)
+        for item in result.details:
+            print(f"- {item}", file=stream)
 
 
 def render_add_result(result: AddResult, stream: TextIO) -> None:
