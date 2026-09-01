@@ -840,6 +840,39 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
             )
         return record
 
+    def derived_from(self, entity_id: str) -> list[RequirementRecord]:
+        """The Requirements this one derives from.
+
+        Collections cannot be selected alongside secured Fields (constraint 18),
+        so the ids are read first and the records fetched by id.
+        """
+        schema = self._requirement_schema()
+        if not schema.derived_from_field:
+            return []
+        rows = (
+            self._client.command(
+                "fibery.entity/query",
+                {
+                    "query": {
+                        "q/from": self.requirement_database,
+                        "q/select": [
+                            ID_FIELD,
+                            {schema.derived_from_field: [ID_FIELD]},
+                        ],
+                        "q/where": ["=", [ID_FIELD], "$id"],
+                        "q/limit": SINGLE_ROW_LIMIT,
+                    },
+                    "params": {"$id": entity_id},
+                },
+            )
+            or []
+        )
+        if not rows:
+            return []
+        ids = (rows[0].get(schema.derived_from_field) or {}).get(ID_FIELD) or []
+        records = [self.read_requirement(value) for value in ids]
+        return [record for record in records if record is not None]
+
     def add_derived_from(self, entity_id: str, raw_entity_id: str) -> None:
         """Link a Standard Requirement to its RAW.
 

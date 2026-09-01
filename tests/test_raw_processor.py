@@ -230,7 +230,7 @@ def test_provenance_is_written_both_ways():
     run(ws, raw, FakeModelRuntime([ONE]))
 
     [std] = [r for r in ws.requirements.values() if r.type_name == "Standard"]
-    assert ws.derived_from[std.id] == [raw.id]
+    assert ws.derived_from_ids[std.id] == [raw.id]
     assert ws.produces(raw.id) == [std.id]
 
 
@@ -290,7 +290,7 @@ def test_findings_are_reported_without_mutating_existing_requirements():
 
     assert any("POSSIBLE_CONFLICT" in f for f in result.findings)
     assert ws.requirements["std-existing"] == before
-    assert "std-existing" not in ws.derived_from
+    assert "std-existing" not in ws.derived_from_ids
 
 
 def test_existing_standards_are_offered_to_the_model_as_context():

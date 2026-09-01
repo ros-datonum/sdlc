@@ -34,6 +34,10 @@ require_chatgpt_oauth = true
 runtime = "claude"
 # model = "..."   # omitted: use the local CLI default model
 
+[model_runtime.roles.standard_requirement_processor]
+runtime = "claude"
+# model = "..."   # omitted: use the local CLI default model
+
 # Selection precedence:
 #   1. explicit run/CLI override
 #   2. role runtime/model above

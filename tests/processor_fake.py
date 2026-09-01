@@ -74,7 +74,7 @@ class FakeProcessorWorkspace:
         self.requirements = {r.id: r for r in (requirements or [])}
         self.documents: list[DocumentNode] = []
         self.content: dict[str, str] = {}
-        self.derived_from: dict[str, list[str]] = {}
+        self.derived_from_ids: dict[str, list[str]] = {}
         self.mutations: list[str] = []
         self.calls: list[str] = []
         self.failures: dict[str, FiberyError] = {}
@@ -116,6 +116,14 @@ class FakeProcessorWorkspace:
         self._record("read_document_content")
         stored = self.content.get(secret, "")
         return reserialize_like_fibery(stored) if self.reserializes else stored
+
+    def derived_from(self, entity_id):
+        self._record("derived_from")
+        return [
+            self.requirements[r]
+            for r in self.derived_from_ids.get(entity_id, [])
+            if r in self.requirements
+        ]
 
     def standard_requirements_in_project(self, project_id):
         self._record("standard_requirements_in_project")
@@ -208,9 +216,9 @@ class FakeProcessorWorkspace:
     def add_derived_from(self, entity_id, raw_entity_id):
         self._record("add_derived_from")
         self.mutations.append(f"add_derived_from {entity_id} -> {raw_entity_id}")
-        self.derived_from.setdefault(entity_id, [])
-        if raw_entity_id not in self.derived_from[entity_id]:
-            self.derived_from[entity_id].append(raw_entity_id)
+        self.derived_from_ids.setdefault(entity_id, [])
+        if raw_entity_id not in self.derived_from_ids[entity_id]:
+            self.derived_from_ids[entity_id].append(raw_entity_id)
 
     def create_requirement_document(self, name, folder_id, requirement_public_id):
         self._record("create_requirement_document")
@@ -233,7 +241,7 @@ class FakeProcessorWorkspace:
 
     def produces(self, raw_entity_id):
         """The inverse relation Fibery maintains automatically."""
-        return [e for e, raws in self.derived_from.items() if raw_entity_id in raws]
+        return [e for e, raws in self.derived_from_ids.items() if raw_entity_id in raws]
 
     def _record(self, method):
         self.calls.append(method)

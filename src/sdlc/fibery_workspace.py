@@ -217,6 +217,9 @@ class RawProcessorWorkspace(Protocol):
     ) -> list[RequirementRecord]:
         """Existing Standard Requirements, for duplicate/conflict findings."""
 
+    def derived_from(self, entity_id: str) -> list[RequirementRecord]:
+        """The Requirements this one derives from, through Derived From."""
+
     def create_requirement_with_id(
         self,
         entity_id: str,
