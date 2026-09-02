@@ -65,6 +65,9 @@ FINGERPRINT_ALGORITHM = "sha-256"
 BULLET_PATTERN = re.compile(r"^(\s*)[*+]\s", flags=re.MULTILINE)
 CANONICAL_BULLET = r"\1- "
 BLANK_LINE_PATTERN = re.compile(r"\n\s*\n+")
+# Fibery stores a soft line break inside a paragraph as a literal <br>, so a
+# wrapped paragraph is read back as one line. Verified live, 2026-09-02.
+SOFT_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
 
 class InvalidRequirementSource(ValueError):
@@ -152,8 +155,17 @@ def content_equivalent(stored: str, expected: str) -> bool:
 def canonical_markdown(text: str) -> str:
     """Canonicalize what Fibery is known to re-serialize.
 
-    Blank-line placement is collapsed because Fibery inserts one before a list
-    that follows a paragraph. Every line of actual content is still compared, so
+    Each behaviour below was verified against the live workspace, and each one
+    broke post-write validation before it was known:
+
+    - a `-` bullet is stored and returned as `*`;
+    - a blank line is inserted before a list that follows a paragraph, and
+      after a heading followed directly by anything;
+    - a soft line break inside a paragraph comes back as a literal `<br>`, so a
+      paragraph wrapped across source lines is returned as one line.
+
+    Collapsing blank lines absorbs the insertions and the dropped trailing
+    newline together. Every line of actual content is still compared, so
     missing or altered text is still detected.
 
     This is the single canonical representation. Anything that must agree with
@@ -161,7 +173,8 @@ def canonical_markdown(text: str) -> str:
     this function rather than normalizing separately, or two documents Fibery
     considers identical will fingerprint differently.
     """
-    bullets = BULLET_PATTERN.sub(CANONICAL_BULLET, normalize_for_fingerprint(text))
+    unwrapped = SOFT_BREAK_PATTERN.sub("\n", _normalize_line_endings(text))
+    bullets = BULLET_PATTERN.sub(CANONICAL_BULLET, normalize_for_fingerprint(unwrapped))
     return BLANK_LINE_PATTERN.sub("\n", bullets)
 
 

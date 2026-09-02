@@ -254,21 +254,34 @@ Document's comes from `fibery/meta.documentSecret` on the View.
 ## Constraint 11 — Fibery re-serializes stored Markdown
 
 Content read back from `/api/documents/<secret>?format=md` is not byte-identical
-to what was written. Verified live, three behaviours:
+to what was written. Verified live, five behaviours:
 
 - `-` list bullets come back as `*`;
 - the trailing newline is dropped;
 - a blank line is **inserted** between a paragraph and a list that directly
-  follows it, so `Intro:\n- item` is stored as `Intro:\n\n* item`.
+  follows it, so `Intro:\n- item` is stored as `Intro:\n\n* item`;
+- a blank line is likewise inserted after a heading followed directly by
+  anything, so `## S\nBody` is stored as `## S\n\nBody`;
+- a **soft line break inside a paragraph is returned as a literal `<br>`**, so a
+  paragraph wrapped across source lines comes back as one line:
+  `and\nnothing ends them` is stored as `and<br>nothing ends them`.
 
-The third was found only by writing a rendered Standard Requirement document to
-the live workspace. A comparison that handles bullet markers alone still fails
-on ordinary requirement prose, because a lead-in sentence followed by a list is
-the normal shape of a requirement.
+A fenced code block is the exception: it is returned verbatim. That is what lets
+the JSON payload of a Process Result or a Review Result survive a round trip
+unchanged.
+
+Each behaviour was found only by writing real content to the live workspace, and
+each broke post-write validation before it was known. The `<br>` case was found
+during the Standard Review live acceptance: an ordinary wrapped paragraph in an
+ingested RAW artifact failed `requirement add` with VALIDATION_FAILED and could
+never have succeeded on retry. Wrapped prose is the normal shape of a written
+requirement, so this was not an edge case.
 
 Post-write validation therefore compares content modulo that re-serialization
 (`sdlc.raw_source.content_equivalent`) rather than byte for byte. Anything
-Fibery does not merely re-serialize still fails the check.
+Fibery does not merely re-serialize still fails the check. Document fingerprints
+derive from the same `canonical_markdown`, so a fingerprint and an equivalence
+check can never disagree.
 
 ## Constraint 12 — Requirement Name is a read-only formula
 
@@ -419,3 +432,20 @@ the unused `Requirement.Operation` Field:
 
 A single-select Field is modelled as a relation to a per-Field option Database
 (`<Space>/<Field>_<Space>/<Database>`), which is why the cascade exists.
+
+## Constraint 22 — Depends On / Affects are read like any other collection
+
+`SDLC/Depends On` and `SDLC/Affects` are ordinary N:N self relations on the
+Requirement Database. Reading them follows constraint 18: select only
+`fibery/id` inside the sub-select, then resolve each id to a record.
+
+Each pair shares one relation, so reading the forward side alone is complete —
+`Blocks` and `Impacted By` report the same edges from the other end. Verified
+live by adding one `Depends On` edge, reading it back as a Requirement ID, and
+confirming the inverse side reports no separate forward edge.
+
+## Constraint 23 — `delete-views` removes a Document
+
+The Views JSON-RPC method is `delete-views`, taking `{"ids": [...]}`.
+`delete-view`, `remove-view` and `remove-views` all return
+`method ... was not found`.

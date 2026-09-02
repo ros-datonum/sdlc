@@ -19,26 +19,79 @@ from sdlc.fibery_workspace import (
     FolderNode,
     ProjectRecord,
     RequirementRecord,
+    RequirementRelations,
 )
 from sdlc.model_runtime import ModelResponse
 
-# Fibery re-serializes stored Markdown (Fibery-API-Constraints constraint 11):
-# a "-" bullet is read back as "*". Modelled narrowly so post-write validation
-# is exercised against what Fibery actually returns, not what was written.
-# Two behaviours, both verified live: the bullet marker changes, and a blank
-# line is inserted between a paragraph and a list that directly follows it.
+# Fibery re-serializes stored Markdown (Fibery-API-Constraints constraint 11).
+# Modelled narrowly so post-write validation is exercised against what Fibery
+# actually returns, not what was written. Every behaviour below was verified
+# against the live workspace by writing the case and reading it back.
 BULLET_WRITTEN = re.compile(r"^(\s*)-\s", re.MULTILINE)
 BULLET_STORED = r"\1* "
-# Only a paragraph followed by a list gains the blank line; consecutive list
-# items do not.
+# A block boundary Fibery separates with a blank line: a list item or a heading.
+BLOCK_START = r"(?:[-*+>]\s|#{1,6}\s|\d+\.\s|```)"
+# A paragraph directly followed by a list, or a heading directly followed by
+# anything, gains a blank line between them.
 PARAGRAPH_THEN_LIST = re.compile(
-    r"^(?!\s*[-*+]\s)(?P<paragraph>.*\S)\n(?=\s*[-*+]\s)", re.MULTILINE
+    rf"^(?![ \t]*{BLOCK_START})(?P<paragraph>.*\S)\n(?=[ \t]*{BLOCK_START})",
+    re.MULTILINE,
+)
+HEADING_THEN_TEXT = re.compile(
+    r"^(?P<heading>[ \t]*#{1,6}\s.*\S)\n(?=[ \t]*\S)", re.MULTILINE
+)
+# A soft line break inside a paragraph is stored as a literal <br>, so a
+# paragraph wrapped across source lines is read back as one line. [ \t]* rather
+# than \s* so a blank line - a real paragraph break - is never crossed.
+# A fenced block is returned exactly as written, so it is split out and left
+# alone. Both the Process Result and the Review Result store their payload in
+# one, and mangling it would make every artifact round trip unrealistic.
+FENCED_BLOCK = re.compile(r"(```.*?(?:\n```|\Z))", re.DOTALL)
+SOFT_BREAK = re.compile(
+    rf"^(?![ \t]*{BLOCK_START})(?P<line>[ \t]*\S.*\S|[ \t]*\S)"
+    rf"\n(?=[ \t]*\S)(?![ \t]*{BLOCK_START})",
+    re.MULTILINE,
 )
 
 
 def reserialize_like_fibery(markdown: str) -> str:
+    """What Fibery returns for content written to a Document.
+
+    Four behaviours, all verified live:
+
+    - a `-` bullet is returned as `*`;
+    - a blank line is inserted before a list that follows a paragraph, and
+      after a heading that is followed directly by anything;
+    - a soft line break inside a paragraph is returned as a literal `<br>`;
+    - the trailing newline is stripped.
+
+    A fenced code block is returned verbatim, which is what makes the JSON
+    payload of a Process or Review Result survive a round trip intact.
+    """
+    return "".join(
+        segment if _is_fenced(segment) else _reserialize_prose(segment)
+        for segment in FENCED_BLOCK.split(markdown)
+    ).rstrip("\n")
+
+
+def _is_fenced(segment: str) -> bool:
+    return segment.startswith("```")
+
+
+def _reserialize_prose(markdown: str) -> str:
     spaced = PARAGRAPH_THEN_LIST.sub(r"\g<paragraph>\n\n", markdown)
-    return BULLET_WRITTEN.sub(BULLET_STORED, spaced)
+    spaced = HEADING_THEN_TEXT.sub(r"\g<heading>\n\n", spaced)
+    bulleted = BULLET_WRITTEN.sub(BULLET_STORED, spaced)
+    return _join_wrapped_paragraphs(bulleted)
+
+
+def _join_wrapped_paragraphs(markdown: str) -> str:
+    """Replace every intra-paragraph newline with a literal <br>."""
+    while True:
+        joined = SOFT_BREAK.sub(r"\g<line><br>", markdown, count=1)
+        if joined == markdown:
+            return markdown
+        markdown = joined
 
 
 KNOWN_TYPES = ("Raw", "Standard")
@@ -75,6 +128,10 @@ class FakeProcessorWorkspace:
         self.documents: list[DocumentNode] = []
         self.content: dict[str, str] = {}
         self.derived_from_ids: dict[str, list[str]] = {}
+        # Existing Depends On / Affects edges, by entity id. Fibery maintains
+        # the inverse sides itself, so only the forward ones are stored.
+        self.depends_on_ids: dict[str, list[str]] = {}
+        self.affects_ids: dict[str, list[str]] = {}
         self.mutations: list[str] = []
         self.calls: list[str] = []
         self.failures: dict[str, FiberyError] = {}
@@ -124,6 +181,21 @@ class FakeProcessorWorkspace:
             for r in self.derived_from_ids.get(entity_id, [])
             if r in self.requirements
         ]
+
+    def requirement_relations(self, entity_id):
+        self._record("requirement_relations")
+        return RequirementRelations(
+            depends_on=self._relation_ids(self.depends_on_ids.get(entity_id, [])),
+            affects=self._relation_ids(self.affects_ids.get(entity_id, [])),
+        )
+
+    def _relation_ids(self, entity_ids):
+        """Entity ids resolved to Requirement IDs, as the real adapter does."""
+        return tuple(
+            self.requirements[value].requirement_id
+            for value in entity_ids
+            if value in self.requirements and self.requirements[value].requirement_id
+        )
 
     def standard_requirements_in_project(self, project_id):
         self._record("standard_requirements_in_project")

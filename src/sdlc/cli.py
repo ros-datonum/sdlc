@@ -22,6 +22,7 @@ from sdlc.model_runtime import LocalCliModelRuntime
 from sdlc.model_runtime_config import (
     RAW_REQUIREMENT_PROCESSOR_ROLE,
     STANDARD_REQUIREMENT_PROCESSOR_ROLE,
+    STANDARD_REQUIREMENT_REVIEWER_ROLE,
     ModelRuntimeConfigError,
     load_model_runtime_config,
     select_runtime,
@@ -38,8 +39,11 @@ from sdlc.results import (
     ResultCode,
     StandardProcessResult,
     StandardProcessResultCode,
+    StandardReviewResult,
+    StandardReviewResultCode,
 )
 from sdlc.standard_processor import process_standard_requirement
+from sdlc.standard_reviewer import review_standard_requirement
 
 PROGRAM_NAME = "sdlc"
 EXIT_SUCCESS = 0
@@ -98,6 +102,17 @@ def build_parser() -> argparse.ArgumentParser:
     normalize.add_argument("--runtime", help="Override the configured model runtime.")
     normalize.add_argument("--model", help="Override the configured model.")
     normalize.set_defaults(handler=_run_standard_process)
+
+    review = requirement_commands.add_parser(
+        "review",
+        help="Independently review a Standard Requirement in Review.",
+    )
+    review.add_argument(
+        "--requirement", required=True, help="Standard Requirement entity id."
+    )
+    review.add_argument("--runtime", help="Override the configured model runtime.")
+    review.add_argument("--model", help="Override the configured model.")
+    review.set_defaults(handler=_run_standard_review)
 
     return parser
 
@@ -218,6 +233,84 @@ def _run_standard_process(
     )
     render_standard_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _run_standard_review(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    try:
+        settings = load_fibery_settings()
+        selection = select_runtime(
+            load_model_runtime_config(),
+            STANDARD_REQUIREMENT_REVIEWER_ROLE,
+            runtime_override=arguments.runtime,
+            model_override=arguments.model,
+        )
+    except (ConfigurationError, ModelRuntimeConfigError) as error:
+        print(str(error), file=error_out)
+        return EXIT_FAILURE
+
+    workspace = FiberyRawProcessorWorkspace(
+        client=FiberyClient(settings),
+        space=settings.space,
+        space_id=settings.space_id,
+    )
+    result = review_standard_requirement(
+        workspace, LocalCliModelRuntime(selection), arguments.requirement
+    )
+    render_review_result(result, out if result.is_normal else error_out)
+    return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def render_review_result(result: StandardReviewResult, stream: TextIO) -> None:
+    """Print the result code first, then the human readable detail.
+
+    The verdict is reported separately from the status: a BLOCKING verdict is a
+    successful run, and the exit code says whether the review executed, not
+    whether the Requirement is good.
+    """
+    print(result.code.value, file=stream)
+    print(file=stream)
+    print(result.message, file=stream)
+
+    if result.code is StandardReviewResultCode.REQUIREMENT_REVIEWED:
+        print(
+            f"\nModel invoked: {'yes' if result.model_invoked else 'no'}",
+            file=stream,
+        )
+        _render_review_sections(result, stream)
+        return
+    if result.code is StandardReviewResultCode.NO_CHANGES_TO_REVIEW:
+        return
+
+    if result.created:
+        print("\nCreated in Fibery (left in place):", file=stream)
+        for item in result.created:
+            print(f"- {item}", file=stream)
+    if result.details:
+        print("\nDetails:", file=stream)
+        for item in result.details:
+            print(f"- {item}", file=stream)
+
+
+def _render_review_sections(result: StandardReviewResult, stream: TextIO) -> None:
+    """What a human at Ready needs to decide, nothing was changed by any of it."""
+    if result.blocking:
+        print("\nBlocking:", file=stream)
+        for item in result.blocking:
+            print(f"- {item}", file=stream)
+    if result.warnings:
+        print("\nWarnings:", file=stream)
+        for item in result.warnings:
+            print(f"- {item}", file=stream)
+    if result.verifications:
+        print("\nProcess findings verified:", file=stream)
+        for item in result.verifications:
+            print(f"- {item}", file=stream)
+    if result.relations:
+        print("\nRelation proposals (none written to Fibery):", file=stream)
+        for item in result.relations:
+            print(f"- {item}", file=stream)
 
 
 def render_standard_result(result: StandardProcessResult, stream: TextIO) -> None:

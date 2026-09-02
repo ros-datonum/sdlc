@@ -3,7 +3,7 @@
 import pytest
 
 from sdlc.fibery_client import FiberyClient
-from sdlc.fibery_http import FiberyRequirementWorkspace
+from sdlc.fibery_http import FiberyRawProcessorWorkspace, FiberyRequirementWorkspace
 from sdlc.fibery_workspace import FiberyError
 from test_fibery_http import SETTINGS, StubOpener, ok, rpc
 
@@ -342,3 +342,103 @@ def test_document_is_created_with_a_client_supplied_secret():
 
     assert first.secret and second.secret
     assert first.secret != second.secret
+
+
+# -- existing relations, read for the independent reviewer -----------------
+
+RELATION_SCHEMA = {
+    "fibery/types": [
+        {
+            **REQUIREMENT_SCHEMA["fibery/types"][0],
+            "fibery/fields": [
+                *REQUIREMENT_SCHEMA["fibery/types"][0]["fibery/fields"],
+                {"fibery/name": "SDLC/Depends On", "fibery/type": "SDLC/Requirement"},
+                {"fibery/name": "SDLC/Affects", "fibery/type": "SDLC/Requirement"},
+            ],
+        }
+    ]
+}
+
+
+def build_with_relations(payloads):
+    opener = StubOpener([ok(RELATION_SCHEMA), *payloads])
+    workspace = FiberyRawProcessorWorkspace(
+        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+    )
+    return workspace, opener
+
+
+def requirement_row(entity_id, requirement_id):
+    return {
+        "fibery/id": entity_id,
+        "SDLC/Requirement ID": requirement_id,
+        "SDLC/Title": "t",
+        "SDLC/Revision": 1,
+        "SDLC/Source Fingerprint": None,
+        "SDLC/Project": {"fibery/id": "p-1"},
+        "SDLC/Type": {"enum/name": "Standard"},
+        "workflow/state": {"workflow/name": "Review"},
+    }
+
+
+def test_existing_relations_are_returned_as_requirement_ids():
+    """The reviewer compares against Requirement IDs, never Fibery ids."""
+    workspace, _ = build_with_relations(
+        [
+            ok(
+                [
+                    {
+                        "fibery/id": "std-1",
+                        "SDLC/Depends On": {"fibery/id": ["dep-1"]},
+                        "SDLC/Affects": {"fibery/id": ["aff-1"]},
+                    }
+                ]
+            ),
+            ok([requirement_row("dep-1", "SDLC-FR-0002")]),
+            ok([requirement_row("aff-1", "SDLC-FR-0003")]),
+        ]
+    )
+    relations = workspace.requirement_relations("std-1")
+
+    assert relations.depends_on == ("SDLC-FR-0002",)
+    assert relations.affects == ("SDLC-FR-0003",)
+
+
+def test_the_collection_sub_select_asks_only_for_ids():
+    """Constraint 18: a sub-select reaching a secured Field is rejected."""
+    workspace, opener = build_with_relations([ok([])])
+    workspace.requirement_relations("std-1")
+
+    query = opener.requests[-1]["body"][0]["args"]["query"]["q/select"]
+    collections = [item for item in query if isinstance(item, dict)]
+    assert collections == [
+        {"SDLC/Depends On": ["fibery/id"]},
+        {"SDLC/Affects": ["fibery/id"]},
+    ]
+
+
+def test_a_requirement_with_no_relations_returns_empty_collections():
+    workspace, _ = build_with_relations(
+        [ok([{"fibery/id": "std-1", "SDLC/Depends On": {}, "SDLC/Affects": {}}])]
+    )
+    relations = workspace.requirement_relations("std-1")
+    assert (relations.depends_on, relations.affects) == ((), ())
+
+
+def test_a_database_without_the_relation_fields_reads_no_relations():
+    """Requirement add must keep working against a Database lacking them."""
+    opener = StubOpener([ok(REQUIREMENT_SCHEMA)])
+    workspace = FiberyRawProcessorWorkspace(
+        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+    )
+    relations = workspace.requirement_relations("std-1")
+
+    assert (relations.depends_on, relations.affects) == ((), ())
+    # No entity query was issued at all: there is nothing to ask for.
+    assert len(opener.requests) == 1
+
+
+def test_a_missing_entity_reads_no_relations():
+    workspace, _ = build_with_relations([ok([])])
+    relations = workspace.requirement_relations("gone")
+    assert (relations.depends_on, relations.affects) == ((), ())

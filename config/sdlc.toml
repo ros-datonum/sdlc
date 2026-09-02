@@ -38,6 +38,14 @@ runtime = "claude"
 runtime = "claude"
 # model = "..."   # omitted: use the local CLI default model
 
+# Independent review. A separate role, prompt, invocation and persisted
+# artifact are what make Review independent of Process; configuring the same
+# underlying model for both is accepted for v0.1 and reduces rather than
+# removes correlated reasoning bias.
+[model_runtime.roles.standard_requirement_reviewer]
+runtime = "claude"
+# model = "..."   # omitted: use the local CLI default model
+
 # Selection precedence:
 #   1. explicit run/CLI override
 #   2. role runtime/model above
