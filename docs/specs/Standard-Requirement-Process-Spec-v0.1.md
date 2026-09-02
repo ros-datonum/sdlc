@@ -294,10 +294,17 @@ Writing them would let Process certify its own inferences into canonical
 structure, which section 2 forbids. Proposals live in the Process Result, keyed
 by Requirement ID — no proposal Database and no new Field.
 
-Independent Review may later confirm and write relations. Relation writes are
-**additive** (`fibery.entity/add-collection-items`). Review must not
-destructively replace existing valid relations merely because a later Process
-iteration did not propose them. Review's implementation is outside this spec.
+Independent Review verifies those proposals and confirms or rejects them; it
+writes no relations either. Actual relation mutation is deferred to the future
+`Apply` capability, after human approval, because a relation is normative shared
+state and `Ready` has not yet received that approval. When `Apply` is designed
+its writes must be **additive** (`fibery.entity/add-collection-items`), must not
+destructively replace existing valid relations merely because a later iteration
+stopped proposing them, and must not duplicate an edge on re-application.
+
+Corrected for consistency with `Standard-Requirement-Review-Spec-v0.1` section 9.
+This is a cross-spec consistency correction, not a change to Process behaviour:
+Process still writes no relations, and no Process implementation code changes.
 
 Each pair shares one Fibery relation id, so writing one side populates the
 inverse:
