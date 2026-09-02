@@ -197,23 +197,32 @@ Fibery's Markdown re-serialization does not register as a change.
 
 ## 9. Same-iteration retry
 
-Within one incomplete attempt:
+The Root Document fingerprint decides what a run does. Three cases, and the
+input fingerprint is what separates the second from the third:
 
 ```text
-a Process Result for the current iteration exists
-and its deterministic application is incomplete
+current == latest.input_fingerprint
+  the normalized rewrite never landed
+  -> resume that iteration, without the model
+
+current == latest.output_fingerprint
+  the normalized output is already applied
+  -> NO_CHANGES_TO_PROCESS, zero mutations, State stays Process
+
+current differs from both
+  the content genuinely changed
+  -> a new iteration
 ```
 
-then:
+Resuming an unfinished application invokes no model: the persisted result is
+read, the Root Document rewritten, validated, and the transition performed.
+Rewriting from a persisted result is naturally idempotent, and the canonical
+comparison accepts the re-serialized read-back.
 
-```text
-DO NOT invoke the model again
--> read the persisted Process Result
--> resume the missing deterministic writes
-```
-
-Rewriting the Root Document from a persisted result is naturally idempotent, and
-the canonical comparison accepts the re-serialized read-back.
+Fingerprints are taken over the same canonical representation that
+`content_equivalent` compares, so the two agree by construction. A fingerprint
+computed any other way would let Fibery's Markdown re-serialization look like an
+edit and force a spurious iteration.
 
 ## 10. New processing iteration
 
@@ -236,20 +245,43 @@ model is undesigned and out of scope.
 
 ## 11. No-change reprocessing
 
-If the Requirement is returned to `Process` but
+If the Requirement is in `Process` but
 
 ```text
 current Root Document fingerprint == latest Process Result.output_fingerprint
 ```
 
-then the model is **not** invoked and no Process Result is created. The result
-is:
+the result is:
 
 ```text
 NO_CHANGES_TO_PROCESS
 ```
 
-This stops status toggling from causing uncontrolled model drift.
+with **zero mutations**: no model call, no Process Result, no document rewrite,
+no relation write, and **no state change**. The Requirement stays in `Process`.
+
+This stops status toggling from causing uncontrolled model drift, and it leaves
+the workflow state the operator chose.
+
+### The ambiguity this deliberately does not resolve
+
+Two histories produce exactly this snapshot:
+
+```text
+A  the run applied its output but failed to reach Review
+B  the run completed, and someone later returned Review -> Process unedited
+```
+
+Persisted state cannot tell them apart, and v0.1 adds no field, relation,
+marker or ledger to make it distinguishable. The processor therefore does not
+guess: it preserves the current workflow state rather than inferring historical
+intent, so a deliberate `Review -> Process` is never silently undone.
+
+The consequence for history A is accepted: a later invocation returns
+`NO_CHANGES_TO_PROCESS` and the Requirement stays in `Process`. That failure was
+reported explicitly at the time it happened (section 14), and recovery is
+manual — an operator moves it to `Review`, or edits it and processes again.
+There is no automatic repair.
 
 Producing a genuinely new iteration therefore requires the Draft to change
 through an allowed human or future editing path. That editing capability is not
@@ -321,7 +353,9 @@ the Root Document was rewritten  =>  a valid Process Result already exists
 
 Failure **after** the Process Result is persisted: the Requirement stays in
 `Process`, the Process Result and any partial writes remain, and a retry resumes
-deterministically without invoking the model.
+deterministically without invoking the model — except where the only remaining
+step was the transition, which section 11 leaves to an operator. A run that
+fails to reach `Review` reports that explicitly and never claims success.
 
 Failure **before** it is persisted: no durable normalized output exists, so a
 retry may invoke the model again.

@@ -16,7 +16,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from sdlc.raw_source import fingerprint_of, normalize_for_fingerprint
+from sdlc.raw_source import canonical_markdown, fingerprint_of
 from sdlc.standard_analysis import (
     SECTION_KEYS,
     AnalysisResult,
@@ -69,10 +69,15 @@ def parse_process_result_name(name: str) -> tuple[str, int] | None:
 def document_fingerprint(content: str) -> str:
     """Fingerprint Root Document content.
 
-    Uses the same normalization as content comparison, so Fibery's Markdown
-    re-serialization never registers as a change to the input.
+    Fingerprints the same canonical representation `content_equivalent`
+    compares, so the two agree by construction:
+
+        content_equivalent(a, b)  <=>  document_fingerprint(a) == ...(b)
+
+    Without that, Fibery's Markdown re-serialization would make an untouched
+    document look edited and force a spurious processing iteration.
     """
-    return fingerprint_of(normalize_for_fingerprint(content))
+    return fingerprint_of(canonical_markdown(content))
 
 
 @dataclass(frozen=True)

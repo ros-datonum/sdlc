@@ -101,11 +101,6 @@ def process_standard_requirement(
 
         resumable = _resumable_result(context)
         if resumable is None and _is_unchanged(context):
-            # The latest iteration's output is already the current document, so
-            # there is nothing to process. The transition is still completed,
-            # because a run whose only failure was the transition looks exactly
-            # like this and would otherwise stay in Process for ever.
-            _transition_to_review(workspace, context, journal)
             return _no_changes_result(context)
 
         if resumable is not None:
@@ -139,7 +134,16 @@ def process_standard_requirement(
 
 
 def _no_changes_result(context: _Context) -> StandardProcessResult:
-    """Re-entering Process without editing is not a reason to re-run a model."""
+    """Nothing to process, and nothing is mutated - including the State.
+
+    Two histories produce this snapshot: a completed run that a human then
+    deliberately returned to Process, and a run whose only failure was the
+    final transition. Persisted state cannot tell them apart, so the processor
+    does not guess. It preserves the workflow state it was given rather than
+    inferring intent, which means a deliberate Review -> Process is never
+    silently undone. Recovering the rarer failed-transition case is manual;
+    that invocation reported the failure explicitly at the time.
+    """
     latest = context.latest
     return StandardProcessResult(
         code=StandardProcessResultCode.NO_CHANGES_TO_PROCESS,

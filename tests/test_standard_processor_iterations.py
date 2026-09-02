@@ -32,6 +32,7 @@ def test_reentering_process_unchanged_does_no_work():
     run(ws, std, FakeModelRuntime([OUTPUT]))
     set_state(ws, std, "Process")
     document = ws.content["std-secret"]
+    mutations = list(ws.mutations)
 
     model = FakeModelRuntime([CHANGED])
     result = run(ws, std, model)
@@ -40,11 +41,8 @@ def test_reentering_process_unchanged_does_no_work():
     assert not model.was_invoked
     assert len(process_results(ws)) == 1, "no new Process Result"
     assert ws.content["std-secret"] == document, "no document rewrite"
-    # The only write is the idempotent state transition.
-    assert not any(
-        m.startswith(("create_child_document", "write_content"))
-        for m in ws.mutations[len(ws.mutations) - 1 :]
-    )
+    assert ws.mutations == mutations, "no Fibery mutation of any kind"
+    assert ws.requirements[std.id].state == "Process", "State is preserved"
 
 
 def test_no_change_leaves_the_document_and_state_alone():
@@ -57,10 +55,8 @@ def test_no_change_leaves_the_document_and_state_alone():
 
     assert ws.content["std-secret"] == document
     assert result.iteration == 1
-    # The transition is idempotently completed: an unchanged re-entry has
-    # nothing to process, and leaving it in Process could strand a run whose
-    # only failure was the transition.
-    assert ws.requirements[std.id].state == "Review"
+    # A deliberate return to Process is never silently undone.
+    assert ws.requirements[std.id].state == "Process"
 
 
 def test_no_change_is_a_normal_outcome():
@@ -177,19 +173,20 @@ def test_a_failure_after_the_process_result_leaves_the_requirement_in_process(ca
     assert len(process_results(ws)) == 1
 
 
-@pytest.mark.parametrize("call", FAILURE_POINTS)
-def test_retry_resumes_without_the_model_and_without_a_new_iteration(call):
+def test_retry_after_a_failed_root_rewrite_resumes_and_completes():
+    """The unambiguous case: the normalized document never landed."""
     ws, std, _ = build_standard_workspace()
-    original = fail_after_process_result(ws, call)
-    run(ws, std, FakeModelRuntime([OUTPUT]))
-    setattr(ws, call, original)
+    original = fail_after_process_result(ws, "write_document_content")
+    first = run(ws, std, FakeModelRuntime([OUTPUT]))
+    assert first.code is StandardProcessResultCode.PARTIAL_PROCESSING
+    ws.write_document_content = original
     set_state(ws, std, "Process")
 
     model = FakeModelRuntime([CHANGED])
     result = run(ws, std, model)
 
     assert not model.was_invoked, "resume must not re-invoke the model"
-    assert result.is_normal
+    assert result.code is StandardProcessResultCode.REQUIREMENT_PROCESSED
     assert result.iteration == 1
     assert len(process_results(ws)) == 1, "no second iteration for the same input"
     assert ws.requirements[std.id].state == "Review", "the run is completed"
