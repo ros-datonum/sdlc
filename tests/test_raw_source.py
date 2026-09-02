@@ -4,6 +4,7 @@ from raw_fixtures import TITLE, VALID_SOURCE, source_without
 from sdlc.raw_source import (
     InvalidRequirementSource,
     UnsupportedRequirementsFormat,
+    canonical_markdown,
     content_equivalent,
     fingerprint_of,
     normalize_for_fingerprint,
@@ -216,3 +217,34 @@ def test_content_equivalence_still_rejects_missing_content():
 
 def test_content_equivalence_does_not_confuse_bullets_with_emphasis():
     assert not content_equivalent("*emphasis*", "- emphasis")
+
+
+# -- soft line breaks -------------------------------------------------------
+
+
+def test_a_wrapped_paragraph_survives_fibery_soft_breaks():
+    """The live defect: a wrapped paragraph came back joined by <br>.
+
+    Post-write validation compared it against the source and failed forever,
+    exactly as the bullet and blank-line cases did before it.
+    """
+    written = "Nothing ends an idle session, and\nattempts are not recorded.\n"
+    stored = "Nothing ends an idle session, and<br>attempts are not recorded."
+    assert content_equivalent(stored, written)
+
+
+def test_a_soft_break_does_not_change_the_fingerprint():
+    """Fingerprints must agree with content_equivalent by construction."""
+    written = "One line, and\nanother line.\n"
+    stored = "One line, and<br>another line."
+    assert canonical_markdown(stored) == canonical_markdown(written)
+
+
+@pytest.mark.parametrize("tag", ["<br>", "<br/>", "<br />", "<BR>"])
+def test_every_spelling_of_the_tag_is_a_line_break(tag):
+    assert content_equivalent(f"a{tag}b", "a\nb")
+
+
+def test_changed_wording_still_fails_despite_the_soft_break_rule():
+    """Normalization must not make two different documents look equal."""
+    assert not content_equivalent("a a<br>b b", "a a\nc c\n")

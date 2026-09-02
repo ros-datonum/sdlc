@@ -32,10 +32,24 @@ def standards(ws):
 
 
 def test_the_fake_reserializes_like_fibery():
-    """Pins both verified behaviours the regressions below depend on."""
-    assert reserialize_like_fibery("- one\n  - two\n") == "* one\n  * two\n"
+    """Pins every verified behaviour the regressions below depend on.
+
+    Each was confirmed against the live workspace by writing the case to a
+    Document and reading it back.
+    """
+    # A "-" bullet is returned as "*", and the trailing newline is stripped.
+    assert reserialize_like_fibery("- one\n  - two\n") == "* one\n  * two"
     # A blank line is inserted between a paragraph and a list following it.
-    assert reserialize_like_fibery("Intro:\n- one\n") == "Intro:\n\n* one\n"
+    assert reserialize_like_fibery("Intro:\n- one\n") == "Intro:\n\n* one"
+    # And after a heading followed directly by anything.
+    assert reserialize_like_fibery("## S\nBody.\n") == "## S\n\nBody."
+    # A soft line break inside a paragraph becomes a literal <br>.
+    assert reserialize_like_fibery("a a\nb b\n") == "a a<br>b b"
+    # A real paragraph break is not a soft break and is preserved.
+    assert reserialize_like_fibery("One.\n\nTwo.\n") == "One.\n\nTwo."
+    # A fenced block is returned verbatim: this is where artifact JSON lives.
+    fenced = '# X\n\n```json\n{\n  "a": 1\n}\n```\n'
+    assert reserialize_like_fibery(fenced) == fenced.rstrip("\n")
 
 
 def test_a_candidate_with_bullet_lists_validates_and_reaches_review():

@@ -3,7 +3,7 @@
 import pytest
 
 from processor_fake import FakeModelRuntime
-from sdlc.fibery_workspace import RequirementRecord
+from sdlc.fibery_workspace import DocumentNode, RequirementRecord
 from sdlc.process_result import parse_process_result
 from sdlc.raw_source import content_equivalent
 from sdlc.results import StandardProcessResultCode
@@ -369,3 +369,34 @@ def test_previous_process_results_are_not_fed_back_as_source():
     run(ws, std, model)
 
     assert "Process Result" not in model.calls[0]["context"]
+
+
+def test_process_never_reads_a_review_result_as_requirement_content():
+    """Review writes numbered children under the same Root Document.
+
+    Without this, a reviewer's findings would reach the Process model as
+    something the requirement itself says, and Process would normalize its own
+    reviewer's criticism into the document.
+    """
+    ws, requirement, doc = build_standard_workspace()
+    ws.documents.append(
+        DocumentNode(
+            id="review-doc-1",
+            name=f"{REQUIREMENT_ID} — Review Result 0001",
+            folder_id=None,
+            entity_public_id=None,
+            secret="review-secret",
+            parent_document_id=doc.id,
+        )
+    )
+    ws.content["review-secret"] = (
+        "# Review Result 0001\n\nBLOCKING: this requirement is untestable.\n"
+    )
+
+    model = FakeModelRuntime(responses=[analysis_output()])
+    result = process_standard_requirement(ws, model, requirement.id)
+
+    assert result.code is StandardProcessResultCode.REQUIREMENT_PROCESSED
+    context = model.calls[0]["context"]
+    assert "Review Result" not in context
+    assert "untestable" not in context

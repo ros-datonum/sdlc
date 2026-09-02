@@ -179,6 +179,23 @@ class RequirementWorkspace(Protocol):
         """Read a Document's Markdown content back."""
 
 
+@dataclass(frozen=True)
+class RequirementRelations:
+    """The forward relations a Requirement already has.
+
+    Only the forward sides are modelled: Fibery maintains `Blocks` and
+    `Impacted By` automatically because each pair shares one relation, so
+    reading them separately would report the same edges twice.
+
+    Requirement IDs rather than entity ids, because the reviewer compares them
+    against proposals that name Requirement IDs and must never see a Fibery
+    identifier.
+    """
+
+    depends_on: tuple[str, ...] = ()
+    affects: tuple[str, ...] = ()
+
+
 class RawProcessorWorkspace(Protocol):
     """Operations the RAW Requirement Processor performs against Fibery.
 
@@ -219,6 +236,14 @@ class RawProcessorWorkspace(Protocol):
 
     def derived_from(self, entity_id: str) -> list[RequirementRecord]:
         """The Requirements this one derives from, through Derived From."""
+
+    def requirement_relations(self, entity_id: str) -> RequirementRelations:
+        """The Depends On and Affects edges this Requirement already has.
+
+        Read-only. Nothing in this protocol writes a dependency or impact
+        relation, which is what makes it structurally impossible for review to
+        alter the shared dependency graph.
+        """
 
     def create_requirement_with_id(
         self,

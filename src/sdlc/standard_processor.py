@@ -35,6 +35,7 @@ from sdlc.process_result import (
 )
 from sdlc.raw_source import content_equivalent
 from sdlc.results import StandardProcessResult, StandardProcessResultCode
+from sdlc.review_result import parse_review_result_name
 from sdlc.standard_analysis import InvalidAnalysisOutput, parse_analysis_output
 from sdlc.standard_prompt import build_analysis_prompt
 
@@ -290,6 +291,8 @@ def _read_children(
     seen_iterations: dict[int, str] = {}
     sections: list[str] = []
     for child in children:
+        if _is_review_artifact(child.name, requirement.requirement_id):
+            continue
         parsed_name = parse_process_result_name(child.name)
         if parsed_name is None or parsed_name[0] != requirement.requirement_id:
             try:
@@ -319,6 +322,18 @@ def _read_children(
 
     results.sort(key=lambda pair: pair[1].iteration)
     return tuple(results), "\n\n".join(sections)
+
+
+def _is_review_artifact(name: str, requirement_id: str | None) -> bool:
+    """Whether a child Document is the independent Reviewer's own output.
+
+    Review writes numbered children under the same Root Document. They are this
+    Requirement's review history, not requirement content, so feeding one back
+    to the model as source material would let a reviewer's findings be read as
+    something the requirement says.
+    """
+    parsed = parse_review_result_name(name)
+    return parsed is not None and parsed[0] == requirement_id
 
 
 def _read_result(

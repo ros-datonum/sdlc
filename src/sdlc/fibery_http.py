@@ -18,6 +18,7 @@ from sdlc.fibery_workspace import (
     FolderNode,
     ProjectRecord,
     RequirementRecord,
+    RequirementRelations,
 )
 
 PROJECT_DATABASE_NAME = "Project"
@@ -31,6 +32,8 @@ FIELD_LABEL_PROJECT = "project"
 FIELD_LABEL_SOURCE_FINGERPRINT = "source fingerprint"
 FIELD_LABEL_CATEGORY = "category"
 FIELD_LABEL_DERIVED_FROM = "derived from"
+FIELD_LABEL_DEPENDS_ON = "depends on"
+FIELD_LABEL_AFFECTS = "affects"
 STANDARD_TYPE_NAME = "Standard"
 VIEW_PARENT_PAGE_KEY = "fibery/parent-page-id"
 
@@ -397,6 +400,8 @@ class _RequirementSchema:
     category_field: str | None = None
     category_database: str | None = None
     derived_from_field: str | None = None
+    depends_on_field: str | None = None
+    affects_field: str | None = None
 
 
 class FiberyRequirementWorkspace:
@@ -686,6 +691,8 @@ class FiberyRequirementWorkspace:
             raise FiberyError(f"{self.requirement_database} has no 'type' Field.")
         category_field = by_label.get(FIELD_LABEL_CATEGORY)
         derived_from_field = by_label.get(FIELD_LABEL_DERIVED_FROM)
+        depends_on_field = by_label.get(FIELD_LABEL_DEPENDS_ON)
+        affects_field = by_label.get(FIELD_LABEL_AFFECTS)
 
         return _RequirementSchema(
             requirement_id_field=_require_field(
@@ -714,6 +721,10 @@ class FiberyRequirementWorkspace:
             derived_from_field=(
                 derived_from_field[FIELD_NAME_KEY] if derived_from_field else None
             ),
+            depends_on_field=(
+                depends_on_field[FIELD_NAME_KEY] if depends_on_field else None
+            ),
+            affects_field=(affects_field[FIELD_NAME_KEY] if affects_field else None),
         )
 
 
@@ -872,6 +883,56 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
         ids = (rows[0].get(schema.derived_from_field) or {}).get(ID_FIELD) or []
         records = [self.read_requirement(value) for value in ids]
         return [record for record in records if record is not None]
+
+    def requirement_relations(self, entity_id: str) -> RequirementRelations:
+        """The Depends On and Affects edges this Requirement already has.
+
+        Both collections are read in one query, and only `fibery/id` is
+        selected from each: constraint 18 rejects a sub-select that reaches a
+        secured Field, so the Requirement IDs are resolved afterwards.
+        """
+        schema = self._requirement_schema()
+        collections = [
+            field for field in (schema.depends_on_field, schema.affects_field) if field
+        ]
+        if not collections:
+            return RequirementRelations()
+        rows = (
+            self._client.command(
+                "fibery.entity/query",
+                {
+                    "query": {
+                        "q/from": self.requirement_database,
+                        "q/select": [
+                            ID_FIELD,
+                            *({field: [ID_FIELD]} for field in collections),
+                        ],
+                        "q/where": ["=", [ID_FIELD], "$id"],
+                        "q/limit": SINGLE_ROW_LIMIT,
+                    },
+                    "params": {"$id": entity_id},
+                },
+            )
+            or []
+        )
+        if not rows:
+            return RequirementRelations()
+        return RequirementRelations(
+            depends_on=self._related_ids(rows[0], schema.depends_on_field),
+            affects=self._related_ids(rows[0], schema.affects_field),
+        )
+
+    def _related_ids(self, row: dict[str, Any], field: str | None) -> tuple[str, ...]:
+        """Resolve one collection of entity ids to Requirement IDs."""
+        if not field:
+            return ()
+        ids = (row.get(field) or {}).get(ID_FIELD) or []
+        records = (self.read_requirement(value) for value in ids)
+        return tuple(
+            record.requirement_id
+            for record in records
+            if record is not None and record.requirement_id
+        )
 
     def add_derived_from(self, entity_id: str, raw_entity_id: str) -> None:
         """Link a Standard Requirement to its RAW.

@@ -6,6 +6,8 @@ import pytest
 
 from sdlc.model_runtime_config import (
     RAW_REQUIREMENT_PROCESSOR_ROLE,
+    STANDARD_REQUIREMENT_PROCESSOR_ROLE,
+    STANDARD_REQUIREMENT_REVIEWER_ROLE,
     ModelRuntimeConfigError,
     load_model_runtime_config,
     runtime_definition,
@@ -182,3 +184,46 @@ def test_a_runtime_missing_its_executable_is_reported():
 
     with pytest.raises(ModelRuntimeConfigError, match="executable"):
         runtime_definition(config, "claude")
+
+
+def test_the_reviewer_role_resolves_independently_of_the_processor(tmp_path):
+    """Separate roles are what make Review independent, even on one model."""
+    config = tmp_path / "sdlc.toml"
+    config.write_text(
+        """
+[model_runtime]
+transport = "local_cli_oauth"
+
+[model_runtime.default]
+runtime = "claude"
+
+[model_runtime.runtimes.claude]
+executable = "claude"
+auth_check_args = ["auth", "status"]
+invocation_mode = "print"
+
+[model_runtime.runtimes.codex]
+executable = "codex"
+auth_check_args = ["login", "status"]
+invocation_mode = "exec"
+
+[model_runtime.roles.standard_requirement_processor]
+runtime = "claude"
+
+[model_runtime.roles.standard_requirement_reviewer]
+runtime = "codex"
+"""
+    )
+    loaded = load_model_runtime_config(config)
+    processor = select_runtime(loaded, STANDARD_REQUIREMENT_PROCESSOR_ROLE)
+    reviewer = select_runtime(loaded, STANDARD_REQUIREMENT_REVIEWER_ROLE)
+
+    assert processor.definition.name == "claude"
+    assert reviewer.definition.name == "codex"
+
+
+def test_the_project_configures_a_reviewer_role():
+    """The shipped configuration must actually define the role."""
+    loaded = load_model_runtime_config(PROJECT_CONFIG)
+    selection = select_runtime(loaded, STANDARD_REQUIREMENT_REVIEWER_ROLE)
+    assert selection.definition.executable in {"claude", "codex"}

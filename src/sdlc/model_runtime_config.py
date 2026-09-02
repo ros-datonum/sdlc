@@ -36,6 +36,7 @@ REQUIRE_CHATGPT_OAUTH_KEY = "require_chatgpt_oauth"
 
 RAW_REQUIREMENT_PROCESSOR_ROLE = "raw_requirement_processor"
 STANDARD_REQUIREMENT_PROCESSOR_ROLE = "standard_requirement_processor"
+STANDARD_REQUIREMENT_REVIEWER_ROLE = "standard_requirement_reviewer"
 
 
 class ModelRuntimeConfigError(Exception):

@@ -168,6 +168,65 @@ class StandardProcessResult:
         return self.code in NORMAL_STANDARD_OUTCOMES
 
 
+class StandardReviewResultCode(StrEnum):
+    """Every outcome the independent Standard Requirement Reviewer may report.
+
+    The quality verdict is deliberately absent: a BLOCKING review is a
+    successful execution, so the verdict travels in the payload rather than the
+    status. Collapsing the two would make the processor fail exactly when it
+    did its job well.
+    """
+
+    REQUIREMENT_REVIEWED = "REQUIREMENT_REVIEWED"
+    NO_CHANGES_TO_REVIEW = "NO_CHANGES_TO_REVIEW"
+    REQUIREMENT_NOT_FOUND = "REQUIREMENT_NOT_FOUND"
+    NOT_A_STANDARD_REQUIREMENT = "NOT_A_STANDARD_REQUIREMENT"
+    REQUIREMENT_NOT_IN_REVIEW = "REQUIREMENT_NOT_IN_REVIEW"
+    PROJECT_STRUCTURE_INVALID = "PROJECT_STRUCTURE_INVALID"
+    NO_PROCESS_RESULT = "NO_PROCESS_RESULT"
+    INVALID_PROCESS_RESULT = "INVALID_PROCESS_RESULT"
+    REVIEW_STATE_CONFLICT = "REVIEW_STATE_CONFLICT"
+    INVALID_REVIEW_RESULT = "INVALID_REVIEW_RESULT"
+    REVIEW_RESULT_STALE = "REVIEW_RESULT_STALE"
+    MODEL_RUNTIME_FAILED = "MODEL_RUNTIME_FAILED"
+    INVALID_MODEL_OUTPUT = "INVALID_MODEL_OUTPUT"
+    REVIEW_RESULT_WRITE_FAILED = "REVIEW_RESULT_WRITE_FAILED"
+    FIBERY_READ_FAILED = "FIBERY_READ_FAILED"
+    FIBERY_WRITE_FAILED = "FIBERY_WRITE_FAILED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    PARTIAL_REVIEW = "PARTIAL_REVIEW"
+
+
+NORMAL_REVIEW_OUTCOMES = frozenset(
+    {
+        StandardReviewResultCode.REQUIREMENT_REVIEWED,
+        StandardReviewResultCode.NO_CHANGES_TO_REVIEW,
+    }
+)
+
+
+@dataclass(frozen=True)
+class StandardReviewResult:
+    """Outcome of one independent Standard Requirement review run."""
+
+    code: StandardReviewResultCode
+    message: str
+    requirement_id: str | None = None
+    iteration: int | None = None
+    verdict: str | None = None
+    blocking: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    verifications: tuple[str, ...] = ()
+    relations: tuple[str, ...] = ()
+    model_invoked: bool = False
+    created: tuple[str, ...] = ()
+    details: tuple[str, ...] = field(default=())
+
+    @property
+    def is_normal(self) -> bool:
+        return self.code in NORMAL_REVIEW_OUTCOMES
+
+
 @dataclass(frozen=True)
 class AddResult:
     """Outcome of one `project requirement add` invocation.
