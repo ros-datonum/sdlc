@@ -35,6 +35,7 @@ FORBID_CONSOLE_API_AUTH_KEY = "forbid_console_api_auth"
 REQUIRE_CHATGPT_OAUTH_KEY = "require_chatgpt_oauth"
 
 RAW_REQUIREMENT_PROCESSOR_ROLE = "raw_requirement_processor"
+STANDARD_REQUIREMENT_PROCESSOR_ROLE = "standard_requirement_processor"
 
 
 class ModelRuntimeConfigError(Exception):

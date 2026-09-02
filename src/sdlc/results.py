@@ -120,6 +120,54 @@ class ProcessResult:
         return self.code in NORMAL_PROCESS_OUTCOMES
 
 
+class StandardProcessResultCode(StrEnum):
+    """Every outcome the Standard Requirement Processor may report."""
+
+    REQUIREMENT_PROCESSED = "REQUIREMENT_PROCESSED"
+    NO_CHANGES_TO_PROCESS = "NO_CHANGES_TO_PROCESS"
+    REQUIREMENT_NOT_FOUND = "REQUIREMENT_NOT_FOUND"
+    NOT_A_STANDARD_REQUIREMENT = "NOT_A_STANDARD_REQUIREMENT"
+    REQUIREMENT_NOT_IN_PROCESS = "REQUIREMENT_NOT_IN_PROCESS"
+    PROJECT_STRUCTURE_INVALID = "PROJECT_STRUCTURE_INVALID"
+    PROCESSING_STATE_CONFLICT = "PROCESSING_STATE_CONFLICT"
+    INVALID_PROCESSING_RESULT = "INVALID_PROCESSING_RESULT"
+    MODEL_RUNTIME_FAILED = "MODEL_RUNTIME_FAILED"
+    INVALID_MODEL_OUTPUT = "INVALID_MODEL_OUTPUT"
+    PROCESS_RESULT_WRITE_FAILED = "PROCESS_RESULT_WRITE_FAILED"
+    CONTENT_WRITE_FAILED = "CONTENT_WRITE_FAILED"
+    FIBERY_READ_FAILED = "FIBERY_READ_FAILED"
+    FIBERY_WRITE_FAILED = "FIBERY_WRITE_FAILED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    PARTIAL_PROCESSING = "PARTIAL_PROCESSING"
+
+
+NORMAL_STANDARD_OUTCOMES = frozenset(
+    {
+        StandardProcessResultCode.REQUIREMENT_PROCESSED,
+        StandardProcessResultCode.NO_CHANGES_TO_PROCESS,
+    }
+)
+
+
+@dataclass(frozen=True)
+class StandardProcessResult:
+    """Outcome of one Standard Requirement processing run."""
+
+    code: StandardProcessResultCode
+    message: str
+    requirement_id: str | None = None
+    iteration: int | None = None
+    findings: tuple[str, ...] = ()
+    proposed_relations: tuple[str, ...] = ()
+    model_invoked: bool = False
+    created: tuple[str, ...] = ()
+    details: tuple[str, ...] = field(default=())
+
+    @property
+    def is_normal(self) -> bool:
+        return self.code in NORMAL_STANDARD_OUTCOMES
+
+
 @dataclass(frozen=True)
 class AddResult:
     """Outcome of one `project requirement add` invocation.

@@ -146,15 +146,20 @@ def content_equivalent(stored: str, expected: str) -> bool:
     storage detail rather than a change of meaning. Anything Fibery does not
     merely re-serialize still fails this check.
     """
-    return _canonical_markdown(stored) == _canonical_markdown(expected)
+    return canonical_markdown(stored) == canonical_markdown(expected)
 
 
-def _canonical_markdown(text: str) -> str:
+def canonical_markdown(text: str) -> str:
     """Canonicalize what Fibery is known to re-serialize.
 
     Blank-line placement is collapsed because Fibery inserts one before a list
     that follows a paragraph. Every line of actual content is still compared, so
     missing or altered text is still detected.
+
+    This is the single canonical representation. Anything that must agree with
+    `content_equivalent` - notably document fingerprints - has to derive from
+    this function rather than normalizing separately, or two documents Fibery
+    considers identical will fingerprint differently.
     """
     bullets = BULLET_PATTERN.sub(CANONICAL_BULLET, normalize_for_fingerprint(text))
     return BLANK_LINE_PATTERN.sub("\n", bullets)

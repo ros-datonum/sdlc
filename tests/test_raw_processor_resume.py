@@ -116,7 +116,7 @@ def test_resume_completes_the_candidate_fully(failing_call):
 
     [std] = standards(ws)
     assert std.requirement_id and std.requirement_id.startswith("SDLC-FR-")
-    assert ws.derived_from[std.id] == [raw.id]
+    assert ws.derived_from_ids[std.id] == [raw.id]
     [doc] = ws.documents_attached_to_requirement(std.public_id)
     assert doc.folder_id == "f-draft"
     assert "## Requirement" in ws.content[doc.secret]

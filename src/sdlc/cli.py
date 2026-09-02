@@ -21,6 +21,7 @@ from sdlc.fibery_http import (
 from sdlc.model_runtime import LocalCliModelRuntime
 from sdlc.model_runtime_config import (
     RAW_REQUIREMENT_PROCESSOR_ROLE,
+    STANDARD_REQUIREMENT_PROCESSOR_ROLE,
     ModelRuntimeConfigError,
     load_model_runtime_config,
     select_runtime,
@@ -35,7 +36,10 @@ from sdlc.results import (
     ProcessResult,
     ProcessResultCode,
     ResultCode,
+    StandardProcessResult,
+    StandardProcessResultCode,
 )
+from sdlc.standard_processor import process_standard_requirement
 
 PROGRAM_NAME = "sdlc"
 EXIT_SUCCESS = 0
@@ -83,6 +87,17 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--runtime", help="Override the configured model runtime.")
     process.add_argument("--model", help="Override the configured model.")
     process.set_defaults(handler=_run_requirement_process)
+
+    normalize = requirement_commands.add_parser(
+        "normalize",
+        help="Normalize and analyze a Standard Requirement in Process.",
+    )
+    normalize.add_argument(
+        "--requirement", required=True, help="Standard Requirement entity id."
+    )
+    normalize.add_argument("--runtime", help="Override the configured model runtime.")
+    normalize.add_argument("--model", help="Override the configured model.")
+    normalize.set_defaults(handler=_run_standard_process)
 
     return parser
 
@@ -176,6 +191,66 @@ def _run_requirement_process(
     )
     render_process_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _run_standard_process(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    try:
+        settings = load_fibery_settings()
+        selection = select_runtime(
+            load_model_runtime_config(),
+            STANDARD_REQUIREMENT_PROCESSOR_ROLE,
+            runtime_override=arguments.runtime,
+            model_override=arguments.model,
+        )
+    except (ConfigurationError, ModelRuntimeConfigError) as error:
+        print(str(error), file=error_out)
+        return EXIT_FAILURE
+
+    workspace = FiberyRawProcessorWorkspace(
+        client=FiberyClient(settings),
+        space=settings.space,
+        space_id=settings.space_id,
+    )
+    result = process_standard_requirement(
+        workspace, LocalCliModelRuntime(selection), arguments.requirement
+    )
+    render_standard_result(result, out if result.is_normal else error_out)
+    return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def render_standard_result(result: StandardProcessResult, stream: TextIO) -> None:
+    """Print the result code first, then the human readable detail."""
+    print(result.code.value, file=stream)
+    print(file=stream)
+    print(result.message, file=stream)
+
+    if result.code is StandardProcessResultCode.REQUIREMENT_PROCESSED:
+        print(
+            f"\nModel invoked: {'yes' if result.model_invoked else 'no (resumed)'}",
+            file=stream,
+        )
+        if result.findings:
+            print("\nFindings for review (nothing was modified):", file=stream)
+            for item in result.findings:
+                print(f"- {item}", file=stream)
+        if result.proposed_relations:
+            print("\nProposed relations (not written to Fibery):", file=stream)
+            for item in result.proposed_relations:
+                print(f"- {item}", file=stream)
+        return
+    if result.code is StandardProcessResultCode.NO_CHANGES_TO_PROCESS:
+        return
+
+    if result.created:
+        print("\nCreated in Fibery (left in place):", file=stream)
+        for item in result.created:
+            print(f"- {item}", file=stream)
+    if result.details:
+        print("\nDetails:", file=stream)
+        for item in result.details:
+            print(f"- {item}", file=stream)
 
 
 def render_process_result(result: ProcessResult, stream: TextIO) -> None:
