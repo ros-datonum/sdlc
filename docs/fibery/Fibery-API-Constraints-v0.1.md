@@ -254,7 +254,7 @@ Document's comes from `fibery/meta.documentSecret` on the View.
 ## Constraint 11 — Fibery re-serializes stored Markdown
 
 Content read back from `/api/documents/<secret>?format=md` is not byte-identical
-to what was written. Verified live, five behaviours:
+to what was written. Verified live, six behaviours:
 
 - `-` list bullets come back as `*`;
 - the trailing newline is dropped;
@@ -264,18 +264,27 @@ to what was written. Verified live, five behaviours:
   anything, so `## S\nBody` is stored as `## S\n\nBody`;
 - a **soft line break inside a paragraph is returned as a literal `<br>`**, so a
   paragraph wrapped across source lines comes back as one line:
-  `and\nnothing ends them` is stored as `and<br>nothing ends them`.
+  `and\nnothing ends them` is stored as `and<br>nothing ends them`;
+- the same happens to a **wrapped list item**, and the indent the source gave
+  the continuation line is dropped with the break: `- output,\n  so that` is
+  stored as `* output,<br>so that`, with the next item directly on the
+  following line and no blank line inserted.
 
 A fenced code block is the exception: it is returned verbatim. That is what lets
 the JSON payload of a Process Result or a Review Result survive a round trip
-unchanged.
+unchanged. The serialization rules above therefore apply only outside fenced
+blocks, and canonical comparison keeps fenced content literal: an indentation
+change inside a fenced example is a change to the document.
 
 Each behaviour was found only by writing real content to the live workspace, and
 each broke post-write validation before it was known. The `<br>` case was found
 during the Standard Review live acceptance: an ordinary wrapped paragraph in an
 ingested RAW artifact failed `requirement add` with VALIDATION_FAILED and could
 never have succeeded on retry. Wrapped prose is the normal shape of a written
-requirement, so this was not an edge case.
+requirement, so this was not an edge case. The wrapped-list-item case was found
+the same way during the Standard Ready Decision live acceptance: the
+canonicalization kept the source's continuation indent, so a RAW artifact with
+a wrapped bullet failed `requirement add` forever.
 
 Post-write validation therefore compares content modulo that re-serialization
 (`sdlc.raw_source.content_equivalent`) rather than byte for byte. Anything

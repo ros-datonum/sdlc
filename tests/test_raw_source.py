@@ -248,3 +248,163 @@ def test_every_spelling_of_the_tag_is_a_line_break(tag):
 def test_changed_wording_still_fails_despite_the_soft_break_rule():
     """Normalization must not make two different documents look equal."""
     assert not content_equivalent("a a<br>b b", "a a\nc c\n")
+
+
+def test_a_wrapped_list_item_survives_fibery_soft_breaks():
+    """The live defect found during Ready acceptance.
+
+    Fibery joins a wrapped list item with <br> exactly as it joins a wrapped
+    paragraph, and drops the indent the source gave the continuation line.
+    Post-write validation kept the indent and failed forever.
+    """
+    written = (
+        "- The CLI must print the result code as the first line,\n"
+        "  so that scripts can branch on it.\n"
+        "- Every command must be safe to retry: a second\n"
+        "  invocation must report the already-done outcome and\n"
+        "  change nothing.\n"
+    )
+    stored = (
+        "* The CLI must print the result code as the first line,<br>"
+        "so that scripts can branch on it.\n"
+        "* Every command must be safe to retry: a second<br>"
+        "invocation must report the already-done outcome and<br>change nothing."
+    )
+    assert content_equivalent(stored, written)
+    assert canonical_markdown(stored) == canonical_markdown(written)
+
+
+def test_a_nested_bullet_is_not_a_continuation():
+    """Only text continuing a line loses its indent; a nested item keeps it."""
+    assert canonical_markdown("- one\n  - two\n") == "- one\n  - two"
+
+
+def test_changed_wording_in_a_wrapped_list_item_still_fails():
+    assert not content_equivalent("* a a<br>b b", "- a a\n  c c\n")
+
+
+# -- fenced blocks are literal -----------------------------------------------
+
+FENCED_JSON_FOUR = '# X\n\n```json\n{\n    "name": "x"\n}\n```\n'
+FENCED_JSON_TWO = '# X\n\n```json\n{\n  "name": "x"\n}\n```\n'
+
+
+def test_indentation_inside_a_fence_is_a_real_difference():
+    """Freeze review B1: the continuation-indent rule reached inside fences.
+
+    Fibery returns fenced content verbatim, so an indentation change inside a
+    fenced example is a change to the document, and it must move the
+    fingerprint a Review Result is bound to.
+    """
+    assert not content_equivalent(FENCED_JSON_FOUR, FENCED_JSON_TWO)
+    assert canonical_markdown(FENCED_JSON_FOUR) != canonical_markdown(FENCED_JSON_TWO)
+
+
+FENCED_DIFFERENCES = [
+    (
+        "leading indentation",
+        "```\nif x:\n    y()\n    z()\n```",
+        "```\nif x:\n    y()\nz()\n```",
+    ),
+    ("blank line", "```\na\n\nb\n```", "```\na\nb\n```"),
+    ("dash versus star", "```\n- item\n```", "```\n* item\n```"),
+    ("plus versus dash", "```\n+ item\n```", "```\n- item\n```"),
+    ("br tag", "```\na<br>b\n```", "```\na\nb\n```"),
+    ("heading-like text", "```\n# title\n```", "```\n#  title\n```"),
+    ("nested-looking markdown", "```\n- one\n  - two\n```", "```\n- one\n- two\n```"),
+    ("trailing space", "```\na \n```", "```\na\n```"),
+    ("info string", "```json\n{}\n```", "```yaml\n{}\n```"),
+]
+
+
+@pytest.mark.parametrize(("label", "a", "b"), FENCED_DIFFERENCES)
+def test_a_literal_difference_inside_a_fence_is_never_equivalent(label, a, b):
+    assert not content_equivalent(a, b)
+    assert canonical_markdown(a) != canonical_markdown(b)
+
+
+def test_a_fence_is_kept_verbatim_in_the_canonical_form():
+    fence = '```json\n{\n    "a": "x<br>y",\n  "b": "- \\n*\\n+"\n}\n```'
+    assert canonical_markdown(fence) == fence
+    assert canonical_markdown(f"# X\n\n{fence}\n\nTail.\n") == f"# X\n{fence}\nTail."
+
+
+def test_prose_around_a_fence_is_still_normalized():
+    """Fibery's re-serialization outside the fence is still absorbed."""
+    written = "Intro:\n- item,\n  wrapped\n\n```\n  literal\n```\n\nafter a\nwrap\n"
+    stored = "Intro:\n\n* item,<br>wrapped\n\n```\n  literal\n```\n\nafter a<br>wrap"
+    assert content_equivalent(stored, written)
+
+
+def test_inline_backticks_are_not_a_fence():
+    """Only a fence at the start of a line opens literal content."""
+    written = "Use ```x``` here,\n  wrapped\n"
+    stored = "Use ```x``` here,<br>wrapped"
+    assert content_equivalent(stored, written)
+
+
+def test_an_unclosed_fence_runs_to_the_end_and_stays_literal():
+    assert canonical_markdown("```\n  a\n- b\n") == "```\n  a\n- b\n"
+    assert not content_equivalent("```\n  a\n- b\n", "```\na\n- b\n")
+
+
+def test_wrapped_list_items_outside_a_fence_still_match_the_live_form():
+    """The live-verified compatibility case must survive the fence split."""
+    written = "- first line,\n  continuation line\n- next item\n\n```\n  kept\n```\n"
+    stored = "* first line,<br>continuation line\n* next item\n\n```\n  kept\n```"
+    assert content_equivalent(stored, written)
+    assert canonical_markdown(stored) == canonical_markdown(written)
+
+
+OUTSIDE_FENCE_SEMANTIC_CHANGES = [
+    ("removed continuation text", "- item\n  continuation\n- next\n", "* item\n* next"),
+    (
+        "changed continuation wording",
+        "- item\n  continuation\n- next\n",
+        "* item<br>continuatiom\n* next",
+    ),
+    (
+        "changed next item",
+        "- item\n  continuation\n- next\n",
+        "* item<br>continuation\n* nxt",
+    ),
+    (
+        "reordered items",
+        "- item\n  continuation\n- next\n",
+        "* next\n* item<br>continuation",
+    ),
+    ("merged items", "- item\n  continuation\n- next\n", "* item<br>continuation next"),
+    ("dropped negation", "- item\n  not continuation\n", "* item<br>continuation"),
+    ("flattened nested list", "- one\n  - two\n", "* one\n* two"),
+    ("continuation became nested bullet", "- one\n  two\n", "* one\n  * two"),
+    ("removed section", "## A\n\nx\n\n## B\n\ny\n", "## A\n\nx"),
+    ("changed heading", "## Non-Goals\n\nx\n", "## Non Goals\n\nx"),
+    (
+        "single line versus wrapped item",
+        "- item\n  continuation\n",
+        "* item continuation",
+    ),
+]
+
+
+@pytest.mark.parametrize(("label", "written", "other"), OUTSIDE_FENCE_SEMANTIC_CHANGES)
+def test_semantic_changes_outside_a_fence_are_still_detected(label, written, other):
+    assert not content_equivalent(other, written)
+
+
+# -- RAW transport identity is untouched ------------------------------------
+
+TRANSPORT_SAMPLE = (
+    "# T\r\n\r\n## Requirements and Expected Behavior\r\n\r\n- must do A,\r\n"
+    '  wrapped here.  \r\n- must do B.\r\n\r\n```json\r\n{\r\n    "v": 1\r\n}\r\n```\r\n'
+)
+# Computed with the frozen implementation at 5064db7. The Source Fingerprint is
+# RAW transport identity, not content comparison, and must stay byte-compatible.
+TRANSPORT_FINGERPRINT = (
+    "cf46691c6acc31f8198c8e07b267a969d532f2c0084da3c5c16b68a34078c591"
+)
+
+
+def test_the_source_fingerprint_is_unchanged_by_content_canonicalization():
+    assert fingerprint_of(TRANSPORT_SAMPLE) == TRANSPORT_FINGERPRINT
+    assert normalize_for_fingerprint("- a\n  b\n") == "- a\n  b"

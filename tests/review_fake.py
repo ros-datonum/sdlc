@@ -33,16 +33,19 @@ def build_review_workspace(
     relations=(),
     others=(),
     process_iterations=1,
+    normalized_changes=None,
 ):
     """A Standard Requirement in Review with its Process history in place.
 
     The Root Document holds exactly what the last Process iteration produced,
-    which is the normal state a review starts from.
+    which is the normal state a review starts from. `normalized_changes`
+    alters that content in both places at once.
     """
     ws, requirement, root = build_standard_workspace(
         state=state, type_name=type_name, others=others
     )
-    document = NormalizedRequirement(**normalized()).document(REQUIREMENT_ID)
+    content = normalized(**(normalized_changes or {}))
+    document = NormalizedRequirement(**content).document(REQUIREMENT_ID)
     ws.content[root.secret] = document
 
     results = []
@@ -52,7 +55,7 @@ def build_review_workspace(
             iteration=iteration,
             input_fingerprint=f"input-{iteration}",
             analysis=AnalysisResult(
-                normalized=NormalizedRequirement(**normalized()),
+                normalized=NormalizedRequirement(**content),
                 analysis={"clarity": "adequate"},
                 findings=tuple(findings),
                 proposed_relations=tuple(relations),

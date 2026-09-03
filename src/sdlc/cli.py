@@ -1,7 +1,4 @@
-"""`sdlc` command line entry point.
-
-Currently exposes one capability: `sdlc project init`.
-"""
+"""`sdlc` command line entry point."""
 
 from __future__ import annotations
 
@@ -11,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO
 
-from sdlc.config import ConfigurationError, load_fibery_settings
+from sdlc.config import ConfigurationError, FiberySettings, load_fibery_settings
 from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_http import (
     FiberyHttpWorkspace,
@@ -29,6 +26,10 @@ from sdlc.model_runtime_config import (
 )
 from sdlc.project_init import initialize_project
 from sdlc.raw_processor import process_raw_requirement
+from sdlc.ready_decision import (
+    approve_standard_requirement,
+    rework_standard_requirement,
+)
 from sdlc.requirement_add import add_raw_requirement
 from sdlc.results import (
     AddResult,
@@ -36,6 +37,8 @@ from sdlc.results import (
     InitResult,
     ProcessResult,
     ProcessResultCode,
+    ReadyDecisionResult,
+    ReadyDecisionResultCode,
     ResultCode,
     StandardProcessResult,
     StandardProcessResultCode,
@@ -43,6 +46,7 @@ from sdlc.results import (
     StandardReviewResultCode,
 )
 from sdlc.standard_processor import process_standard_requirement
+from sdlc.standard_review import ReviewVerdict
 from sdlc.standard_reviewer import review_standard_requirement
 
 PROGRAM_NAME = "sdlc"
@@ -113,6 +117,32 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--runtime", help="Override the configured model runtime.")
     review.add_argument("--model", help="Override the configured model.")
     review.set_defaults(handler=_run_standard_review)
+
+    approve = requirement_commands.add_parser(
+        "approve",
+        help="Record a human approval of a Standard Requirement in Ready.",
+    )
+    approve.add_argument(
+        "--requirement", required=True, help="Standard Requirement entity id."
+    )
+    approve.add_argument(
+        "--acknowledge-verdict",
+        choices=[verdict.value for verdict in ReviewVerdict],
+        help=(
+            "Name the current Review verdict being approved despite. Required "
+            "for NEEDS_WORK and BLOCKING; never for PASS."
+        ),
+    )
+    approve.set_defaults(handler=_run_requirement_approve)
+
+    rework = requirement_commands.add_parser(
+        "rework",
+        help="Send a Standard Requirement in Ready back to Process.",
+    )
+    rework.add_argument(
+        "--requirement", required=True, help="Standard Requirement entity id."
+    )
+    rework.set_defaults(handler=_run_requirement_rework)
 
     return parser
 
@@ -260,6 +290,93 @@ def _run_standard_review(
     )
     render_review_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _run_requirement_approve(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    """A human decision. No model runtime is configured, selected or invoked."""
+    try:
+        settings = load_fibery_settings()
+    except ConfigurationError as error:
+        print(str(error), file=error_out)
+        return EXIT_FAILURE
+
+    acknowledged = (
+        ReviewVerdict(arguments.acknowledge_verdict)
+        if arguments.acknowledge_verdict
+        else None
+    )
+    result = approve_standard_requirement(
+        _ready_workspace(settings), arguments.requirement, acknowledged
+    )
+    render_ready_result(result, out if result.is_normal else error_out)
+    return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _run_requirement_rework(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    """A human decision. No model runtime is configured, selected or invoked."""
+    try:
+        settings = load_fibery_settings()
+    except ConfigurationError as error:
+        print(str(error), file=error_out)
+        return EXIT_FAILURE
+
+    result = rework_standard_requirement(
+        _ready_workspace(settings), arguments.requirement
+    )
+    render_ready_result(result, out if result.is_normal else error_out)
+    return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _ready_workspace(settings: FiberySettings) -> FiberyRawProcessorWorkspace:
+    return FiberyRawProcessorWorkspace(
+        client=FiberyClient(settings),
+        space=settings.space,
+        space_id=settings.space_id,
+    )
+
+
+def render_ready_result(result: ReadyDecisionResult, stream: TextIO) -> None:
+    """Print the result code first, then the human readable detail.
+
+    The verdict is what the human decided about, not whether the decision was
+    recorded: an approval acknowledging BLOCKING is a successful run.
+    """
+    print(result.code.value, file=stream)
+    print(file=stream)
+    print(result.message, file=stream)
+
+    if result.code in {
+        ReadyDecisionResultCode.REQUIREMENT_APPROVED,
+        ReadyDecisionResultCode.VERDICT_ACKNOWLEDGEMENT_REQUIRED,
+        ReadyDecisionResultCode.VERDICT_ACKNOWLEDGEMENT_MISMATCH,
+        ReadyDecisionResultCode.INVALID_VERDICT_ACKNOWLEDGEMENT,
+    }:
+        _render_ready_sections(result, stream)
+    if result.details:
+        print("\nDetails:", file=stream)
+        for item in result.details:
+            print(f"- {item}", file=stream)
+
+
+def _render_ready_sections(result: ReadyDecisionResult, stream: TextIO) -> None:
+    """What the decision is about. Nothing here was written by the decision."""
+    print(f"\nReview Result {result.iteration}: verdict {result.verdict}", file=stream)
+    if result.blocking:
+        print("\nBlocking:", file=stream)
+        for item in result.blocking:
+            print(f"- {item}", file=stream)
+    if result.warnings:
+        print("\nWarnings:", file=stream)
+        for item in result.warnings:
+            print(f"- {item}", file=stream)
+    if result.relations:
+        print("\nConfirmed relations (still not written to Fibery):", file=stream)
+        for item in result.relations:
+            print(f"- {item}", file=stream)
 
 
 def render_review_result(result: StandardReviewResult, stream: TextIO) -> None:

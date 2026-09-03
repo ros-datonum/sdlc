@@ -68,6 +68,20 @@ BLANK_LINE_PATTERN = re.compile(r"\n\s*\n+")
 # Fibery stores a soft line break inside a paragraph as a literal <br>, so a
 # wrapped paragraph is read back as one line. Verified live, 2026-09-02.
 SOFT_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+# A line that continues the previous line's text rather than starting a block.
+# Fibery joins it to that line and drops its leading indent, so the indent a
+# source artifact uses for a wrapped list item is not a difference in content.
+CONTINUATION_INDENT_PATTERN = re.compile(
+    r"(?<=\S\n)[ \t]+(?![-*+>]\s|#{1,6}\s|\d+\.\s|```)(?=\S)"
+)
+# A fenced code block: an opening fence at the start of a line, through the
+# closing fence at the start of a line, or to the end of the text when it is
+# never closed. Fibery returns fenced content verbatim, so nothing inside one
+# is Fibery serialization and nothing inside one may be normalized. The group
+# makes `split` return prose and fences alternately: odd segments are fences.
+FENCED_BLOCK_PATTERN = re.compile(
+    r"(^```[^\n]*\n.*?(?:^```[ \t]*$|\Z))", re.MULTILINE | re.DOTALL
+)
 
 
 class InvalidRequirementSource(ValueError):
@@ -162,19 +176,39 @@ def canonical_markdown(text: str) -> str:
     - a blank line is inserted before a list that follows a paragraph, and
       after a heading followed directly by anything;
     - a soft line break inside a paragraph comes back as a literal `<br>`, so a
-      paragraph wrapped across source lines is returned as one line.
+      paragraph wrapped across source lines is returned as one line;
+    - the same happens inside a list item, and the indent the source gave the
+      wrapped continuation line is dropped along with the break.
 
     Collapsing blank lines absorbs the insertions and the dropped trailing
     newline together. Every line of actual content is still compared, so
     missing or altered text is still detected.
+
+    A fenced code block is the exception, in Fibery and therefore here: its
+    content is returned verbatim, so it is kept literally - indentation, blank
+    lines, list markers, `<br>` and heading-like text included. An indentation
+    change inside a fenced example is a real change to the document.
 
     This is the single canonical representation. Anything that must agree with
     `content_equivalent` - notably document fingerprints - has to derive from
     this function rather than normalizing separately, or two documents Fibery
     considers identical will fingerprint differently.
     """
-    unwrapped = SOFT_BREAK_PATTERN.sub("\n", _normalize_line_endings(text))
-    bullets = BULLET_PATTERN.sub(CANONICAL_BULLET, normalize_for_fingerprint(unwrapped))
+    segments = FENCED_BLOCK_PATTERN.split(_normalize_line_endings(text))
+    parts = (
+        segment if index % 2 else _canonical_prose(segment)
+        for index, segment in enumerate(segments)
+    )
+    return "\n".join(part for part in parts if part)
+
+
+def _canonical_prose(text: str) -> str:
+    """Canonicalize ordinary Markdown, where Fibery re-serializes."""
+    unwrapped = SOFT_BREAK_PATTERN.sub("\n", text)
+    unindented = CONTINUATION_INDENT_PATTERN.sub("", unwrapped)
+    bullets = BULLET_PATTERN.sub(
+        CANONICAL_BULLET, normalize_for_fingerprint(unindented)
+    )
     return BLANK_LINE_PATTERN.sub("\n", bullets)
 
 

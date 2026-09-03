@@ -259,3 +259,60 @@ def test_branch_c_edited_content_starts_a_new_iteration():
     assert result.iteration == 2
     assert len(model.calls) == 1
     assert ws.requirements[std.id].revision == 1
+
+
+# -- fenced content is literal; wrapped lists are serialization ---------------
+
+FENCED = analysis_output(
+    {"detailed_behavior": 'Example:\n\n```json\n{\n    "timeout": 30\n}\n```'}
+)
+WRAPPED = analysis_output(
+    {
+        "requirement": "The runtime must:\n- refuse API keys,\n  wherever set\n- refuse OpenRouter"
+    }
+)
+
+
+def test_an_indentation_change_inside_a_fence_starts_a_new_iteration():
+    """Freeze review B1: fenced content is verbatim in Fibery, so an edit to
+    it is a real edit and must not be absorbed as re-serialization."""
+    ws, std, _ = build_standard_workspace()
+    run(ws, std, FakeModelRuntime([FENCED]))
+    assert '    "timeout"' in ws.content["std-secret"]
+    ws.content["std-secret"] = ws.content["std-secret"].replace(
+        '    "timeout"', '  "timeout"'
+    )
+    set_state(ws, std, "Process")
+
+    model = FakeModelRuntime([EDITED])
+    result = run(ws, std, model)
+
+    assert result.code is StandardProcessResultCode.REQUIREMENT_PROCESSED
+    assert result.iteration == 2
+    assert model.was_invoked
+
+
+def test_an_unchanged_fenced_document_does_not_forge_an_iteration():
+    ws, std, _ = build_standard_workspace()
+    run(ws, std, FakeModelRuntime([FENCED]))
+    set_state(ws, std, "Process")
+
+    model = FakeModelRuntime([EDITED])
+    result = run(ws, std, model)
+
+    assert result.code is StandardProcessResultCode.NO_CHANGES_TO_PROCESS
+    assert not model.was_invoked
+
+
+def test_a_wrapped_list_item_is_only_reserialization():
+    """The live-verified wrapped-list form must not forge an iteration."""
+    ws, std, _ = build_standard_workspace()
+    run(ws, std, FakeModelRuntime([WRAPPED]))
+    assert "<br>" in reserialize_like_fibery(ws.content["std-secret"])
+    set_state(ws, std, "Process")
+
+    model = FakeModelRuntime([EDITED])
+    result = run(ws, std, model)
+
+    assert result.code is StandardProcessResultCode.NO_CHANGES_TO_PROCESS
+    assert not model.was_invoked

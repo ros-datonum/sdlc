@@ -250,3 +250,70 @@ class AddResult:
     @property
     def is_normal(self) -> bool:
         return self.code in NORMAL_ADD_OUTCOMES
+
+
+class ReadyDecisionResultCode(StrEnum):
+    """Every outcome the Standard Requirement Ready Decision may report.
+
+    The Review verdict is deliberately absent here too: approving a BLOCKING
+    Requirement is a successful execution of a human decision, and the verdict
+    the human acknowledged travels in the payload.
+    """
+
+    REQUIREMENT_APPROVED = "REQUIREMENT_APPROVED"
+    REQUIREMENT_SENT_FOR_REWORK = "REQUIREMENT_SENT_FOR_REWORK"
+    REQUIREMENT_ALREADY_APPROVED = "REQUIREMENT_ALREADY_APPROVED"
+    REQUIREMENT_ALREADY_IN_REWORK = "REQUIREMENT_ALREADY_IN_REWORK"
+    REQUIREMENT_NOT_FOUND = "REQUIREMENT_NOT_FOUND"
+    NOT_A_STANDARD_REQUIREMENT = "NOT_A_STANDARD_REQUIREMENT"
+    REQUIREMENT_NOT_IN_READY = "REQUIREMENT_NOT_IN_READY"
+    PROJECT_STRUCTURE_INVALID = "PROJECT_STRUCTURE_INVALID"
+    NO_PROCESS_RESULT = "NO_PROCESS_RESULT"
+    INVALID_PROCESS_RESULT = "INVALID_PROCESS_RESULT"
+    NO_REVIEW_RESULT = "NO_REVIEW_RESULT"
+    INVALID_REVIEW_RESULT = "INVALID_REVIEW_RESULT"
+    REVIEW_STATE_CONFLICT = "REVIEW_STATE_CONFLICT"
+    REVIEW_RESULT_STALE = "REVIEW_RESULT_STALE"
+    VERDICT_ACKNOWLEDGEMENT_REQUIRED = "VERDICT_ACKNOWLEDGEMENT_REQUIRED"
+    VERDICT_ACKNOWLEDGEMENT_MISMATCH = "VERDICT_ACKNOWLEDGEMENT_MISMATCH"
+    INVALID_VERDICT_ACKNOWLEDGEMENT = "INVALID_VERDICT_ACKNOWLEDGEMENT"
+    FIBERY_READ_FAILED = "FIBERY_READ_FAILED"
+    FIBERY_WRITE_FAILED = "FIBERY_WRITE_FAILED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+
+
+NORMAL_READY_OUTCOMES = frozenset(
+    {
+        ReadyDecisionResultCode.REQUIREMENT_APPROVED,
+        ReadyDecisionResultCode.REQUIREMENT_SENT_FOR_REWORK,
+        ReadyDecisionResultCode.REQUIREMENT_ALREADY_APPROVED,
+        ReadyDecisionResultCode.REQUIREMENT_ALREADY_IN_REWORK,
+    }
+)
+
+
+@dataclass(frozen=True)
+class ReadyDecisionResult:
+    """Outcome of one human decision recorded at Ready.
+
+    There is no `created` collection: the only durable change this capability
+    can make is one workflow State transition, reported through `state`. The
+    review sections are what the human was deciding about, so a refusal that
+    needs an acknowledgement can show exactly what would have been approved.
+    """
+
+    code: ReadyDecisionResultCode
+    message: str
+    decision: str
+    requirement_id: str | None = None
+    state: str | None = None
+    iteration: int | None = None
+    verdict: str | None = None
+    blocking: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    relations: tuple[str, ...] = ()
+    details: tuple[str, ...] = field(default=())
+
+    @property
+    def is_normal(self) -> bool:
+        return self.code in NORMAL_READY_OUTCOMES
