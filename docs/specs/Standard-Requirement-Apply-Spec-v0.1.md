@@ -1,8 +1,8 @@
-# Standard Requirement Apply Specification v0.1 — PROPOSED
+# Standard Requirement Apply Specification v0.1
 
-**Status:** PROPOSED. Not approved. Nothing implements it.
+**Status:** APPROVED. Frozen contract for implementation. No implementation exists yet.
 
-Design pass for `Requirement.Type = Standard` + `Requirement.State = Apply`.
+Design for `Requirement.Type = Standard` + `Requirement.State = Apply`.
 
 ## 1. Lifecycle position
 
@@ -22,31 +22,38 @@ Ready     human decision boundary              HUMAN
 Apply     deterministic application            deterministic, writing
 ```
 
+```text
+STANDARD + Apply
+= deterministically apply the exact Standard Requirement state
+  already reviewed and human-approved
+```
+
 `Apply` is **not another reasoning stage and not another approval stage**. The
 human approval has already been recorded durably by `Ready -> Apply`. Apply
 turns what was reviewed and approved into canonical Fibery state:
 
-1. verify that the Requirement still matches the exact state that was reviewed
-   and approved;
-2. write the confirmed relation proposals as real `Depends On` / `Affects`
-   edges;
-3. move the Root Document from `Requirements/Draft` to `Requirements/Approved`;
-4. transition `Apply -> Applied`;
-5. validate every write by reading it back.
+```text
+revalidate the approved binding
+-> apply the confirmed relations
+-> move the same Root Document Draft -> Approved
+-> verify
+-> Apply -> Applied
+-> verify
+```
 
 No model invocation, no judgement of Requirement quality, no verdict
-acknowledgement, no human input. "Apply" means *apply the approved Standard
-Requirement into the authoritative requirements graph and document structure*.
-It does not mean implement the software requirement.
+acknowledgement, no new human decision. "Apply" means *apply the approved
+Standard Requirement into the authoritative requirements graph and document
+structure*. It does not mean implement the software requirement.
 
-Proposed command, following the existing one-verb-per-command convention:
+Command, following the existing one-verb-per-command convention:
 
 ```text
 sdlc project requirement apply --requirement <entity id>
 ```
 
 No `--runtime`, `--model`, `--acknowledge-verdict` or `--force`. No flag is
-required: everything Apply needs is durable in Fibery.
+needed: everything Apply consumes is durable in Fibery.
 
 ## 3. Entry condition
 
@@ -75,15 +82,25 @@ because the Root Document can be edited in Fibery at any moment.
 Apply therefore never asks whether the Requirement should be approved. It does
 not re-run or re-read the `PASS` / `NEEDS_WORK` / `BLOCKING` acknowledgement,
 does not reinterpret findings, and does not refuse a Requirement because its
-verdict was not `PASS`. The human decided; Apply executes.
+verdict was not `PASS`. A human may have explicitly approved any of the three
+verdicts under the frozen acknowledgement semantics; Apply executes that
+decision.
 
 What Apply does do is **revalidate the exact reviewed binding before any
 normative mutation** (section 6). That is the interface invariant Ready
 recorded for it, and it is the only correctness check Apply adds.
 
 No `Approval Result`, approval ledger, approval field or approval relation is
-introduced. The workflow State plus the latest valid Review Result already
-carry everything Apply needs.
+introduced. The workflow State plus the latest valid Review Result carry
+everything Apply needs.
+
+### No further quality gate
+
+The Root Document's `Open Questions` section is **not** required to be empty
+before `Applied`, and no other content condition is imposed. The frozen
+Document Schema left that possibility open; the Review verdict plus the human
+Ready Decision already form the quality and authority boundary, and Apply must
+not silently add another one behind them.
 
 ## 5. Inputs, and the only relation source of truth
 
@@ -98,18 +115,55 @@ the target Requirements named by confirmed relation proposals
 ```
 
 The relations Apply may write are exactly the **confirmed relation proposals of
-the latest valid Review Result**: the `relation_proposal_verifications` whose
-outcome is `CONFIRMED`. The frozen parser derives that set from the
-verifications on read-back; the persisted `confirmed_relation_proposals` key is
-a rendered mirror written by the same code and is not consulted separately.
+the latest valid Review Result**, derived deterministically as:
+
+```text
+every relation_proposal_verifications entry with outcome = CONFIRMED
+normalized to the logical edge (kind, target Requirement ID)
+```
 
 Apply must not:
 
 - invoke a model;
-- derive relations from the Process Result;
+- derive relations from the Process Result or from anything else;
 - apply a Process proposal that Review did not confirm;
 - apply a `REJECTED` or `UNRESOLVED` proposal;
-- apply anything from an older Review Result.
+- apply anything from an older Review Result;
+- write inverse sides separately.
+
+### Mirror consistency — the artifact must agree with itself
+
+The Review Result persists both `relation_proposal_verifications` and a
+rendered `confirmed_relation_proposals` mirror. Apply is the first normative
+consumer of those values, and it must not accept an artifact in which the two
+disagree. After parsing, Apply requires:
+
+```text
+derived confirmed set (from verifications, normalized)
+== persisted confirmed_relation_proposals (normalized the same way)
+```
+
+comparing relation kind and target Requirement ID. Any difference — a
+`CONFIRMED` verification missing from the mirror, a mirror entry that is not
+`CONFIRMED`, a wrong kind or target in the mirror — is:
+
+```text
+INVALID_REVIEW_RESULT
+```
+
+with no normative mutation. Neither representation is preferred and the
+artifact is never repaired. The frozen Reviewer writes both from one value, so
+the two can only disagree if the artifact was altered.
+
+### Duplicate logical edges
+
+For one source Requirement a relation's identity is `(kind, target Requirement
+ID)`. The frozen Reviewer verifies each proposed edge exactly once, so a
+persisted Review Result containing two confirmed entries for the same logical
+edge is outside the frozen contract and is rejected as
+`INVALID_REVIEW_RESULT`. Apply never writes a duplicate Fibery edge; with
+Fibery's set semantics (constraint 26) it could not, but the artifact is
+refused before that question arises.
 
 ## 6. Reviewed-state revalidation — before any normative mutation
 
@@ -132,29 +186,29 @@ re-read from Fibery, never trusted from the Review Result's copies, so the check
 cannot be circular. Fingerprints use the frozen `canonical_markdown`
 representation, which keeps fenced content literal.
 
-If any binding disagrees:
+If any binding disagrees before the first write:
 
 ```text
 REVIEW_RESULT_STALE
+State remains Apply
+relation writes = 0, Document folder writes = 0, State writes = 0, model calls = 0
 ```
 
-with:
+Apply does not run Process, Review or Ready Decision, does not repair anything
+and does not move the Requirement anywhere. The same three bindings are
+checked again immediately before the final `Apply -> Applied` transition
+(section 12).
 
-```text
-relation writes         = 0
-Document folder writes  = 0
-State writes            = 0
-model calls             = 0
-```
+### No Apply-level rework — an accepted operational limitation
 
-Apply does not run Process, Review or Ready Decision, and does not repair
-anything. The Requirement stays in `Apply`; the human returns it to work by
-moving it to `Process` themselves, exactly as the Ready contract's `REWORK`
-does from `Ready`. Whether Apply should expose a rework decision of its own is
-an open question (section 27); the smallest design does not.
-
-The same three bindings are checked a second time immediately before the
-final `Apply -> Applied` transition (section 12).
+Apply exposes no transition out of `Apply` except `Applied`. There is no
+`Apply -> Process`, `Apply -> Review` or `Apply -> Ready` in this capability,
+automatic or commanded. A Requirement that Apply refuses as stale, or leaves in
+`Apply` after a partial application (section 14), stays there until an operator
+acts on it directly in Fibery. That recovery workflow is deliberately not
+designed here. The result codes and their details give the operator exactly
+what moved and what was written, so the manual step is informed, but it is
+manual.
 
 ## 7. Latest artifact selection
 
@@ -171,9 +225,10 @@ children of the Root Document named <Requirement ID> — Review Result NNNN
 -> it must parse, supported version          -> else INVALID_REVIEW_RESULT
 -> recorded iteration and Requirement ID must match its name
                                              -> else INVALID_REVIEW_RESULT
+-> mirror consistency and no duplicate edge  -> else INVALID_REVIEW_RESULT
 -> none found                                -> NO_REVIEW_RESULT
 
-Process Result: same rules
+Process Result: same selection rules
 -> none found                                -> NO_PROCESS_RESULT
 -> duplicate, unparsable, identity mismatch  -> INVALID_PROCESS_RESULT
 ```
@@ -181,27 +236,18 @@ Process Result: same rules
 An older artifact is never used when the newest is unusable. The newest
 artifact is current history and cannot be silently ignored.
 
-Two structural checks are specific to what Apply consumes, applied after
-parsing and before any write:
-
-- two confirmed proposals for the same `(kind, requirement_id)` edge:
-  `INVALID_REVIEW_RESULT`. The frozen Reviewer verifies each edge exactly once,
-  so a duplicate cannot come from the frozen chain;
-- a confirmed proposal naming the Requirement itself:
-  `INVALID_RELATION_TARGET` (section 9).
-
 ## 8. Confirmed relations — the first normative consumer
 
 Mapping, forward sides only:
 
 ```text
-DEPENDS_ON  -> Requirement.Depends On   (Fibery maintains Blocks)
-AFFECTS     -> Requirement.Affects      (Fibery maintains Impacted By)
+DEPENDS_ON  -> source.Depends On += target   (Fibery maintains target.Blocks)
+AFFECTS     -> source.Affects   += target   (Fibery maintains target.Impacted By)
 ```
 
 Each pair shares one Fibery relation id (frozen Process specification section
-12), so writing the forward side populates the inverse. Apply never writes
-`Blocks` or `Impacted By` separately.
+12), and constraint 26 verified that writing the forward side populates the
+inverse. Apply never writes `Blocks` or `Impacted By` separately.
 
 Writes use `fibery.entity/add-collection-items` (constraint 15), one edge per
 command. `/api/commands` batches are not transactional (constraint 16), so
@@ -210,32 +256,29 @@ batching would buy nothing and would blur which edge failed.
 ### Policy: additive only
 
 ```text
-confirmed proposal -> ensure the edge exists
+confirmed edge absent            -> add it
+confirmed edge already present   -> already satisfied, no write
+existing edge not in the set     -> leave it untouched
 ```
 
-Apply must not:
-
-- delete any existing edge;
-- treat absence from the latest Review Result as permission to remove an edge;
-- replace the Requirement's relation set with the confirmed set;
-- prune, diff or reconcile.
-
-Existing edges, related or unrelated to the proposals, remain untouched. This
-is what the frozen Process and Review contracts require of Apply, and what
-makes a rejected proposal incapable of removing anything.
+Apply must not delete, replace, prune, diff or reconcile relations. Existing
+edges, related or unrelated to the proposals, remain untouched. This is what
+the frozen Process and Review contracts require of Apply, and what makes a
+rejected proposal incapable of removing anything.
 
 ### Ensure-edge idempotency
 
 Before the first write, Apply reads the Requirement's current `Depends On` and
 `Affects` edges and computes the missing subset. Only missing edges are
-written. After the writes, the edges are read back and every confirmed edge
-must be present.
+written, one at a time. After the writes the edges are read back and every
+confirmed edge must be present.
 
-Whether `add-collection-items` is itself idempotent for an already-present item
-is **not known** and must be verified live before freeze (section 27). The
-read-then-write design does not depend on the answer for correctness, only for
-the narrow race in section 22; the answer must be recorded in the constraints
-document either way.
+Constraint 26 verified that `add-collection-items` is idempotent: a repeated
+add of a present item returns `ok` and leaves membership unchanged. Apply does
+**not** rely on that for correctness. It reads before it writes so that its
+report of what it wrote is exact and so that the design does not depend on a
+Fibery property that could change; the verified behaviour is what makes an
+accidental repeat harmless and is what the fake must reproduce.
 
 ## 9. Relation target preflight
 
@@ -248,24 +291,30 @@ has passed.
 Per target:
 
 ```text
-resolves to exactly one Requirement by Requirement ID
-                                          else RELATION_TARGET_NOT_FOUND
-                                          (or INVALID_RELATION_TARGET if ambiguous)
-target.Type = Standard                    else INVALID_RELATION_TARGET
-target.Project = source.Project           else INVALID_RELATION_TARGET
-target != source                          else INVALID_RELATION_TARGET
+Requirement ID resolves to 0 Requirements   -> RELATION_TARGET_NOT_FOUND
+Requirement ID resolves to > 1 Requirements -> INVALID_RELATION_TARGET
+target.Type = Standard                      else INVALID_RELATION_TARGET
+target.Project = source.Project             else INVALID_RELATION_TARGET
+target != source                            else INVALID_RELATION_TARGET
 ```
 
-Target workflow State is **not** restricted. Requirements approved in the same
-batch legitimately depend on each other before all of them reach `Applied`,
-and a dependency on a Requirement still in `Draft` is exactly the kind of edge
-the graph exists to show. No invariant requires "target already Applied", so it
-is not imposed.
+### Ambiguity-aware lookup
 
-Resolution by Requirement ID must detect ambiguity. The frozen adapter's
-`find_requirement_by_requirement_id` queries with a limit of two but returns
-only the first row; Apply needs the count. This is an additive interface need,
-not a change to frozen behaviour (section 27).
+The frozen convenience lookup queries by Requirement ID with a limit of two but
+returns only the first row, hiding a duplicate. That is insufficient for a
+normative preflight: Apply must know whether there are zero, one or more than
+one matches, and must never adopt one row when duplicates exist. The
+implementation adds a bounded, count-aware lookup as an additive adapter
+capability. The existing frozen lookup and its callers are not changed.
+
+### Target workflow State is not restricted
+
+A target may be in any State, including `Draft`, `Process`, `Review`, `Ready`
+or `Apply`. Requirements approved as part of the same evolving project graph
+legitimately reference one another before all have individually reached
+`Applied`; target validation is about identity and graph validity, not about
+the target's workflow completion. No `target must be Applied` rule exists and
+none may be inferred.
 
 ## 10. Root Document move — required by the frozen document contract
 
@@ -281,66 +330,60 @@ and states that on successful application the Root Document is **moved** from
 `fibery/Folder` from the Project's `Requirements/Draft` Folder to its
 `Requirements/Approved` Folder before the final transition.
 
+Verified mechanism (constraint 24): `update-views` with
+`params.updates: [{id, values: {"fibery/Folder": {"fibery/id": <Approved>}}}]`
+changes the Folder in place; the Document keeps its id, its public id, its
+content secret and its body.
+
 Rules:
 
 - the **same Root Document entity** moves; no second Root Document is created,
-  no copy is placed under `Approved`;
+  no copy is placed under `Approved`, no delete-and-recreate;
 - the Root Document body is not written; the only Document mutation is the
   Folder;
 - `Draft` and `Approved` are resolved by real Folder ids from the Project's
   Documents Root Folder through the single-child rule the frozen RAW Processor
   already uses (`PROJECT_STRUCTURE_INVALID` if the tree is ambiguous);
 - Process Results and Review Results are nested under the Root through
-  `fibery/parent-page-id` and carry no `fibery/Folder` of their own
-  (constraint 19). The expected consequence is that moving the Root moves the
-  whole hierarchy with it and no child is touched. **This must be verified
-  live** before freeze (section 27); if Fibery turns out to require child
-  updates, that is a design change, not an implementation detail.
+  `fibery/parent-page-id`, carry no Folder of their own, and follow the Root
+  automatically (constraint 25). Apply writes nothing to any child; the
+  hierarchy is verified unchanged after the move.
 
 ### Folder idempotency
 
 ```text
 Root in Draft       -> move to Approved
-Root in Approved    -> already done; no write
-Root anywhere else  -> PROJECT_STRUCTURE_INVALID, no write
+Root in Approved    -> step already complete; no write
+Root anywhere else  -> PROJECT_STRUCTURE_INVALID; no write
 ```
 
 An unexpected Folder is never silently repaired.
 
-### The API for the move is unverified
-
-`create-views` accepts `fibery/Folder`, and the Folder API exposes
-`update-folders` with `{updates: [{id, values}]}` (constraint 1). The
-corresponding `update-views` method has not been exercised. Its existence and
-shape must be verified by a narrow live probe during implementation; a
-Document cannot be moved by deletion and re-creation, because that would change
-the Root Document entity and orphan its children.
-
 ## 11. Mutation ordering
 
 ```text
- 1. resolve Requirement              (Type Standard, State Apply | Applied)
- 2. resolve Root Document, current Folder, Draft and Approved Folder ids
- 3. resolve latest Review Result, latest Process Result, current Root content
- 4. validate the three reviewed-state bindings          (section 6)
- 5. structural checks on confirmed proposals            (section 7)
- 6. preflight every relation target                     (section 9)
- 7. read current Depends On / Affects; compute missing edges
- 8. inspect Root Folder                                 (section 10)
+ 1. resolve Requirement                       Type Standard; State Apply | Applied
+ 2. resolve Root Document, its current Folder, the Draft and Approved Folder ids
+ 3. resolve latest Review Result; parse; mirror consistency; no duplicate edge
+ 4. resolve latest Process Result; parse
+ 5. validate the three reviewed-state bindings                   (section 6)
+ 6. preflight every relation target                              (section 9)
+ 7. read current Depends On / Affects; compute the missing edges
+ 8. inspect the Root Folder                                      (section 10)
+ 9. revalidate the three bindings immediately before the first write
     ------------------------------ first normative write ------------------
- 9. write each missing edge, one command each
-10. read edges back; every confirmed edge must be present
-11. move Root Draft -> Approved if not already there
-12. read Root back; Folder must be Approved
-13. revalidate the three reviewed-state bindings        (section 12)
-14. set State = Applied
-15. read the Requirement back; State must be Applied, Revision unchanged
+10. add each missing confirmed edge, one command each; read back after each
+11. move Root Draft -> Approved if not already there; read back the Folder
+12. revalidate the three bindings again                          (section 12)
+13. set State = Applied
+14. read the Requirement back: State Applied, Revision unchanged
+15. validate the final invariant                                 (section 13)
 ```
 
-Steps 1–8 perform reads only. If any of them fails, nothing was written and the
-result is the specific refusal. Every write from step 9 on is individually
+Steps 1–9 perform reads only. If any of them fails, nothing was written and the
+result is the specific refusal. Every write from step 10 on is individually
 verified by read-back, and `Applied` is written last, so it is a true
-completion marker.
+completion marker. No write happens before the complete target preflight.
 
 Relations are written before the Root move because the move is the more
 visible change: a Root under `Approved` with edges still missing would look
@@ -348,19 +391,20 @@ finished to a human browsing Fibery, while missing edges under `Draft` do not.
 
 ## 12. Revalidation before Applied
 
-Step 13 repeats the section 6 check. If the Root Document or the Process
+Step 12 repeats the section 6 check. If the Root Document or the Process
 history moved during the application:
 
 ```text
 do not transition to Applied
-Requirement remains Apply
-result: PARTIAL_APPLY with REVIEW_RESULT_STALE in its details
+State remains Apply
+result: PARTIAL_APPLY, details naming REVIEW_RESULT_STALE and what moved
+durable completed steps remain
 ```
 
-Edges written in step 9 are **not** removed (section 15). This is the smallest
-protection available without a compare-and-set primitive, and it is what keeps
-a Requirement whose content changed mid-application from being marked
-`Applied`.
+Edges written in step 10 and a completed Root move are **not** reverted
+(section 15). This is the smallest protection available without a
+compare-and-set primitive, and it is what guarantees a Requirement whose
+content changed mid-application is never marked `Applied`.
 
 ## 13. Applied final invariant
 
@@ -375,16 +419,16 @@ the same Root Document entity exists
 Root Document Folder = Requirements/Approved
 Root Document body unchanged from entry
 
-every confirmed relation proposal of the applied Review Result is an edge
-existing edges present at entry are still present
+every edge in the validated confirmed set exists
+no existing edge present at entry was removed
 
-Process Results unchanged, Review Results unchanged, hierarchy preserved
+Process Results unchanged, Review Results unchanged, child hierarchy preserved
 the reviewed-state binding was valid immediately before State = Applied
 ```
 
 After the final transition Apply re-reads the Requirement to confirm `Applied`
-and the unchanged `Revision`; the relation and Folder read-backs happened at
-steps 10 and 12. Apply does not claim the binding is still valid *after* the
+and the unchanged `Revision`; the edge and Folder read-backs happened at steps
+10 and 11. Apply does not claim the binding can never change *after* the
 transition: a human may edit the Root Document one second later, and that is a
 revision question this specification does not design.
 
@@ -407,17 +451,16 @@ A retry performs the whole sequence again. Because every write is an
 ensure-state operation, the retry naturally completes only what is missing:
 
 ```text
-relation 1 written, relation 2 not     -> step 7 finds 1 present; writes only 2
-all relations written, move failed     -> step 7 writes nothing; step 11 moves
-relations + move done, Applied failed  -> steps 9 and 11 write nothing; step 14
+edge 1 written, edge 2 not             -> step 7 finds 1 present; writes only 2
+all edges written, move failed         -> step 7 writes nothing; step 11 moves
+edges + move done, Applied failed      -> steps 10 and 11 write nothing; step 13
 ```
 
-The retry revalidates the reviewed binding first (step 4), so a Requirement
-edited between the failure and the retry is refused as stale rather than
-completed. No relation is duplicated (edges are read before written), no Root
-Document is recreated (only its Folder is ever written), and no recovery
-subsystem or resume artifact is needed: the durable domain state *is* the
-progress record.
+The retry revalidates the reviewed binding first (steps 5 and 9), so a
+Requirement edited between the failure and the retry is refused as stale rather
+than completed. No edge is duplicated, no Root Document is recreated, and no
+recovery subsystem or resume artifact is needed: the durable domain state *is*
+the progress record.
 
 ## 15. No destructive rollback
 
@@ -440,13 +483,13 @@ apply, State = Applied   REQUIREMENT_ALREADY_APPLIED, zero mutations
 apply, any other State   REQUIREMENT_NOT_IN_APPLY, zero mutations
 ```
 
-`REQUIREMENT_ALREADY_APPLIED` is a normal result. It may report, as
-information, whether the Root Document is under `Approved`; it performs no
-mutation and no repair. A Requirement a human placed in `Applied` by hand looks
-the same as one Apply completed, exactly as the Ready contract accepts for
-`Apply`. Automatically repairing an arbitrary `Applied` Requirement would mean
-writing relations and moving Documents on the strength of a State nobody
-validated, so v0.1 does not.
+`REQUIREMENT_ALREADY_APPLIED` is a normal result. It performs no mutation, no
+repair, no edge write and no Document move. It may report, as information,
+whether the Root Document is under `Approved`, but it must not claim that an
+arbitrary `Applied` Requirement satisfies the full Apply invariant: a
+Requirement a human placed in `Applied` by hand looks the same as one Apply
+completed. Automatically repairing it would mean writing relations and moving
+Documents on the strength of a State nobody validated, so v0.1 does not.
 
 The same boundary applies on entry: State `Apply` cannot distinguish a
 validated approval from a manual transition. Apply's answer is the strongest
@@ -458,22 +501,14 @@ approval ledger is introduced to close the remaining gap.
 
 `Requirement.Revision` is never written. Revision semantics are undesigned in
 the frozen architecture, and Apply is not a material revision of the
-Requirement's content. Read-back verifies it did not change. Any argument that
-`Applied` should be a revision boundary is a design blocker to raise before
-implementation, not a default.
+Requirement's content. Read-back verifies it did not change.
 
 ## 18. Root content and artifacts
 
 Zero writes to the Root Document body, to any Process Result and to any Review
 Result. Apply reads them. It never edits, deletes, rewrites, copies or
-independently moves them; they follow their parent Root only as a consequence
-of the Root's Folder change, if Fibery navigates that way.
-
-The Root Document's `Open Questions` section is **not** required to be empty
-before `Applied` in v0.1. The frozen Document Schema left that possibility
-open; imposing it here would add a content gate after the human already
-approved the Requirement with its open questions visible in the Review Result.
-Recorded as a decision for approval (section 27).
+independently moves them; they follow their parent Root as a consequence of the
+Root's Folder change (constraint 25).
 
 ## 19. Model runtime
 
@@ -489,7 +524,7 @@ No role is added to `config/sdlc.toml`, the library entry point takes no
 A narrow `ApplyWorkspace` protocol, in the pattern of `ReadyDecisionWorkspace`:
 
 ```text
-reads   read_requirement, find_requirement_by_requirement_id (with count),
+reads   read_requirement, count-aware lookup by Requirement ID,
         read_project, resolve_folder, child_folders,
         documents_attached_to_requirement, child_documents,
         read_document_content, requirement_relations
@@ -522,9 +557,9 @@ PROJECT_STRUCTURE_INVALID        folder tree, Root Document count, unexpected Ro
 NO_PROCESS_RESULT
 INVALID_PROCESS_RESULT
 NO_REVIEW_RESULT
-INVALID_REVIEW_RESULT            includes duplicate confirmed edges
+INVALID_REVIEW_RESULT            includes mirror mismatch and duplicate logical edge
 REVIEW_STATE_CONFLICT
-REVIEW_RESULT_STALE
+REVIEW_RESULT_STALE              before the first write
 RELATION_TARGET_NOT_FOUND
 INVALID_RELATION_TARGET          ambiguous, not Standard, other Project, self
 ```
@@ -539,46 +574,53 @@ VALIDATION_FAILED                a write did not read back as expected
 ```
 
 `PARTIAL_APPLY` carries the durable steps in `created` and the underlying code
-in `details`, as the frozen partial results do. A binding that moved
-mid-application is `PARTIAL_APPLY` whose details name `REVIEW_RESULT_STALE`.
+in `details`, as the frozen partial results do. A binding that moved after the
+first write is `PARTIAL_APPLY` whose details name `REVIEW_RESULT_STALE`.
 
-## 22. Concurrency — assessed explicitly
+## 22. Concurrency — accepted limitation
 
 Fibery offers no compare-and-set, no entity version and no conditional update
 that this project has found; constraint 16 establishes that even a command
-batch is not transactional. Apply cannot make "validate, then write" atomic.
-
-The exposure is larger than Ready's, because Apply writes normative graph data:
+batch is not transactional. Apply cannot make "validate, then write" atomic
+around:
 
 ```text
-step 4 validates the binding
--> a human edits the Root Document
--> steps 9–11 write edges and move the Root
--> step 13 detects the drift
+binding validation -> edge writes -> Root Folder move -> Applied transition
+```
+
+The residual race:
+
+```text
+validate reviewed state
+-> write an approved edge
+-> concurrent Root Document edit
+-> final revalidation detects drift
+```
+
+produces:
+
+```text
+PARTIAL_APPLY
+State remains Apply
+the written approved edge remains
 ```
 
 Mitigation, in order of effect:
 
-1. every check happens immediately before the first write, never on
+1. every check happens immediately before the first write (step 9), never on
    previously displayed state;
-2. the binding is revalidated before `Applied` (step 13), so a Requirement
+2. the binding is revalidated before `Applied` (step 12), so a Requirement
    whose content moved is never marked `Applied`;
-3. the writes are additive edges that a human reviewed and approved, and a
-   Folder move; neither destroys anything, and the retry after rework
-   completes or re-confirms them.
+3. the writes are additive edges a human reviewed and approved, and a Folder
+   move; neither destroys anything.
 
-What remains: a narrow window in which approved edges are written for content
-that changed a moment later. The Requirement then stays in `Apply` with
-`PARTIAL_APPLY`, and the human's next action is rework, after which a new
-Process and Review either re-confirm the same edges or stop proposing them. In
-the second case the edges persist, because removal is undesigned; that is the
-frozen contracts' explicit choice, not a new consequence of the race.
-
-**Assessment: accepted v0.1 limitation, not a design blocker.** The race cannot
-mark stale content `Applied`, cannot remove anything, and cannot write an edge
-no human approved. If a Fibery primitive for conditional updates is discovered,
-it belongs in step 4 → 9 as a single-check replacement, not as a locking
-subsystem.
+This can temporarily leave a normative relation attached to a Requirement whose
+content subsequently drifted. For v0.1 that is accepted under the project's
+established partial-state philosophy: the race cannot mark stale content
+`Applied`, cannot remove anything, and cannot write an edge no human approved.
+Relation removal and recovery semantics are not designed here. If a Fibery
+primitive for conditional updates is discovered, it belongs between steps 9
+and 10 as a single-check replacement, not as a locking subsystem.
 
 ### Relation target races
 
@@ -591,19 +633,21 @@ the only thing the write depends on. No locking.
 
 ## 23. Fibery fake fidelity
 
-Every new Fibery behaviour must be verified live, reflected in the fake, and
-covered by deterministic tests before freeze. Apply introduces four:
+The three behaviours Apply depends on were verified live on 2026-09-04 and are
+recorded as constraints 24, 25 and 26. The implementation fake must reproduce
+them exactly, and deterministic tests must exercise each:
 
 ```text
-add-collection-items for Depends On / Affects, its idempotency, and read-back
-Document Folder update, and the child hierarchy after it
+update-views changes a Document's Folder in place; id, secret, body unchanged
+nested children keep parent-page-id, null Folder and body after the move
+add-collection-items is idempotent; membership is a set
+the inverse side (Blocks / Impacted By) appears on the target
 Apply -> Applied State transition and read-back
-Requirement ID resolution with ambiguity detection
+count-aware lookup by Requirement ID
 ```
 
-The fake must model whatever the live probe shows for a repeated
-`add-collection-items` of the same item, and must reproduce the read-back
-shape of the inverse side. `fake green != integration proven`.
+Any behaviour the implementation needs beyond these must itself be verified
+live before it enters the fake. `fake green != integration proven`.
 
 ## 24. Required tests
 
@@ -630,29 +674,43 @@ older artifact never used as fallback
 every case -> zero relation, Folder and State writes
 ```
 
+### Review Result consistency
+
+```text
+CONFIRMED verifications == confirmed_relation_proposals   -> accepted
+verification CONFIRMED but absent from the mirror          -> INVALID_REVIEW_RESULT
+mirror contains an edge that is not CONFIRMED              -> INVALID_REVIEW_RESULT
+mirror has the wrong kind or target for an edge            -> INVALID_REVIEW_RESULT
+duplicate logical confirmed edge                           -> INVALID_REVIEW_RESULT
+every refusal -> zero normative mutation
+```
+
 ### Relations
 
 ```text
 zero confirmed proposals                  -> no relation write, Root moved, Applied
 one DEPENDS_ON; one AFFECTS; several mixed
 edge already present                      -> not written again, still Applied
-duplicate confirmed edge in the artifact  -> INVALID_REVIEW_RESULT, zero writes
-target missing / ambiguous / Raw / other Project / self -> refused, zero writes
+target missing                            -> RELATION_TARGET_NOT_FOUND, zero writes
+two Requirements with the same Requirement ID -> INVALID_RELATION_TARGET, zero writes
+target Raw / other Project / self         -> INVALID_RELATION_TARGET, zero writes
 one bad target among several good ones    -> zero writes (full preflight)
-target in Draft or Ready                  -> accepted
+target in Draft, Process, Review, Ready   -> accepted
 inverse side (Blocks / Impacted By) reads back on the target
 REJECTED and UNRESOLVED proposals never written
 unconfirmed Process proposals never written
 existing unrelated edges never removed
+repeated add of a present edge is a no-op in the fake, as verified live
 ```
 
-### Root Folder
+### Root Folder and hierarchy
 
 ```text
-Draft -> Approved, same Document id, body unchanged
+Draft -> Approved, same Document id, same secret, body unchanged
 already Approved -> no Folder write, application completes
 neither Draft nor Approved -> PROJECT_STRUCTURE_INVALID, zero writes
-child Process / Review Results keep their parent and their content
+child Process / Review Results keep parent-page-id, null Folder and content
+no write to any child
 ```
 
 ### Partial failure and resume
@@ -669,7 +727,7 @@ each: retry completes with no duplicate edge, no second Root, one Applied
 ### Stale during Apply
 
 ```text
-binding moves before the first write      -> zero writes
+binding moves before the first write      -> REVIEW_RESULT_STALE, zero writes
 binding moves after edges were written    -> edges kept, Root move as reached,
                                              no Applied, PARTIAL_APPLY (stale)
 ```
@@ -704,20 +762,19 @@ the inverse side is visible on the target
 model calls = 0
 ```
 
-Also exercise one bounded partial path if safely practical, most cheaply by
-editing the Root Document after Ready and confirming `REVIEW_RESULT_STALE`
-with zero writes, and one retry after a completed application returning
-`REQUIREMENT_ALREADY_APPLIED`.
+Also exercise one bounded partial or refusal path if safely practical, most
+cheaply by editing the Root Document after Ready and confirming
+`REVIEW_RESULT_STALE` with zero writes, and one retry after a completed
+application returning `REQUIREMENT_ALREADY_APPLIED`.
 
-Before this acceptance, the narrow probes of section 27 must have answered the
-three unverified Fibery questions. Temporary identities only; clean up exactly
-what the run created.
+Temporary identities only; clean up exactly what the run created.
 
 ## 26. Non-goals
 
 ```text
 requirement quality reasoning     human approval or acknowledgement
 a new Review                      relation deletion, replacement or pruning
+Apply-level rework transitions    operator recovery workflow
 Requirement revision / update     supersession, split or merge
 a Rejected state                  approval ledger or Apply Result artifact
 Open Questions emptiness gate     backlog, Project Phases, Epics, Stories, Tasks
@@ -725,41 +782,30 @@ GitHub or implementation mapping  deployment
 transactions or locking           automatic rollback
 ```
 
-## 27. Unresolved questions and blockers
+## 27. Decisions recorded and accepted limitations
 
-Questions that must be answered by a narrow live probe during implementation,
-before freeze. None of them changes the design above unless the answer is
-negative:
+Decisions approved with this contract:
 
-1. **`update-views` with `fibery/Folder`.** Not yet exercised. If no method can
-   change a Document's Folder in place, the Root move cannot be implemented
-   without recreating the Document, which this design forbids. That outcome
-   would be a `DESIGN_BLOCKER`.
-2. **`add-collection-items` for an item already present.** No-op, duplicate,
-   or error. The read-then-write design is correct under all three; the fake
-   must model the real one.
-3. **Child Documents after the Root's Folder changes.** Expected to follow the
-   parent with no write (constraint 19). If Fibery requires per-child updates,
-   the design must be extended before implementation.
-
-Decisions recorded for approval:
-
-4. Target workflow State is not restricted (section 9).
-5. `Open Questions` need not be empty before `Applied` (section 18).
-6. Apply exposes no rework decision; a stale Requirement in `Apply` is returned
-   to `Process` by the human directly in Fibery. The alternative is a second
-   `rework` entry point accepting `Apply`, which is additive and can be decided
-   later without changing anything here.
-7. Ambiguity-aware resolution by Requirement ID is an additive adapter method;
-   frozen callers of the existing method are not changed.
-8. The persisted `confirmed_relation_proposals` mirror is not cross-checked
-   against the derived set. The frozen Reviewer writes both from one value.
+1. Relation target workflow State is unrestricted (section 9).
+2. `Open Questions` need not be empty before `Applied`; no further quality
+   gate exists (section 4).
+3. No Apply-level rework; manual operator recovery is the v0.1 path for a
+   stale or partially applied Requirement (section 6).
+4. A count-aware lookup by Requirement ID is added as an additive adapter
+   capability; the frozen lookup and its callers are unchanged (section 9).
+5. The persisted `confirmed_relation_proposals` mirror must equal the derived
+   confirmed set; disagreement is `INVALID_REVIEW_RESULT` (section 5).
+6. No Apply Result artifact; progress is observable from State, edges and Root
+   Folder (section 14).
+7. Apply reads edges before writing and does not rely on Fibery's verified
+   idempotent add for correctness (section 8).
 
 Accepted limitations, documented rather than engineered around:
 
-9. The validate-then-write race (section 22).
-10. `State = Apply` and `State = Applied` cannot distinguish validated
-    transitions from manual ones (section 16).
+8. The validate-then-write race and the approved edge it may leave behind
+   (section 22).
+9. `State = Apply` and `State = Applied` cannot distinguish validated
+   transitions from manual ones (section 16).
 
-No `DESIGN_BLOCKER` is known today. Item 1 is the only question whose negative
-answer would create one.
+No `DESIGN_BLOCKER`: the three Fibery capabilities the design depends on were
+verified live before this contract was approved.

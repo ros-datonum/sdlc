@@ -458,3 +458,47 @@ confirming the inverse side reports no separate forward edge.
 The Views JSON-RPC method is `delete-views`, taking `{"ids": [...]}`.
 `delete-view`, `remove-view` and `remove-views` all return
 `method ... was not found`.
+
+## Constraint 24 — `update-views` changes a Document's Folder in place — VERIFIED
+
+The Views JSON-RPC method `update-views` takes the same shape as
+`update-folders`:
+
+```text
+update-views   params.updates: [{ id: <view id>, values: { "fibery/Folder": { "fibery/id": <folder id> } } }]
+```
+
+It returns the updated view. Verified live on 2026-09-04 with a temporary
+Document created under a temporary `Requirements/Draft` Folder and moved to a
+sibling `Requirements/Approved` Folder: the Document kept its `fibery/id`, its
+`fibery/public-id`, its `documentSecret` and its body; only `fibery/Folder`
+changed. The Document was readable before and after through the same secret.
+
+Consequence: a Root Document can move between Folders as the same entity. No
+copy-and-delete migration is needed, and none is permitted, because it would
+change the Document identity and orphan nested children.
+
+## Constraint 25 — nested Documents follow their parent's Folder — VERIFIED
+
+A Document nested through `fibery/parent-page-id` (constraint 19) carries
+`fibery/Folder = null`, and changing the parent's Folder leaves the child
+untouched. Verified live on 2026-09-04: two children nested under a Document
+kept their `fibery/id`, their `fibery/parent-page-id`, their `null` Folder and
+their bodies after the parent moved from `Draft` to `Approved`, and
+`query-views` filtered by `fibery/parent-page-id` still listed both.
+
+Consequence: moving a Root Document moves its whole artifact hierarchy with
+it. Process Results and Review Results need no write of their own.
+
+## Constraint 26 — `add-collection-items` is idempotent — VERIFIED
+
+Adding an item that is already a member of an N:N collection returns `ok` and
+leaves the collection unchanged: membership is a set. Verified live on
+2026-09-04 with two temporary Requirements: `SDLC/Depends On` read back as one
+item after the first add and still one item after an identical second add. The
+inverse `SDLC/Blocks` on the target was populated by the first add and was
+also unchanged by the second.
+
+Consequence: re-adding a confirmed relation cannot duplicate an edge or fail.
+Apply still reads existing edges before writing, so that its report of what it
+wrote is exact, but a retry that repeats an add is harmless.
