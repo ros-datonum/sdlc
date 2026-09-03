@@ -248,3 +248,36 @@ def test_every_spelling_of_the_tag_is_a_line_break(tag):
 def test_changed_wording_still_fails_despite_the_soft_break_rule():
     """Normalization must not make two different documents look equal."""
     assert not content_equivalent("a a<br>b b", "a a\nc c\n")
+
+
+def test_a_wrapped_list_item_survives_fibery_soft_breaks():
+    """The live defect found during Ready acceptance.
+
+    Fibery joins a wrapped list item with <br> exactly as it joins a wrapped
+    paragraph, and drops the indent the source gave the continuation line.
+    Post-write validation kept the indent and failed forever.
+    """
+    written = (
+        "- The CLI must print the result code as the first line,\n"
+        "  so that scripts can branch on it.\n"
+        "- Every command must be safe to retry: a second\n"
+        "  invocation must report the already-done outcome and\n"
+        "  change nothing.\n"
+    )
+    stored = (
+        "* The CLI must print the result code as the first line,<br>"
+        "so that scripts can branch on it.\n"
+        "* Every command must be safe to retry: a second<br>"
+        "invocation must report the already-done outcome and<br>change nothing."
+    )
+    assert content_equivalent(stored, written)
+    assert canonical_markdown(stored) == canonical_markdown(written)
+
+
+def test_a_nested_bullet_is_not_a_continuation():
+    """Only text continuing a line loses its indent; a nested item keeps it."""
+    assert canonical_markdown("- one\n  - two\n") == "- one\n  - two"
+
+
+def test_changed_wording_in_a_wrapped_list_item_still_fails():
+    assert not content_equivalent("* a a<br>b b", "- a a\n  c c\n")

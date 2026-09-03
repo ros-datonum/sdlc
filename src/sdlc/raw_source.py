@@ -68,6 +68,12 @@ BLANK_LINE_PATTERN = re.compile(r"\n\s*\n+")
 # Fibery stores a soft line break inside a paragraph as a literal <br>, so a
 # wrapped paragraph is read back as one line. Verified live, 2026-09-02.
 SOFT_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+# A line that continues the previous line's text rather than starting a block.
+# Fibery joins it to that line and drops its leading indent, so the indent a
+# source artifact uses for a wrapped list item is not a difference in content.
+CONTINUATION_INDENT_PATTERN = re.compile(
+    r"(?<=\S\n)[ \t]+(?![-*+>]\s|#{1,6}\s|\d+\.\s|```)(?=\S)"
+)
 
 
 class InvalidRequirementSource(ValueError):
@@ -162,7 +168,9 @@ def canonical_markdown(text: str) -> str:
     - a blank line is inserted before a list that follows a paragraph, and
       after a heading followed directly by anything;
     - a soft line break inside a paragraph comes back as a literal `<br>`, so a
-      paragraph wrapped across source lines is returned as one line.
+      paragraph wrapped across source lines is returned as one line;
+    - the same happens inside a list item, and the indent the source gave the
+      wrapped continuation line is dropped along with the break.
 
     Collapsing blank lines absorbs the insertions and the dropped trailing
     newline together. Every line of actual content is still compared, so
@@ -174,7 +182,10 @@ def canonical_markdown(text: str) -> str:
     considers identical will fingerprint differently.
     """
     unwrapped = SOFT_BREAK_PATTERN.sub("\n", _normalize_line_endings(text))
-    bullets = BULLET_PATTERN.sub(CANONICAL_BULLET, normalize_for_fingerprint(unwrapped))
+    unindented = CONTINUATION_INDENT_PATTERN.sub("", unwrapped)
+    bullets = BULLET_PATTERN.sub(
+        CANONICAL_BULLET, normalize_for_fingerprint(unindented)
+    )
     return BLANK_LINE_PATTERN.sub("\n", bullets)
 
 

@@ -40,16 +40,17 @@ PARAGRAPH_THEN_LIST = re.compile(
 HEADING_THEN_TEXT = re.compile(
     r"^(?P<heading>[ \t]*#{1,6}\s.*\S)\n(?=[ \t]*\S)", re.MULTILINE
 )
-# A soft line break inside a paragraph is stored as a literal <br>, so a
-# paragraph wrapped across source lines is read back as one line. [ \t]* rather
-# than \s* so a blank line - a real paragraph break - is never crossed.
+# A soft line break inside a paragraph or a list item is stored as a literal
+# <br>, so text wrapped across source lines is read back as one line, and the
+# indent of the wrapped continuation is dropped with it. [ \t]* rather than \s*
+# so a blank line - a real paragraph break - is never crossed.
 # A fenced block is returned exactly as written, so it is split out and left
 # alone. Both the Process Result and the Review Result store their payload in
 # one, and mangling it would make every artifact round trip unrealistic.
 FENCED_BLOCK = re.compile(r"(```.*?(?:\n```|\Z))", re.DOTALL)
 SOFT_BREAK = re.compile(
-    rf"^(?![ \t]*{BLOCK_START})(?P<line>[ \t]*\S.*\S|[ \t]*\S)"
-    rf"\n(?=[ \t]*\S)(?![ \t]*{BLOCK_START})",
+    rf"^(?![ \t]*(?:#{{1,6}}\s|```))(?P<line>[ \t]*\S.*\S|[ \t]*\S)"
+    rf"\n(?![ \t]*{BLOCK_START})[ \t]*(?=\S)",
     re.MULTILINE,
 )
 
@@ -62,7 +63,8 @@ def reserialize_like_fibery(markdown: str) -> str:
     - a `-` bullet is returned as `*`;
     - a blank line is inserted before a list that follows a paragraph, and
       after a heading that is followed directly by anything;
-    - a soft line break inside a paragraph is returned as a literal `<br>`;
+    - a soft line break inside a paragraph or a list item is returned as a
+      literal `<br>`, and the continuation's leading indent is dropped;
     - the trailing newline is stripped.
 
     A fenced code block is returned verbatim, which is what makes the JSON
@@ -79,10 +81,12 @@ def _is_fenced(segment: str) -> bool:
 
 
 def _reserialize_prose(markdown: str) -> str:
-    spaced = PARAGRAPH_THEN_LIST.sub(r"\g<paragraph>\n\n", markdown)
+    # Wrapped lines are joined first: a continuation line is part of the item
+    # or paragraph above it, not a paragraph of its own that a list follows.
+    joined = _join_wrapped_paragraphs(markdown)
+    spaced = PARAGRAPH_THEN_LIST.sub(r"\g<paragraph>\n\n", joined)
     spaced = HEADING_THEN_TEXT.sub(r"\g<heading>\n\n", spaced)
-    bulleted = BULLET_WRITTEN.sub(BULLET_STORED, spaced)
-    return _join_wrapped_paragraphs(bulleted)
+    return BULLET_WRITTEN.sub(BULLET_STORED, spaced)
 
 
 def _join_wrapped_paragraphs(markdown: str) -> str:

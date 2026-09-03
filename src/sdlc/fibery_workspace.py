@@ -288,3 +288,28 @@ class RawProcessorWorkspace(Protocol):
 
     def child_folders(self, parent_id: str) -> list[FolderNode]:
         """Folders directly under this parent."""
+
+
+class ReadyDecisionWorkspace(Protocol):
+    """Operations the Standard Requirement Ready Decision performs against Fibery.
+
+    Deliberately narrower than `RawProcessorWorkspace`: there is no way to write
+    a Document, create one, or touch a relation through this protocol, which is
+    what makes it structurally impossible for a human decision to alter the
+    evidence it was made on. The single write is the workflow State.
+    """
+
+    def read_requirement(self, entity_id: str) -> RequirementRecord | None:
+        """Read one Requirement entity by id."""
+
+    def documents_attached_to_requirement(self, public_id: str) -> list[DocumentNode]:
+        """Documents attached to this Requirement entity."""
+
+    def child_documents(self, parent_document_id: str) -> list[DocumentNode]:
+        """Documents nested directly under this Document."""
+
+    def read_document_content(self, secret: str) -> str:
+        """Read a Document's Markdown content."""
+
+    def set_requirement_state(self, entity_id: str, state: str) -> None:
+        """Move the Requirement's workflow State."""

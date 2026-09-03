@@ -45,6 +45,8 @@ def test_the_fake_reserializes_like_fibery():
     assert reserialize_like_fibery("## S\nBody.\n") == "## S\n\nBody."
     # A soft line break inside a paragraph becomes a literal <br>.
     assert reserialize_like_fibery("a a\nb b\n") == "a a<br>b b"
+    # A wrapped list item is joined the same way, and its indent is dropped.
+    assert reserialize_like_fibery("- a a,\n  b b\n- c\n") == "* a a,<br>b b\n* c"
     # A real paragraph break is not a soft break and is preserved.
     assert reserialize_like_fibery("One.\n\nTwo.\n") == "One.\n\nTwo."
     # A fenced block is returned verbatim: this is where artifact JSON lives.
