@@ -272,7 +272,9 @@ to what was written. Verified live, six behaviours:
 
 A fenced code block is the exception: it is returned verbatim. That is what lets
 the JSON payload of a Process Result or a Review Result survive a round trip
-unchanged.
+unchanged. The serialization rules above therefore apply only outside fenced
+blocks, and canonical comparison keeps fenced content literal: an indentation
+change inside a fenced example is a change to the document.
 
 Each behaviour was found only by writing real content to the live workspace, and
 each broke post-write validation before it was known. The `<br>` case was found

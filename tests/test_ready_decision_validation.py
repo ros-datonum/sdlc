@@ -355,3 +355,34 @@ def test_every_check_happens_before_the_state_write():
         "read_document_content",
     }
     assert calls[write + 1 :] == ["read_requirement"]
+
+
+# -- fenced content is literal --------------------------------------------
+
+FENCED_EXAMPLE = 'Example:\n\n```json\n{\n    "timeout": 30\n}\n```'
+
+
+def test_an_indentation_change_inside_a_fenced_example_is_stale():
+    """Freeze review B1: a fenced edit must not slip past the document binding."""
+    ws, requirement, root, before = build_ready_workspace(
+        normalized_changes={"detailed_behavior": FENCED_EXAMPLE}
+    )
+    assert '    "timeout"' in ws.content[root.secret]
+    ws.content[root.secret] = ws.content[root.secret].replace(
+        '    "timeout"', '  "timeout"'
+    )
+    result = approve(ws, requirement)
+    assert result.code is Code.REVIEW_RESULT_STALE
+    assert "Root Document was edited" in " ".join(result.details)
+    assert state_of(ws, requirement) == "Ready"
+    assert mutations_since(ws, before) == []
+
+
+def test_an_unedited_fenced_example_still_approves():
+    ws, requirement, _, before = build_ready_workspace(
+        normalized_changes={"detailed_behavior": FENCED_EXAMPLE}
+    )
+    assert approve(ws, requirement).code is Code.REQUIREMENT_APPROVED
+    assert mutations_since(ws, before) == [
+        f"set_requirement_state {requirement.id} Apply"
+    ]

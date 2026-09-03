@@ -22,7 +22,9 @@ from standard_fake import REQUIREMENT_ID
 STATE_TRANSITION = "set_requirement_state"
 
 
-def build_ready_workspace(verdict="PASS", with_relation=False, process_iterations=1):
+def build_ready_workspace(
+    verdict="PASS", with_relation=False, process_iterations=1, normalized_changes=None
+):
     """A Standard Requirement in Ready, reviewed to the requested verdict.
 
     Returns the workspace, the Requirement record, its Root Document and the
@@ -32,7 +34,10 @@ def build_ready_workspace(verdict="PASS", with_relation=False, process_iteration
     findings = () if verdict == "PASS" else (finding(),)
     relations = (relation(),) if with_relation else ()
     ws, requirement, root, _ = build_review_workspace(
-        findings=findings, relations=relations, process_iterations=process_iterations
+        findings=findings,
+        relations=relations,
+        process_iterations=process_iterations,
+        normalized_changes=normalized_changes,
     )
     response = review_output(
         finding_verifications=[confirm(severity=_severity(verdict))]

@@ -74,6 +74,14 @@ SOFT_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
 CONTINUATION_INDENT_PATTERN = re.compile(
     r"(?<=\S\n)[ \t]+(?![-*+>]\s|#{1,6}\s|\d+\.\s|```)(?=\S)"
 )
+# A fenced code block: an opening fence at the start of a line, through the
+# closing fence at the start of a line, or to the end of the text when it is
+# never closed. Fibery returns fenced content verbatim, so nothing inside one
+# is Fibery serialization and nothing inside one may be normalized. The group
+# makes `split` return prose and fences alternately: odd segments are fences.
+FENCED_BLOCK_PATTERN = re.compile(
+    r"(^```[^\n]*\n.*?(?:^```[ \t]*$|\Z))", re.MULTILINE | re.DOTALL
+)
 
 
 class InvalidRequirementSource(ValueError):
@@ -176,12 +184,27 @@ def canonical_markdown(text: str) -> str:
     newline together. Every line of actual content is still compared, so
     missing or altered text is still detected.
 
+    A fenced code block is the exception, in Fibery and therefore here: its
+    content is returned verbatim, so it is kept literally - indentation, blank
+    lines, list markers, `<br>` and heading-like text included. An indentation
+    change inside a fenced example is a real change to the document.
+
     This is the single canonical representation. Anything that must agree with
     `content_equivalent` - notably document fingerprints - has to derive from
     this function rather than normalizing separately, or two documents Fibery
     considers identical will fingerprint differently.
     """
-    unwrapped = SOFT_BREAK_PATTERN.sub("\n", _normalize_line_endings(text))
+    segments = FENCED_BLOCK_PATTERN.split(_normalize_line_endings(text))
+    parts = (
+        segment if index % 2 else _canonical_prose(segment)
+        for index, segment in enumerate(segments)
+    )
+    return "\n".join(part for part in parts if part)
+
+
+def _canonical_prose(text: str) -> str:
+    """Canonicalize ordinary Markdown, where Fibery re-serializes."""
+    unwrapped = SOFT_BREAK_PATTERN.sub("\n", text)
     unindented = CONTINUATION_INDENT_PATTERN.sub("", unwrapped)
     bullets = BULLET_PATTERN.sub(
         CANONICAL_BULLET, normalize_for_fingerprint(unindented)

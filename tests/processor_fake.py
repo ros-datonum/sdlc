@@ -22,6 +22,7 @@ from sdlc.fibery_workspace import (
     RequirementRelations,
 )
 from sdlc.model_runtime import ModelResponse
+from sdlc.raw_source import FENCED_BLOCK_PATTERN
 
 # Fibery re-serializes stored Markdown (Fibery-API-Constraints constraint 11).
 # Modelled narrowly so post-write validation is exercised against what Fibery
@@ -46,8 +47,10 @@ HEADING_THEN_TEXT = re.compile(
 # so a blank line - a real paragraph break - is never crossed.
 # A fenced block is returned exactly as written, so it is split out and left
 # alone. Both the Process Result and the Review Result store their payload in
-# one, and mangling it would make every artifact round trip unrealistic.
-FENCED_BLOCK = re.compile(r"(```.*?(?:\n```|\Z))", re.DOTALL)
+# one, and mangling it would make every artifact round trip unrealistic. The
+# fence boundary is the production one, so the fake and the canonicalizer can
+# never disagree about where literal content begins.
+FENCED_BLOCK = FENCED_BLOCK_PATTERN
 SOFT_BREAK = re.compile(
     rf"^(?![ \t]*(?:#{{1,6}}\s|```))(?P<line>[ \t]*\S.*\S|[ \t]*\S)"
     rf"\n(?![ \t]*{BLOCK_START})[ \t]*(?=\S)",
