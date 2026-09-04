@@ -164,6 +164,14 @@ class FakeProcessorWorkspace:
             None,
         )
 
+    def find_requirements_by_requirement_id(self, requirement_id):
+        """Bounded to two rows, as the live query is: enough to see ambiguity."""
+        self._record("find_requirements_by_requirement_id")
+        matches = [
+            r for r in self.requirements.values() if r.requirement_id == requirement_id
+        ]
+        return matches[:2]
+
     def read_project(self, project_id):
         self._record("read_project")
         return self.project if self.project.id == project_id else None
@@ -291,6 +299,57 @@ class FakeProcessorWorkspace:
             raise FiberyError(f"Unknown state {state!r}.")
         self.mutations.append(f"set_requirement_state {entity_id} {state}")
         self._replace(entity_id, state=state)
+
+    def add_depends_on(self, entity_id, target_entity_id):
+        """Constraint 26: membership is a set; a repeated add is a no-op."""
+        self._record("add_depends_on")
+        self.mutations.append(f"add_depends_on {entity_id} -> {target_entity_id}")
+        self._add_member(self.depends_on_ids, entity_id, target_entity_id)
+
+    def add_affects(self, entity_id, target_entity_id):
+        """Constraint 26: membership is a set; a repeated add is a no-op."""
+        self._record("add_affects")
+        self.mutations.append(f"add_affects {entity_id} -> {target_entity_id}")
+        self._add_member(self.affects_ids, entity_id, target_entity_id)
+
+    def set_document_folder(self, document_id, folder_id):
+        """Constraint 24: the same Document moves; nothing else about it changes.
+
+        Constraint 25: nested children carry no Folder and are untouched.
+        """
+        self._record("set_document_folder")
+        if folder_id not in {f.id for f in self.folders}:
+            raise FiberyError(f"Unknown folder {folder_id!r}.")
+        self.mutations.append(f"set_document_folder {document_id} {folder_id}")
+        current = next(d for d in self.documents if d.id == document_id)
+        self.documents[self.documents.index(current)] = DocumentNode(
+            id=current.id,
+            name=current.name,
+            folder_id=folder_id,
+            entity_public_id=current.entity_public_id,
+            secret=current.secret,
+            parent_document_id=current.parent_document_id,
+        )
+
+    def inverse_relations(self, entity_id):
+        """The Fibery-maintained inverse sides: who Blocks and who Impacts."""
+        blocks = [
+            s for s, targets in self.depends_on_ids.items() if entity_id in targets
+        ]
+        impacted_by = [
+            s for s, targets in self.affects_ids.items() if entity_id in targets
+        ]
+        return RequirementRelations(
+            depends_on=self._relation_ids(blocks),
+            affects=self._relation_ids(impacted_by),
+        )
+
+    def _add_member(self, collection, entity_id, item_id):
+        if entity_id not in self.requirements or item_id not in self.requirements:
+            raise FiberyError("entity not found")
+        members = collection.setdefault(entity_id, [])
+        if item_id not in members:
+            members.append(item_id)
 
     def add_derived_from(self, entity_id, raw_entity_id):
         self._record("add_derived_from")

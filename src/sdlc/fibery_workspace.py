@@ -313,3 +313,61 @@ class ReadyDecisionWorkspace(Protocol):
 
     def set_requirement_state(self, entity_id: str, state: str) -> None:
         """Move the Requirement's workflow State."""
+
+
+class ApplyWorkspace(Protocol):
+    """Operations the Standard Requirement Apply performs against Fibery.
+
+    Confined to what deterministic application needs. There is no way to
+    write a Document body, create a Document, remove a relation or touch
+    `Revision` through this protocol. The three writes are additive relation
+    membership, a Document's Folder, and the workflow State.
+    """
+
+    def read_requirement(self, entity_id: str) -> RequirementRecord | None:
+        """Read one Requirement entity by id."""
+
+    def find_requirements_by_requirement_id(
+        self, requirement_id: str
+    ) -> list[RequirementRecord]:
+        """Every Requirement carrying this Requirement ID, bounded to two.
+
+        Two rows are enough to tell "one" from "more than one"; a relation
+        target that resolves ambiguously must be refused, never adopted.
+        """
+
+    def read_project(self, project_id: str) -> ProjectRecord | None:
+        """Read the Project a Requirement belongs to."""
+
+    def resolve_folder(self, folder_id: str) -> FolderNode | None:
+        """Read one Folder back by id."""
+
+    def child_folders(self, parent_id: str) -> list[FolderNode]:
+        """Folders directly under this parent."""
+
+    def documents_attached_to_requirement(self, public_id: str) -> list[DocumentNode]:
+        """Documents attached to this Requirement entity."""
+
+    def resolve_document(self, document_id: str) -> DocumentNode | None:
+        """Read one Document back by id, including its Folder."""
+
+    def child_documents(self, parent_document_id: str) -> list[DocumentNode]:
+        """Documents nested directly under this Document."""
+
+    def read_document_content(self, secret: str) -> str:
+        """Read a Document's Markdown content."""
+
+    def requirement_relations(self, entity_id: str) -> RequirementRelations:
+        """The Depends On and Affects edges this Requirement already has."""
+
+    def add_depends_on(self, entity_id: str, target_entity_id: str) -> None:
+        """Add one Depends On edge. Fibery maintains the inverse Blocks."""
+
+    def add_affects(self, entity_id: str, target_entity_id: str) -> None:
+        """Add one Affects edge. Fibery maintains the inverse Impacted By."""
+
+    def set_document_folder(self, document_id: str, folder_id: str) -> None:
+        """Move the same Document entity into another Folder."""
+
+    def set_requirement_state(self, entity_id: str, state: str) -> None:
+        """Move the Requirement's workflow State."""
