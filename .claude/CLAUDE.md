@@ -34,6 +34,12 @@ Do not modify project settings to override the user's global permission/edit mod
 
 In particular, do not add `permissions`, `defaultMode`, or bypass-permission flags to project config.
 
+## Fibery integration
+
+New Fibery read or write semantics are frozen only after: a deterministic fake plus
+tests, a narrow live probe on temporary state, a fake-versus-live comparison, and a
+regression for every discrepancy. A green fake is never integration proof.
+
 ## Git safety
 
 Unrecognized changes are foreign state. Never discard, reset, clean, or overwrite them.
