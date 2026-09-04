@@ -358,3 +358,38 @@ def test_the_ambiguous_target_entity_is_never_the_one_written():
     )
     refused(ws, requirement, before, Code.INVALID_RELATION_TARGET)
     assert OTHER_ENTITY not in json.dumps(ws.depends_on_ids)
+
+
+# -- each binding is load-bearing on its own --------------------------------
+
+
+def test_a_new_process_iteration_with_the_same_output_is_stale():
+    """Freeze review N1: the iteration binding must stand on its own.
+
+    A later Process Result whose output fingerprint equals the reviewed one
+    moves exactly one binding, the iteration. The Root Document is unchanged
+    and the output fingerprint agrees, so only the iteration guard can refuse.
+    """
+    ws, requirement, root, before = build_apply_workspace(proposals=(proposal(),))
+    reviewed = process_result_nodes(ws)[-1]
+    reviewed_payload, _, _ = payload_of(ws, reviewed)
+    later = build_process_result(
+        requirement_id=REQUIREMENT_ID,
+        iteration=2,
+        input_fingerprint="input-2",
+        analysis=AnalysisResult(
+            normalized=NormalizedRequirement(**normalized()),
+            analysis={},
+            findings=(),
+            proposed_relations=(),
+        ),
+    )
+    assert later.output_fingerprint == reviewed_payload["output_fingerprint"]
+    add_document(
+        ws, root, process_result_name(REQUIREMENT_ID, 2), render_process_result(later)
+    )
+
+    result = refused(ws, requirement, before, Code.REVIEW_RESULT_STALE)
+    assert "iteration 2 now exists, but 1 was reviewed" in " ".join(result.details)
+    assert "Root Document was edited" not in " ".join(result.details)
+    assert ws.requirements[requirement.id].revision == requirement.revision

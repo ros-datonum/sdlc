@@ -20,7 +20,7 @@ from apply_fake import (
     root_node,
     standard,
 )
-from sdlc.fibery_workspace import FiberyError
+from sdlc.fibery_workspace import FiberyError, RequirementRecord
 from sdlc.requirement_apply import apply_standard_requirement
 from sdlc.results import ApplyResultCode as Code
 from sdlc.standard_analysis import RelationKind
@@ -268,3 +268,40 @@ def test_revision_is_unchanged_across_partial_and_resume():
     assert ws.requirements[requirement.id].revision == 1
     apply(ws, requirement)
     assert ws.requirements[requirement.id].revision == 1
+
+
+# -- the final read-back guards Revision on its own -------------------------
+
+
+def test_an_applied_write_that_also_moves_revision_is_not_reported_as_applied():
+    """Freeze review N2: the Revision read-back must stand on its own.
+
+    The State write lands durably, but the entity reads back with a changed
+    Revision. Every normative step is complete, so the honest answer is a
+    partial application that names the validation failure, never success.
+    """
+    ws, requirement, root, _ = build_two_edge_workspace()
+    original = ws.set_requirement_state
+
+    def applied_with_a_bumped_revision(entity_id, state):
+        original(entity_id, state)
+        current = ws.requirements[entity_id]
+        ws.requirements[entity_id] = RequirementRecord(
+            **{**current.__dict__, "revision": current.revision + 1}
+        )
+
+    ws.set_requirement_state = applied_with_a_bumped_revision
+    result = apply(ws, requirement)
+
+    assert result.code is Code.PARTIAL_APPLY
+    assert not result.is_normal
+    assert "VALIDATION_FAILED" in result.details
+    assert "Revision" in " ".join(result.details)
+    assert "State = Applied" not in result.created
+    # Durable state is reported as it is: the State write landed, the edges
+    # and the Root move stay, and nothing is rolled back.
+    assert state_of(ws, requirement) == "Applied"
+    assert ws.requirements[requirement.id].revision == requirement.revision + 1
+    assert edges(ws, requirement.id) == {(DEPENDS, TARGET_ID), (AFFECTS, OTHER_ID)}
+    assert root_node(ws, root).folder_id == "f-approved"
+    assert apply(ws, requirement).code is Code.REQUIREMENT_ALREADY_APPLIED
