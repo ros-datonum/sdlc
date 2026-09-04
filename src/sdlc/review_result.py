@@ -205,20 +205,7 @@ def _relation_payload(verification: RelationVerification) -> dict[str, str]:
 
 def parse_review_result(text: str) -> ReviewResult:
     """Read a persisted review back, or refuse to trust it."""
-    match = JSON_FENCE.search(text or "")
-    if match is None:
-        raise InvalidReviewResult(
-            "The Review Result document contains no JSON payload."
-        )
-    try:
-        payload = json.loads(match.group("body"))
-    except ValueError as error:
-        raise InvalidReviewResult(
-            f"The Review Result payload is not valid JSON: {error}"
-        ) from error
-    if not isinstance(payload, dict):
-        raise InvalidReviewResult("The Review Result payload must be an object.")
-
+    payload = _read_payload(text)
     version = payload.get(VERSION_KEY)
     if version != REVIEW_RESULT_VERSION:
         raise InvalidReviewResult(
@@ -266,6 +253,44 @@ def parse_review_result(text: str) -> ReviewResult:
         assessment=dict(payload.get(ASSESSMENT_KEY) or {}),
         version=version,
     )
+
+
+def read_confirmed_relation_mirror(text: str) -> tuple[tuple[RelationKind, str], ...]:
+    """The persisted `confirmed_relation_proposals`, as logical edges.
+
+    `parse_review_result` derives the confirmed set from the verifications and
+    deliberately ignores this mirror. Apply, the first normative consumer, must
+    check that the two agree, so the mirror is exposed here beside the parser
+    rather than re-extracted by a second reader of the artifact.
+    """
+    payload = _read_payload(text)
+    edges = []
+    for entry in _as_list(payload.get(CONFIRMED_RELATIONS_KEY)):
+        verification = _read_relation_verification(entry)
+        if verification.outcome is not VerificationOutcome.CONFIRMED:
+            raise InvalidReviewResult(
+                f"confirmed_relation_proposals carries a {verification.outcome.value} "
+                f"entry for {verification.kind.value} {verification.requirement_id}."
+            )
+        edges.append((verification.kind, verification.requirement_id))
+    return tuple(edges)
+
+
+def _read_payload(text: str) -> dict[str, object]:
+    match = JSON_FENCE.search(text or "")
+    if match is None:
+        raise InvalidReviewResult(
+            "The Review Result document contains no JSON payload."
+        )
+    try:
+        payload = json.loads(match.group("body"))
+    except ValueError as error:
+        raise InvalidReviewResult(
+            f"The Review Result payload is not valid JSON: {error}"
+        ) from error
+    if not isinstance(payload, dict):
+        raise InvalidReviewResult("The Review Result payload must be an object.")
+    return payload
 
 
 def _as_list(value: object) -> list[object]:

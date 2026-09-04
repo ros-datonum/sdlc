@@ -259,3 +259,83 @@ def test_a_persisted_verification_must_grade_iff_it_confirms():
     tampered = render_review_result(result).replace('"CONFIRMED"', '"REJECTED"', 1)
     with pytest.raises(InvalidReviewResult, match="if and only if"):
         parse_review_result(tampered)
+
+
+# -- the persisted confirmed-relation mirror --------------------------------
+
+
+def relation(kind="DEPENDS_ON", requirement_id="SDLC-FR-0002"):
+    from sdlc.standard_analysis import ProposedRelation, RelationKind
+
+    return ProposedRelation(
+        kind=RelationKind(kind), requirement_id=requirement_id, rationale="r"
+    )
+
+
+def verified(kind="DEPENDS_ON", requirement_id="SDLC-FR-0002", outcome="CONFIRMED"):
+    return {
+        "kind": kind,
+        "requirement_id": requirement_id,
+        "outcome": outcome,
+        "reason": "checked",
+    }
+
+
+def test_the_mirror_reads_back_the_confirmed_edges_the_reviewer_wrote():
+    from sdlc.review_result import read_confirmed_relation_mirror
+    from sdlc.standard_analysis import RelationKind
+
+    result = build(
+        review_output(
+            relation_verifications=[
+                verified(),
+                verified("AFFECTS", "SDLC-FR-0003", outcome="REJECTED"),
+            ]
+        ),
+        relations=(relation(), relation("AFFECTS", "SDLC-FR-0003")),
+    )
+    mirror = read_confirmed_relation_mirror(render_review_result(result))
+    assert mirror == ((RelationKind.DEPENDS_ON, "SDLC-FR-0002"),)
+    assert mirror == tuple(
+        (v.kind, v.requirement_id) for v in result.confirmed_relations
+    )
+
+
+def test_an_absent_mirror_reads_as_empty():
+    from sdlc.review_result import read_confirmed_relation_mirror
+
+    text = render_review_result(build()).replace(
+        '"confirmed_relation_proposals": []', '"confirmed_relation_proposals": null'
+    )
+    assert read_confirmed_relation_mirror(text) == ()
+
+
+def test_a_mirror_entry_that_is_not_confirmed_is_rejected():
+    from sdlc.review_result import read_confirmed_relation_mirror
+
+    payload = json.loads(
+        render_review_result(build()).split("```json\n")[1].split("\n```")[0]
+    )
+    payload["confirmed_relation_proposals"] = [verified(outcome="REJECTED")]
+    text = "# x\n\n```json\n" + json.dumps(payload) + "\n```\n"
+    with pytest.raises(InvalidReviewResult):
+        read_confirmed_relation_mirror(text)
+
+
+def test_a_malformed_mirror_entry_is_rejected():
+    from sdlc.review_result import read_confirmed_relation_mirror
+
+    payload = json.loads(
+        render_review_result(build()).split("```json\n")[1].split("\n```")[0]
+    )
+    payload["confirmed_relation_proposals"] = [{"kind": "DEPENDS_ON"}]
+    text = "# x\n\n```json\n" + json.dumps(payload) + "\n```\n"
+    with pytest.raises(InvalidReviewResult):
+        read_confirmed_relation_mirror(text)
+
+
+def test_the_mirror_reader_refuses_a_document_without_a_payload():
+    from sdlc.review_result import read_confirmed_relation_mirror
+
+    with pytest.raises(InvalidReviewResult):
+        read_confirmed_relation_mirror("# prose only\n")

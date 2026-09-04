@@ -50,6 +50,13 @@ DOCUMENT_SECRET_META_KEY = "documentSecret"
 QUERY_VIEWS_METHOD = "query-views"
 CREATE_VIEWS_METHOD = "create-views"
 CREATE_VIEWS_PARAM = "views"
+# Constraint 24: the same shape as update-folders, and it moves the same
+# Document entity between Folders in place.
+UPDATE_VIEWS_METHOD = "update-views"
+UPDATE_VIEWS_PARAM = "updates"
+ADD_COLLECTION_ITEMS_COMMAND = "fibery.entity/add-collection-items"
+# Two rows distinguish "exactly one" from "more than one" without listing.
+AMBIGUITY_QUERY_LIMIT = 2
 REQUIREMENT_QUERY_LIMIT = 1000
 
 FIELD_LABEL_NAME = "name"
@@ -945,11 +952,62 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
             raise FiberyError(
                 f"{self.requirement_database} has no 'Derived From' Field."
             )
+        self._add_collection_item(schema.derived_from_field, entity_id, raw_entity_id)
+
+    # -- apply ----------------------------------------------------------
+
+    def find_requirements_by_requirement_id(
+        self, requirement_id: str
+    ) -> list[RequirementRecord]:
+        """Every Requirement with this Requirement ID, bounded to two rows.
+
+        Unlike `find_requirement_by_requirement_id`, which is frozen for its
+        callers, this reports ambiguity instead of hiding a second match.
+        """
+        schema = self._requirement_schema()
+        rows = self._query_requirements(
+            schema,
+            ["=", [schema.requirement_id_field], "$r"],
+            {"$r": requirement_id},
+            AMBIGUITY_QUERY_LIMIT,
+        )
+        return [self._to_requirement(schema, row) for row in rows]
+
+    def add_depends_on(self, entity_id: str, target_entity_id: str) -> None:
+        """Add one Depends On edge; Fibery maintains the inverse Blocks."""
+        schema = self._requirement_schema()
+        if not schema.depends_on_field:
+            raise FiberyError(f"{self.requirement_database} has no 'Depends On' Field.")
+        self._add_collection_item(schema.depends_on_field, entity_id, target_entity_id)
+
+    def add_affects(self, entity_id: str, target_entity_id: str) -> None:
+        """Add one Affects edge; Fibery maintains the inverse Impacted By."""
+        schema = self._requirement_schema()
+        if not schema.affects_field:
+            raise FiberyError(f"{self.requirement_database} has no 'Affects' Field.")
+        self._add_collection_item(schema.affects_field, entity_id, target_entity_id)
+
+    def set_document_folder(self, document_id: str, folder_id: str) -> None:
+        """Move the same Document entity into another Folder (constraint 24)."""
+        self._client.views_rpc(
+            UPDATE_VIEWS_METHOD,
+            {
+                UPDATE_VIEWS_PARAM: [
+                    {
+                        "id": document_id,
+                        "values": {VIEW_FOLDER_KEY: {ID_FIELD: folder_id}},
+                    }
+                ]
+            },
+        )
+
+    def _add_collection_item(self, field: str, entity_id: str, item_id: str) -> None:
+        """Additive membership; a repeated add is a no-op (constraint 26)."""
         self._client.command(
-            "fibery.entity/add-collection-items",
+            ADD_COLLECTION_ITEMS_COMMAND,
             {
                 "type": self.requirement_database,
-                "field": schema.derived_from_field,
-                "entity": {entity_id: [raw_entity_id]},
+                "field": field,
+                "entity": {entity_id: [item_id]},
             },
         )

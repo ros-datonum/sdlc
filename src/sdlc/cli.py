@@ -31,9 +31,12 @@ from sdlc.ready_decision import (
     rework_standard_requirement,
 )
 from sdlc.requirement_add import add_raw_requirement
+from sdlc.requirement_apply import apply_standard_requirement
 from sdlc.results import (
     AddResult,
     AddResultCode,
+    ApplyResult,
+    ApplyResultCode,
     InitResult,
     ProcessResult,
     ProcessResultCode,
@@ -143,6 +146,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--requirement", required=True, help="Standard Requirement entity id."
     )
     rework.set_defaults(handler=_run_requirement_rework)
+
+    apply = requirement_commands.add_parser(
+        "apply",
+        help="Deterministically apply an approved Standard Requirement in Apply.",
+    )
+    apply.add_argument(
+        "--requirement", required=True, help="Standard Requirement entity id."
+    )
+    apply.set_defaults(handler=_run_requirement_apply)
 
     return parser
 
@@ -329,6 +341,53 @@ def _run_requirement_rework(
     )
     render_ready_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _run_requirement_apply(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    """Deterministic application. No model runtime is configured or invoked."""
+    try:
+        settings = load_fibery_settings()
+    except ConfigurationError as error:
+        print(str(error), file=error_out)
+        return EXIT_FAILURE
+
+    result = apply_standard_requirement(
+        _ready_workspace(settings), arguments.requirement
+    )
+    render_apply_result(result, out if result.is_normal else error_out)
+    return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def render_apply_result(result: ApplyResult, stream: TextIO) -> None:
+    """Print the result code first, then the human readable detail."""
+    print(result.code.value, file=stream)
+    print(file=stream)
+    print(result.message, file=stream)
+
+    if result.code is ApplyResultCode.REQUIREMENT_APPLIED:
+        if result.relations_added:
+            print("\nRelations written:", file=stream)
+            for item in result.relations_added:
+                print(f"- {item}", file=stream)
+        if result.relations_present:
+            print("\nRelations already present:", file=stream)
+            for item in result.relations_present:
+                print(f"- {item}", file=stream)
+        print(f"\nRoot Document: Requirements/{result.root_folder}", file=stream)
+        return
+    if result.code is ApplyResultCode.REQUIREMENT_ALREADY_APPLIED:
+        return
+
+    if result.created:
+        print("\nApplied in Fibery (left in place):", file=stream)
+        for item in result.created:
+            print(f"- {item}", file=stream)
+    if result.details:
+        print("\nDetails:", file=stream)
+        for item in result.details:
+            print(f"- {item}", file=stream)
 
 
 def _ready_workspace(settings: FiberySettings) -> FiberyRawProcessorWorkspace:

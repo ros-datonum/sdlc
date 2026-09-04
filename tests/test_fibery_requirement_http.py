@@ -442,3 +442,105 @@ def test_a_missing_entity_reads_no_relations():
     workspace, _ = build_with_relations([ok([])])
     relations = workspace.requirement_relations("gone")
     assert (relations.depends_on, relations.affects) == ((), ())
+
+
+# -- apply: relation adds, ambiguity-aware lookup, Folder move --------------
+
+
+def test_the_ambiguity_aware_lookup_asks_for_two_rows_and_returns_them_all():
+    """One row hides a duplicate; two rows are enough to refuse it."""
+    workspace, opener = build_with_relations(
+        [
+            ok(
+                [
+                    requirement_row("a", "SDLC-FR-0002"),
+                    requirement_row("b", "SDLC-FR-0002"),
+                ]
+            )
+        ]
+    )
+    matches = workspace.find_requirements_by_requirement_id("SDLC-FR-0002")
+
+    assert [m.id for m in matches] == ["a", "b"]
+    query = opener.requests[-1]["body"][0]["args"]["query"]
+    assert query["q/limit"] == 2
+    assert query["q/where"] == ["=", ["SDLC/Requirement ID"], "$r"]
+
+
+def test_the_ambiguity_aware_lookup_returns_nothing_for_an_unknown_id():
+    workspace, _ = build_with_relations([ok([])])
+    assert workspace.find_requirements_by_requirement_id("SDLC-FR-0404") == []
+
+
+def test_the_frozen_single_lookup_is_unchanged():
+    workspace, opener = build_with_relations(
+        [ok([requirement_row("a", "SDLC-FR-0002")])]
+    )
+    assert workspace.find_requirement_by_requirement_id("SDLC-FR-0002").id == "a"
+    assert opener.requests[-1]["body"][0]["args"]["query"]["q/limit"] == 2
+
+
+def test_depends_on_is_added_with_add_collection_items():
+    """Constraint 15: collections are written with the plural command."""
+    workspace, opener = build_with_relations([ok("ok")])
+    workspace.add_depends_on("std-1", "dep-1")
+
+    envelope = opener.requests[-1]["body"][0]
+    assert envelope["command"] == "fibery.entity/add-collection-items"
+    assert envelope["args"] == {
+        "type": "SDLC/Requirement",
+        "field": "SDLC/Depends On",
+        "entity": {"std-1": ["dep-1"]},
+    }
+
+
+def test_affects_is_added_with_add_collection_items():
+    workspace, opener = build_with_relations([ok("ok")])
+    workspace.add_affects("std-1", "aff-1")
+    args = opener.requests[-1]["body"][0]["args"]
+    assert args["field"] == "SDLC/Affects"
+    assert args["entity"] == {"std-1": ["aff-1"]}
+
+
+def test_a_database_without_the_relation_field_cannot_add_an_edge():
+    opener = StubOpener([ok(REQUIREMENT_SCHEMA)])
+    workspace = FiberyRawProcessorWorkspace(
+        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+    )
+    with pytest.raises(FiberyError):
+        workspace.add_depends_on("std-1", "dep-1")
+    assert len(opener.requests) == 1
+
+
+def build_apply_views(payloads):
+    """View operations of the processor workspace that never touch the schema."""
+    opener = StubOpener(list(payloads))
+    workspace = FiberyRawProcessorWorkspace(
+        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+    )
+    return workspace, opener
+
+
+def test_the_document_folder_is_changed_with_update_views():
+    """Constraint 24: update-views takes the update-folders shape."""
+    workspace, opener = build_apply_views([rpc([])])
+    workspace.set_document_folder("doc-1", "folder-approved")
+
+    body = opener.requests[-1]["body"]
+    assert body["method"] == "update-views"
+    assert body["params"] == {
+        "updates": [
+            {
+                "id": "doc-1",
+                "values": {"fibery/Folder": {"fibery/id": "folder-approved"}},
+            }
+        ]
+    }
+
+
+def test_a_rejected_folder_update_becomes_a_fibery_error():
+    workspace, _ = build_apply_views(
+        [{"jsonrpc": "2.0", "id": 1, "error": {"message": "no"}}]
+    )
+    with pytest.raises(FiberyError):
+        workspace.set_document_folder("doc-1", "folder-approved")

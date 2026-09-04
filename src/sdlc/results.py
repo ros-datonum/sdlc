@@ -317,3 +317,58 @@ class ReadyDecisionResult:
     @property
     def is_normal(self) -> bool:
         return self.code in NORMAL_READY_OUTCOMES
+
+
+class ApplyResultCode(StrEnum):
+    """Every outcome the Standard Requirement Apply may report."""
+
+    REQUIREMENT_APPLIED = "REQUIREMENT_APPLIED"
+    REQUIREMENT_ALREADY_APPLIED = "REQUIREMENT_ALREADY_APPLIED"
+    REQUIREMENT_NOT_FOUND = "REQUIREMENT_NOT_FOUND"
+    NOT_A_STANDARD_REQUIREMENT = "NOT_A_STANDARD_REQUIREMENT"
+    REQUIREMENT_NOT_IN_APPLY = "REQUIREMENT_NOT_IN_APPLY"
+    PROJECT_STRUCTURE_INVALID = "PROJECT_STRUCTURE_INVALID"
+    NO_PROCESS_RESULT = "NO_PROCESS_RESULT"
+    INVALID_PROCESS_RESULT = "INVALID_PROCESS_RESULT"
+    NO_REVIEW_RESULT = "NO_REVIEW_RESULT"
+    INVALID_REVIEW_RESULT = "INVALID_REVIEW_RESULT"
+    REVIEW_STATE_CONFLICT = "REVIEW_STATE_CONFLICT"
+    REVIEW_RESULT_STALE = "REVIEW_RESULT_STALE"
+    RELATION_TARGET_NOT_FOUND = "RELATION_TARGET_NOT_FOUND"
+    INVALID_RELATION_TARGET = "INVALID_RELATION_TARGET"
+    PARTIAL_APPLY = "PARTIAL_APPLY"
+    FIBERY_READ_FAILED = "FIBERY_READ_FAILED"
+    FIBERY_WRITE_FAILED = "FIBERY_WRITE_FAILED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+
+
+NORMAL_APPLY_OUTCOMES = frozenset(
+    {
+        ApplyResultCode.REQUIREMENT_APPLIED,
+        ApplyResultCode.REQUIREMENT_ALREADY_APPLIED,
+    }
+)
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    """Outcome of one deterministic application of an approved Requirement.
+
+    `created` lists the normative steps that became durable, so a
+    PARTIAL_APPLY reports exactly which edges exist and whether the Root
+    Document moved; a retry completes only what is missing.
+    """
+
+    code: ApplyResultCode
+    message: str
+    requirement_id: str | None = None
+    state: str | None = None
+    relations_added: tuple[str, ...] = ()
+    relations_present: tuple[str, ...] = ()
+    root_folder: str | None = None
+    created: tuple[str, ...] = ()
+    details: tuple[str, ...] = field(default=())
+
+    @property
+    def is_normal(self) -> bool:
+        return self.code in NORMAL_APPLY_OUTCOMES
