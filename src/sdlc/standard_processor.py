@@ -8,6 +8,15 @@ The model runs at most once per iteration. Its validated output is persisted as
 a numbered Process Result before the Root Document is touched, so a retry
 resumes deterministically instead of asking the model again, and re-entering
 Process without editing the document is recognised as nothing to do.
+
+A run writes only over the input it captured. The Requirement, its single Root
+Document and that Root's content are re-read from Fibery immediately before
+each normative write - persisting the Process Result, rewriting the Root, and
+moving to Review - and compared with what this invocation read at the start.
+Any drift is a processing-state conflict: nothing further is written, nothing
+already durable is rolled back, and the change made by a human or another
+writer stands. These are fresh reads, not a transaction; a change that lands
+between a guard's read and the write it protects is still not detected.
 """
 
 from __future__ import annotations
@@ -61,13 +70,23 @@ class _StageFailed(Exception):
 
 @dataclass
 class _Journal:
-    """Durable Fibery changes this run made."""
+    """Durable Fibery changes this run made, and whether the model was asked."""
 
     created: list[str] = field(default_factory=list)
+    model_invoked: bool = False
 
     @property
     def has_durable_state(self) -> bool:
         return bool(self.created)
+
+
+@dataclass(frozen=True)
+class _Observed:
+    """A fresh read of the target, taken immediately before a normative write."""
+
+    requirement: RequirementRecord | None
+    attached: tuple[DocumentNode, ...]
+    root_content: str | None
 
 
 @dataclass(frozen=True)
@@ -96,7 +115,6 @@ def process_standard_requirement(
 ) -> StandardProcessResult:
     """Normalize and analyze one Standard Requirement in Process."""
     journal = _Journal()
-    model_invoked = False
     try:
         context = _load_context(workspace, entity_id)
 
@@ -107,12 +125,12 @@ def process_standard_requirement(
         if resumable is not None:
             result = resumable
         else:
-            result, model_invoked = _produce_result(workspace, model, context, journal)
+            result = _produce_result(workspace, model, context, journal)
 
         _apply_document(workspace, context, result, journal)
-        _transition_to_review(workspace, context, journal)
+        _transition_to_review(workspace, context, result, journal)
     except _StageFailed as failure:
-        return _failure_result(failure, journal, model_invoked)
+        return _failure_result(failure, journal)
 
     return StandardProcessResult(
         code=StandardProcessResultCode.REQUIREMENT_PROCESSED,
@@ -129,7 +147,7 @@ def process_standard_requirement(
             f"{r.kind.value} {r.requirement_id}: {r.rationale}"
             for r in result.proposed_relations
         ),
-        model_invoked=model_invoked,
+        model_invoked=journal.model_invoked,
         created=tuple(journal.created),
     )
 
@@ -158,10 +176,14 @@ def _no_changes_result(context: _Context) -> StandardProcessResult:
     )
 
 
-def _failure_result(
-    failure: _StageFailed, journal: _Journal, model_invoked: bool
-) -> StandardProcessResult:
-    """Durable state means PARTIAL_PROCESSING; a retry resumes it."""
+def _failure_result(failure: _StageFailed, journal: _Journal) -> StandardProcessResult:
+    """Durable state means PARTIAL_PROCESSING; a retry resumes it.
+
+    A processing-state conflict is reported as itself even when this run
+    already made something durable: the durable steps are listed and left in
+    place, but the Requirement was changed by someone else, so no promise
+    about its State or about a resuming retry is made.
+    """
     if journal.has_durable_state and failure.code not in {
         StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
         StandardProcessResultCode.INVALID_PROCESSING_RESULT,
@@ -172,14 +194,14 @@ def _failure_result(
                 "Processing did not complete; the Requirement stays in Process "
                 "and a retry will resume."
             ),
-            model_invoked=model_invoked,
+            model_invoked=journal.model_invoked,
             created=tuple(journal.created),
             details=(failure.code.value, failure.message, *failure.causes),
         )
     return StandardProcessResult(
         code=failure.code,
         message=failure.message,
-        model_invoked=model_invoked,
+        model_invoked=journal.model_invoked,
         created=tuple(journal.created),
         details=failure.causes,
     )
@@ -432,6 +454,111 @@ def _is_unchanged(context: _Context) -> bool:
     )
 
 
+# -- write preconditions ----------------------------------------------------
+
+
+def _observe(
+    workspace: RawProcessorWorkspace, context: _Context, stage: str
+) -> _Observed:
+    """Freshly read the target. Never reuses the context or an earlier read."""
+    requirement = context.requirement
+    try:
+        current = workspace.read_requirement(requirement.id)
+        attached = tuple(
+            workspace.documents_attached_to_requirement(requirement.public_id)
+        )
+        root = next((d for d in attached if d.id == context.root_document.id), None)
+        content = (
+            workspace.read_document_content(root.secret or "")
+            if root is not None
+            else None
+        )
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.FIBERY_READ_FAILED,
+            f"Could not re-read {requirement.requirement_id} {stage}; refusing "
+            "to write without a fresh read.",
+            (str(error),),
+        ) from error
+    return _Observed(requirement=current, attached=attached, root_content=content)
+
+
+def _require_unchanged(
+    workspace: RawProcessorWorkspace,
+    context: _Context,
+    expected_content: str,
+    stage: str,
+) -> None:
+    """Refuse the next write unless the target still matches this invocation.
+
+    Protected: the entity itself, its Requirement ID, Title, Project, Revision
+    and public id, Type Standard, State Process, exactly one attached Root
+    Document with the same identity, secret and Folder, and Root content
+    canonically equivalent to `expected_content`.
+    """
+    observed = _observe(workspace, context, stage)
+    drift = _identity_drift(context, observed) + _root_drift(
+        context, observed, expected_content
+    )
+    if not drift:
+        return
+    raise _StageFailed(
+        StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+        f"{context.requirement.requirement_id} changed {stage}. Nothing further "
+        "was written; whatever this run had already made durable is listed and "
+        "left in place, and the change made outside this run stands.",
+        tuple(drift),
+    )
+
+
+def _identity_drift(context: _Context, observed: _Observed) -> list[str]:
+    captured, current = context.requirement, observed.requirement
+    if current is None:
+        return ["the Requirement can no longer be read"]
+    drift: list[str] = []
+    if current.type_name != STANDARD_TYPE:
+        drift.append(f"Type is now {current.type_name!r}")
+    if current.state != PROCESS_STATE:
+        drift.append(f"State is now {current.state!r}")
+    protected = (
+        ("Requirement ID", captured.requirement_id, current.requirement_id),
+        ("Title", captured.title, current.title),
+        ("Revision", captured.revision, current.revision),
+        ("Project", captured.project_id, current.project_id),
+        ("public id", captured.public_id, current.public_id),
+    )
+    drift.extend(
+        f"{label} changed from {before!r} to {after!r}"
+        for label, before, after in protected
+        if before != after
+    )
+    return drift
+
+
+def _root_drift(
+    context: _Context, observed: _Observed, expected_content: str
+) -> list[str]:
+    root = context.root_document
+    if len(observed.attached) != 1 or observed.attached[0].id != root.id:
+        return [
+            (
+                "the Root Document is no longer the single attached Document "
+                f"({len(observed.attached)} attached now)"
+            )
+        ]
+    current = observed.attached[0]
+    drift: list[str] = []
+    if current.secret != root.secret:
+        drift.append("the Root Document's content secret changed")
+    if current.folder_id != root.folder_id:
+        drift.append(f"the Root Document moved to Folder {current.folder_id!r}")
+    if observed.root_content is None or not content_equivalent(
+        observed.root_content, expected_content
+    ):
+        drift.append("the Root Document content changed")
+    return drift
+
+
 # -- producing and applying -------------------------------------------------
 
 
@@ -440,7 +567,7 @@ def _produce_result(
     model: ModelRuntime,
     context: _Context,
     journal: _Journal,
-) -> tuple[ProcessResult, bool]:
+) -> ProcessResult:
     """Invoke the model once and persist the iteration before mutating."""
     latest = context.latest
     iteration = latest[1].iteration + 1 if latest else FIRST_ITERATION
@@ -453,6 +580,7 @@ def _produce_result(
         raw_ancestry=context.raw_ancestry,
         existing_standards=context.existing_standards,
     )
+    journal.model_invoked = True
     try:
         response = model.run(prompt, model_context)
     except ModelRuntimeError as error:
@@ -477,8 +605,13 @@ def _produce_result(
         input_fingerprint=context.input_fingerprint,
         analysis=analysis,
     )
+    # The model reasoned over the captured input; persist only if it is still
+    # the input. A stale output is dropped, never recorded as an iteration.
+    _require_unchanged(
+        workspace, context, context.root_content, "while the model was running"
+    )
     _persist_result(workspace, context, result, journal)
-    return result, True
+    return result
 
 
 def _persist_result(
@@ -530,6 +663,11 @@ def _apply_document(
             StandardProcessResultCode.CONTENT_WRITE_FAILED,
             f"The Root Document of {result.requirement_id} exposes no secret.",
         )
+    # Persisting the result took time too. Re-read immediately before the
+    # rewrite, for a new iteration and for a resumed one alike.
+    _require_unchanged(
+        workspace, context, context.root_content, "before the Root Document rewrite"
+    )
     try:
         workspace.write_document_content(document.secret, expected)
         stored = workspace.read_document_content(document.secret)
@@ -551,10 +689,24 @@ def _apply_document(
 
 
 def _transition_to_review(
-    workspace: RawProcessorWorkspace, context: _Context, journal: _Journal
+    workspace: RawProcessorWorkspace,
+    context: _Context,
+    result: ProcessResult,
+    journal: _Journal,
 ) -> None:
-    """Move to Review, and confirm it by reading the entity back."""
+    """Move to Review, and confirm it by reading the entity back.
+
+    The State is written only if a fresh read still shows the Requirement in
+    Process, unchanged in identity, with its Root holding the output this
+    run just applied.
+    """
     requirement = context.requirement
+    _require_unchanged(
+        workspace,
+        context,
+        result.normalized.document(result.requirement_id),
+        "after the Root Document rewrite",
+    )
     try:
         workspace.set_requirement_state(requirement.id, REVIEW_STATE)
         stored = workspace.read_requirement(requirement.id)

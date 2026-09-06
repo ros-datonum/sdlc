@@ -373,6 +373,39 @@ Duplicate Process Results for the same iteration are never guessed between:
 PROCESSING_STATE_CONFLICT
 ```
 
+### Within-run write preconditions
+
+Clarification, added after the source audit found a run overwriting a Root
+Document edited while its model call was in flight. The run captures its input
+once, at the start; every normative write is preceded by a **fresh read** of
+the target and refused unless that read still matches the captured input:
+
+```text
+immediately before persisting the Process Result
+immediately before rewriting the Root Document   (new and resumed iterations)
+immediately before Process -> Review             (Root must hold the applied output)
+```
+
+Protected by the comparison: the entity itself, its Requirement ID, Title,
+Project, Revision and public id; Type `Standard`; State `Process`; exactly one
+attached Root Document with the same identity, content secret and Folder; and
+Root content canonically equivalent to the captured input (or, before the
+transition, to the output just applied). A Folder change is a conflict, never
+adopted as permission to write elsewhere.
+
+Any drift is `PROCESSING_STATE_CONFLICT`: the stale model output is not
+persisted, no Root is rewritten, no State is written, nothing already durable
+is rolled back, and the change made outside the run stands. A conflict found
+after the Process Result was persisted reports that result's identity in
+`created` and makes no claim that the Requirement "remains in Process" or that
+a retry will resume. A failed fresh read fails the write it guards. A conflict
+discovered after the model ran reports the model as invoked.
+
+These are fresh reads within one invocation, not a compare-and-set
+transaction: a change that lands between a guard's read and the write it
+protects is not detected. The cross-run `current == latest.input_fingerprint`
+resume rule of section 9 is unchanged.
+
 ## 15. Process -> Review transition
 
 `State = Review` only when all of:
