@@ -8,6 +8,13 @@ candidate: it reads the Processing Result and completes only the missing steps.
 
 The model never touches Fibery, never chooses an identifier, and never sees a
 uuid.
+
+A retry owns only what it left unfinished. Every candidate is inspected, read
+only, before the first write of the run: a candidate that has moved past the
+processor-owned initial ``Draft`` state, or whose Root Document a human has
+already changed, is a processing-state conflict, never something to demote or
+overwrite. That inspection covers all candidates first, so an advanced later
+candidate cannot leave an earlier one half-rewritten.
 """
 
 from __future__ import annotations
@@ -424,57 +431,146 @@ def _persist_processing_result(
 # -- candidate application --------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _CandidateState:
+    """What already exists for one candidate, read before anything is written."""
+
+    record: RequirementRecord | None
+    document: DocumentNode | None
+    content: str | None
+
+
 def _apply_candidates(
     workspace: RawProcessorWorkspace,
     context: _Context,
     result: ProcessingResult,
     journal: _Journal,
 ) -> tuple[str, ...]:
-    """Create or resume every candidate, one verifiable step at a time."""
+    """Create or resume every candidate, one verifiable step at a time.
+
+    Every candidate is inspected before the first write, so a conflict on a
+    later candidate is found while nothing has been touched yet.
+    """
+    states = [
+        _inspect_candidate(workspace, context, keyed) for keyed in result.candidates
+    ]
     applied: list[str] = []
-    for keyed in result.candidates:
-        applied.append(_apply_candidate(workspace, context, keyed, journal))
+    for keyed, state in zip(result.candidates, states, strict=True):
+        applied.append(_apply_candidate(workspace, context, keyed, state, journal))
     return tuple(applied)
+
+
+def _inspect_candidate(
+    workspace: RawProcessorWorkspace, context: _Context, keyed: KeyedCandidate
+) -> _CandidateState:
+    """Read what exists for a candidate and refuse anything this run does not own.
+
+    The processor owns a candidate only while it is the unfinished initial
+    Draft it created: same Project and title, no Requirement ID other than the
+    one this run would assign, still in ``Draft``, and a Root Document that is
+    either empty or exactly what the persisted result renders. Anything else
+    belongs to a later stage or to a human, and is a conflict.
+    """
+    entity_id = keyed.fibery_id(context.raw.id)
+    try:
+        record = workspace.read_requirement(entity_id)
+        if record is None:
+            return _CandidateState(record=None, document=None, content=None)
+        _check_adoptable(record, context, keyed)
+        _check_unprogressed(record, keyed)
+        requirement_id = _expected_requirement_id(context, keyed, record)
+        attached = workspace.documents_attached_to_requirement(record.public_id)
+        if len(attached) > 1:
+            raise _StageFailed(
+                ProcessResultCode.PROCESSING_STATE_CONFLICT,
+                f"Candidate {keyed.key} has {len(attached)} attached Documents; "
+                "exactly one Root Document is required.",
+            )
+        if not attached:
+            return _CandidateState(record=record, document=None, content=None)
+        document = attached[0]
+        content = workspace.read_document_content(document.secret or "")
+    except FiberyError as error:
+        raise _StageFailed(
+            ProcessResultCode.FIBERY_READ_FAILED,
+            f"Could not inspect candidate {keyed.key}.",
+            (str(error),),
+        ) from error
+    _check_content_owned(keyed, requirement_id, content)
+    return _CandidateState(record=record, document=document, content=content)
+
+
+def _check_unprogressed(record: RequirementRecord, keyed: KeyedCandidate) -> None:
+    """A candidate past the initial Draft belongs to a later stage or a human."""
+    if record.type_name not in (None, STANDARD_TYPE):
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Candidate {keyed.key} resolves to an entity of Type "
+            f"{record.type_name!r}; refusing to reuse it.",
+        )
+    if record.state not in (None, DRAFT_STATE):
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Candidate {keyed.key} ({record.requirement_id or record.id}) has "
+            f"moved on to State {record.state!r}. RAW processing never demotes "
+            "or rewrites a candidate that left Draft; nothing was changed.",
+        )
+
+
+def _check_content_owned(
+    keyed: KeyedCandidate, requirement_id: str, content: str
+) -> None:
+    """An existing Root is reused only if it is empty or exactly the candidate."""
+    if not content.strip():
+        return
+    if content_equivalent(content, keyed.candidate.document(requirement_id)):
+        return
+    raise _StageFailed(
+        ProcessResultCode.PROCESSING_STATE_CONFLICT,
+        f"The Root Document of candidate {keyed.key} ({requirement_id}) no "
+        "longer matches the persisted decomposition; refusing to overwrite "
+        "content this run did not write.",
+    )
 
 
 def _apply_candidate(
     workspace: RawProcessorWorkspace,
     context: _Context,
     keyed: KeyedCandidate,
+    state: _CandidateState,
     journal: _Journal,
 ) -> str:
     """Bring one candidate to a complete state, skipping finished steps."""
     entity_id = keyed.fibery_id(context.raw.id)
-    record = _ensure_entity(workspace, context, keyed, entity_id, journal)
+    record = state.record or _create_entity(
+        workspace, context, keyed, entity_id, journal
+    )
     requirement_id = _ensure_requirement_id(workspace, context, keyed, record, journal)
-    _ensure_type_and_state(workspace, record, journal)
+    _ensure_type_and_state(workspace, keyed, record, journal)
     _ensure_derived_from(workspace, context, record, journal)
-    document = _ensure_root_document(
+    document = state.document or _create_root_document(
         workspace, context, keyed, requirement_id, record, journal
     )
-    _ensure_content(workspace, keyed, requirement_id, document, journal)
+    _ensure_content(
+        workspace, keyed, requirement_id, document, state.content or "", journal
+    )
     _validate_candidate(workspace, context, keyed, requirement_id, record, document)
     return requirement_id
 
 
-def _ensure_entity(
+def _create_entity(
     workspace: RawProcessorWorkspace,
     context: _Context,
     keyed: KeyedCandidate,
     entity_id: str,
     journal: _Journal,
 ) -> RequirementRecord:
-    """Create the candidate entity at its deterministic id, or adopt it.
+    """Create the candidate entity at its deterministic id.
 
-    An entity already at that id is this candidate from an earlier attempt,
-    because the id derives from the RAW uuid and the candidate key. It is still
-    checked before adoption rather than reused blindly.
+    An entity already at that id was inspected and adopted before any write;
+    only a candidate with no entity reaches this point.
     """
     try:
-        existing = workspace.read_requirement(entity_id)
-        if existing is not None:
-            _check_adoptable(existing, context, keyed)
-            return existing
         created = workspace.create_requirement_with_id(
             entity_id=entity_id,
             project_id=context.project.id,
@@ -517,11 +613,7 @@ def _ensure_requirement_id(
     journal: _Journal,
 ) -> str:
     """Derive the Requirement ID from the Fibery public id and write it once."""
-    expected = namespaced_requirement_id(
-        context.project.code or "",
-        keyed.candidate.category.id_infix,
-        record.public_id,
-    )
+    expected = _expected_requirement_id(context, keyed, record)
     if record.requirement_id == expected:
         return expected
     if record.requirement_id:
@@ -542,9 +634,31 @@ def _ensure_requirement_id(
     return expected
 
 
+def _expected_requirement_id(
+    context: _Context, keyed: KeyedCandidate, record: RequirementRecord
+) -> str:
+    expected = namespaced_requirement_id(
+        context.project.code or "",
+        keyed.candidate.category.id_infix,
+        record.public_id,
+    )
+    if record.requirement_id and record.requirement_id != expected:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Candidate {keyed.key} already carries Requirement ID "
+            f"{record.requirement_id!r}, expected {expected!r}.",
+        )
+    return expected
+
+
 def _ensure_type_and_state(
-    workspace: RawProcessorWorkspace, record: RequirementRecord, journal: _Journal
+    workspace: RawProcessorWorkspace,
+    keyed: KeyedCandidate,
+    record: RequirementRecord,
+    journal: _Journal,
 ) -> None:
+    """Set the initial Type and State once. A State past Draft is never reset."""
+    _check_unprogressed(record, keyed)
     try:
         if record.type_name != STANDARD_TYPE:
             workspace.set_requirement_type(record.id, STANDARD_TYPE)
@@ -578,7 +692,7 @@ def _ensure_derived_from(
     journal.created.append(f"Derived From -> {context.raw.requirement_id}")
 
 
-def _ensure_root_document(
+def _create_root_document(
     workspace: RawProcessorWorkspace,
     context: _Context,
     keyed: KeyedCandidate,
@@ -586,18 +700,13 @@ def _ensure_root_document(
     record: RequirementRecord,
     journal: _Journal,
 ) -> DocumentNode:
-    """Create the Root Document under Requirements/Draft, or reuse it."""
+    """Create the Root Document under Requirements/Draft.
+
+    An existing Root was inspected and adopted before any write; only a
+    candidate with no Root Document reaches this point.
+    """
     name = keyed.candidate.document_name(requirement_id)
     try:
-        attached = workspace.documents_attached_to_requirement(record.public_id)
-        if len(attached) > 1:
-            raise _StageFailed(
-                ProcessResultCode.PROCESSING_STATE_CONFLICT,
-                f"{requirement_id} has {len(attached)} attached Documents; "
-                "exactly one Root Document is required.",
-            )
-        if attached:
-            return attached[0]
         document = workspace.create_requirement_document(
             name=name,
             folder_id=context.draft_folder_id,
@@ -618,15 +727,24 @@ def _ensure_content(
     keyed: KeyedCandidate,
     requirement_id: str,
     document: DocumentNode,
+    current: str,
     journal: _Journal,
 ) -> None:
-    """Write the approved document, rendered from the persisted result."""
+    """Write the approved document, rendered from the persisted result.
+
+    Only an empty Root is written. Content equivalent to the candidate is
+    already complete and is left alone; content that differs was refused at
+    inspection and is refused again here rather than overwritten.
+    """
     if not document.secret:
         raise _StageFailed(
             ProcessResultCode.CONTENT_WRITE_FAILED,
             f"The Root Document of {requirement_id} exposes no content secret.",
         )
     body = keyed.candidate.document(requirement_id)
+    if current.strip():
+        _check_content_owned(keyed, requirement_id, current)
+        return
     try:
         workspace.write_document_content(document.secret, body)
     except FiberyError as error:
