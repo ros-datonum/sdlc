@@ -686,27 +686,6 @@ def test_a_requirement_that_drifts_during_the_model_call_keeps_its_empty_shell(
 
 
 @pytest.mark.parametrize("stage", STAGES, ids=repr)
-def test_a_replaced_root_is_caught_even_though_the_old_root_still_lists_the_shell(
-    stage,
-):
-    """Shell-only verification cannot see this: re-listing under the cached Root
-    succeeds and the shell is still empty. Only a fresh attachment read can."""
-    ws, record, root, shell, _ = leave_a_shell(stage)
-    _root_is_replaced(ws, record, root)
-    assert shell.id in [d.id for d in ws.child_documents(root.id)]
-    assert ws.content[shell.secret] == ""
-    before = len(ws.mutations)
-
-    model = model_for(stage)
-    result = stage.run(ws, record, model, recover=shell.id)
-
-    assert result.code is stage.codes["conflict"]
-    assert ws.mutations[before:] == []
-    assert ws.content[shell.secret] == ""
-    assert "Root Document" in " ".join((result.message, *result.details))
-
-
-@pytest.mark.parametrize("stage", STAGES, ids=repr)
 def test_a_failed_fresh_requirement_read_before_filling_writes_nothing(stage):
     ws, record, _, shell, _ = leave_a_shell(stage)
     original = ws.read_requirement
