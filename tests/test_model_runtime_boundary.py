@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from sdlc.model_runtime import LocalCliModelRuntime
+from sdlc.model_runtime import LocalCliModelRuntime, RuntimeIsolationUnavailable
 from sdlc.model_runtime_config import RuntimeDefinition, RuntimeSelection
 
 CLAUDE_STATUS = {
@@ -64,7 +64,7 @@ def runtime_for(script, mode, passthrough=()):
     )
 
 
-@pytest.mark.parametrize("mode", ["print", "exec"])
+@pytest.mark.parametrize("mode", ["print"])
 def test_parent_secrets_never_reach_either_child(stand_in, monkeypatch, mode):
     script, log = stand_in
     monkeypatch.setenv("FIBERY_TOKEN", "synthetic-fibery-secret")
@@ -87,7 +87,7 @@ def test_parent_secrets_never_reach_either_child(stand_in, monkeypatch, mode):
     assert response.text == "RESPONSE:CONTEXT\n\nPROMPT\n"
 
 
-@pytest.mark.parametrize("mode", ["print", "exec"])
+@pytest.mark.parametrize("mode", ["print"])
 def test_both_children_run_in_the_same_temporary_directory_outside_the_repo(
     stand_in, mode
 ):
@@ -147,3 +147,14 @@ def test_the_environment_seen_by_the_child_is_exactly_the_allowlist(stand_in):
     for record in calls(log):
         # Python itself adds nothing on POSIX; what the child saw is the allowlist.
         assert set(record["env"]) - {"__CF_USER_TEXT_ENCODING"} == expected
+
+
+def test_the_exec_family_never_reaches_the_stand_in(stand_in, monkeypatch):
+    """A Codex-family request is refused before any real process starts."""
+    script, log = stand_in
+    monkeypatch.setenv("FIBERY_TOKEN", "synthetic-fibery-secret")
+
+    with pytest.raises(RuntimeIsolationUnavailable):
+        runtime_for(script, "exec").run("PROMPT")
+
+    assert not log.exists(), "no auth check and no inference process was started"

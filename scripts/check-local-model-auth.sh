@@ -29,5 +29,8 @@ fi
 echo
 echo "Note: SDLC runtime requires subscription/OAuth CLI authentication."
 echo "It must not fall back to API keys or OpenRouter."
+echo "Authenticated is not the same as eligible: Codex is currently blocked for"
+echo "SDLC reasoning execution (RUNTIME_ISOLATION_UNAVAILABLE) because its tool"
+echo "boundary failed review on codex-cli 0.146.0. Claude Code executes."
 
 exit "$status"

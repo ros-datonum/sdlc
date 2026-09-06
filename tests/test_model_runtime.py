@@ -1,23 +1,38 @@
 """Local OAuth CLI runtime, exercised without invoking a real model.
 
 Authentication must be positively proven, the reasoning child must run under
-the CLI family's restrictions, and both must happen under one session.
+the CLI family's restrictions, both must happen under one session, a family
+without a verified boundary must be refused before any subprocess, and
+failure diagnostics must never carry subprocess output.
 """
 
+import json
+import logging
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from processor_fake import FakeModelRuntime, build_workspace, candidate, model_output
 from sdlc.model_runtime import (
     CLAUDE_RESTRICTIONS,
-    CODEX_RESTRICTIONS,
+    RUNTIME_ISOLATION_UNAVAILABLE,
     LocalCliModelRuntime,
     ModelAuthenticationError,
     ModelRuntimeError,
-    redact,
+    RuntimeIsolationUnavailable,
 )
-from sdlc.model_runtime_config import RuntimeDefinition, RuntimeSelection
+from sdlc.model_runtime_config import (
+    RAW_REQUIREMENT_PROCESSOR_ROLE,
+    RuntimeDefinition,
+    RuntimeSelection,
+    load_model_runtime_config,
+    runtime_definition,
+    select_runtime,
+)
+from sdlc.raw_processor import process_raw_requirement
+from sdlc.results import ProcessResultCode
+from standard_fake import set_state
 
 CLAUDE = RuntimeDefinition(name="claude", executable="claude", invocation_mode="print")
 CODEX = RuntimeDefinition(name="codex", executable="codex", invocation_mode="exec")
@@ -64,13 +79,19 @@ def ok(definition):
     return (0, CLAUDE_OK, "") if definition is CLAUDE else (0, *CODEX_OK)
 
 
-def build(definition, model=None, results=(), installed=True, environment=None):
+def build(
+    definition, model=None, results=(), installed=True, environment=None, which=None
+):
     selection = RuntimeSelection(role="r", definition=definition, model=model)
+    return build_from(selection, results, installed, environment, which)
+
+
+def build_from(selection, results=(), installed=True, environment=None, which=None):
     runner = Runner(results)
     runtime = LocalCliModelRuntime(
         selection,
         runner=runner,
-        which=lambda name: f"/opt/bin/{name}" if installed else None,
+        which=which or (lambda name: f"/opt/bin/{name}" if installed else None),
         environment=PARENT_ENV if environment is None else environment,
     )
     return runtime, runner
@@ -90,41 +111,19 @@ def test_claude_is_invoked_in_restricted_print_mode():
     assert runner.calls[1].stdin_text == "do the thing"
 
 
-def test_codex_is_invoked_in_restricted_exec_mode_reading_stdin():
-    runtime, runner = build(CODEX, results=[ok(CODEX), (0, "hello", "")])
-
-    runtime.run("do the thing")
-
-    argv = runner.calls[1].argv
-    assert argv[:2] == ("/opt/bin/codex", "exec")
-    assert argv[2 : 2 + len(CODEX_RESTRICTIONS)] == CODEX_RESTRICTIONS
-    assert argv[-3:-1] == ("-C", runner.calls[1].cwd)
-    assert argv[-1] == "-"
-
-
-@pytest.mark.parametrize("definition", [CLAUDE, CODEX], ids=["claude", "codex"])
-def test_the_required_restrictions_are_present(definition):
-    runtime, runner = build(definition, results=[ok(definition), (0, "ok", "")])
+def test_the_required_claude_restrictions_are_present():
+    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), (0, "ok", "")])
 
     runtime.run("p")
 
     argv = list(runner.calls[1].argv)
-    if definition is CLAUDE:
-        for flag in ("--safe-mode", "--restricted", "--strict-mcp-config"):
-            assert flag in argv
-        assert argv[argv.index("--tools") + 1] == ""
-        assert argv[argv.index("--permission-prompts") + 1] == "none"
-    else:
-        for flag in ("--ignore-user-config", "--ignore-rules", "--ephemeral"):
-            assert flag in argv
-        assert argv[argv.index("--sandbox") + 1] == "read-only"
-        disabled = {argv[i + 1] for i, a in enumerate(argv) if a == "--disable"}
-        assert {"shell_tool", "plugins", "hooks", "multi_agent", "apps"} <= disabled
-        overrides = {argv[i + 1] for i, a in enumerate(argv) if a == "-c"}
-        assert 'web_search="disabled"' in overrides
+    for flag in ("--safe-mode", "--restricted", "--strict-mcp-config"):
+        assert flag in argv
+    assert argv[argv.index("--tools") + 1] == ""
+    assert argv[argv.index("--permission-prompts") + 1] == "none"
 
 
-@pytest.mark.parametrize("definition", [CLAUDE, CODEX], ids=["claude", "codex"])
+@pytest.mark.parametrize("definition", [CLAUDE], ids=["claude"])
 def test_no_bypass_or_provider_flags_are_ever_sent(definition):
     forbidden = {
         "--dangerously-skip-permissions",
@@ -202,7 +201,7 @@ def test_the_response_reports_the_runtime_and_model():
 # -- one session for the auth check and the model call ------------------------
 
 
-@pytest.mark.parametrize("definition", [CLAUDE, CODEX], ids=["claude", "codex"])
+@pytest.mark.parametrize("definition", [CLAUDE], ids=["claude"])
 def test_auth_check_and_inference_share_executable_environment_and_cwd(definition):
     runtime, runner = build(definition, results=[ok(definition), (0, "ok", "")])
 
@@ -230,7 +229,7 @@ def test_the_auth_check_uses_the_cli_family_protocol():
     assert codex_runner.calls[0].argv == ("/opt/bin/codex", "login", "status")
 
 
-@pytest.mark.parametrize("definition", [CLAUDE, CODEX], ids=["claude", "codex"])
+@pytest.mark.parametrize("definition", [CLAUDE], ids=["claude"])
 def test_the_child_environment_is_an_explicit_allowlist(definition):
     runtime, runner = build(definition, results=[ok(definition), (0, "ok", "")])
 
@@ -306,10 +305,12 @@ def test_a_claude_subscription_login_on_the_first_party_api_is_accepted():
     assert "someone@example.com" not in summary and "org-1" not in summary
 
 
-def test_a_codex_chatgpt_login_is_accepted():
-    assert build(CODEX, results=[ok(CODEX)])[0].preflight() == (
-        "codex: Logged in using ChatGPT"
-    )
+def test_a_codex_chatgpt_login_is_accepted_but_reported_as_not_eligible():
+    summary = build(CODEX, results=[ok(CODEX)])[0].preflight()
+
+    assert summary.startswith("codex: Logged in using ChatGPT")
+    assert "not eligible for SDLC reasoning execution" in summary
+    assert RUNTIME_ISOLATION_UNAVAILABLE in summary
 
 
 def test_a_codex_login_reported_on_stdout_is_also_accepted():
@@ -420,7 +421,8 @@ def test_codex_output_without_a_positive_chatgpt_login_line_is_rejected(output):
 
 
 def test_a_rejected_preflight_launches_no_inference_process():
-    runtime, runner = build(CODEX, results=[(0, "", "Logged in using an API key")])
+    status = '{"loggedIn": true, "authMethod": "console", "apiProvider": "firstParty"}'
+    runtime, runner = build(CLAUDE, results=[(0, status, "")])
 
     with pytest.raises(ModelAuthenticationError):
         runtime.run("p")
@@ -429,7 +431,9 @@ def test_a_rejected_preflight_launches_no_inference_process():
 
 
 def test_an_auth_check_timeout_is_reported_without_status_or_secrets():
-    expired = subprocess.TimeoutExpired(cmd="claude auth status", timeout=1)
+    expired = subprocess.TimeoutExpired(
+        cmd="claude auth status", timeout=1, output="synthetic-status", stderr="s"
+    )
     runtime, _ = build(CLAUDE, results=[expired])
 
     with pytest.raises(ModelAuthenticationError, match="did not answer") as info:
@@ -497,5 +501,235 @@ def test_an_unknown_invocation_mode_is_reported_before_any_process():
     assert runner.calls == []
 
 
-def test_redaction_keeps_ordinary_lines():
-    assert redact("plan: max\napi_key: secret-value") == "plan: max"
+# -- Codex execution is refused before any subprocess --------------------------
+
+
+def assert_refused(runtime, runner, which_calls=None):
+    with pytest.raises(RuntimeIsolationUnavailable) as info:
+        runtime.run("PROMPT", context="CONTEXT")
+    message = str(info.value)
+    assert message.startswith(RUNTIME_ISOLATION_UNAVAILABLE)
+    assert "Codex" in message and "not currently established" in message
+    assert "codex-cli 0.146.0" in message and "local-file" in message
+    assert "No model was invoked" in message and "select a supported runtime" in message
+    assert "not authenticated" not in message and "not on PATH" not in message
+    assert runner.calls == [], "no auth or inference subprocess"
+    if which_calls is not None:
+        assert which_calls == [], "the executable is not even looked up"
+    assert (info.value.runtime, info.value.stage) == ("codex", "inference")
+    return info.value
+
+
+def test_a_direct_codex_library_invocation_is_refused_without_any_subprocess():
+    looked_up = []
+    runtime, runner = build(
+        CODEX,
+        results=[ok(CODEX), (0, "hello", "")],
+        which=lambda n: looked_up.append(n),
+    )
+
+    assert_refused(runtime, runner, looked_up)
+    assert isinstance(assert_refused(runtime, runner), ModelRuntimeError)
+
+
+def test_codex_is_refused_even_when_no_executable_is_installed():
+    """The refusal is not a missing-executable or authentication failure."""
+    runtime, runner = build(CODEX, installed=False)
+
+    assert_refused(runtime, runner)
+
+
+CONFIG_WITH_CODEX_DEFAULT = {
+    "transport": "local_cli_oauth",
+    "default": {"runtime": "codex", "model": "some-codex-model"},
+    "runtimes": {
+        "claude": {"executable": "claude", "invocation_mode": "print"},
+        "codex": {"executable": "codex", "invocation_mode": "exec"},
+    },
+    "roles": {"reviewer": {"runtime": "codex"}, "processor": {}},
+}
+
+
+@pytest.mark.parametrize(
+    ("role", "override"),
+    [("processor", None), ("reviewer", None), ("processor", "codex")],
+    ids=["project-default", "role", "explicit-override"],
+)
+def test_every_configuration_path_to_codex_is_refused(role, override):
+    selection = select_runtime(
+        CONFIG_WITH_CODEX_DEFAULT, role, runtime_override=override
+    )
+    assert selection.definition.name == "codex", "the selection stays representable"
+    runtime, runner = build_from(selection, results=[ok(CODEX), (0, "hello", "")])
+
+    assert_refused(runtime, runner)
+
+
+def test_the_shipped_configuration_still_lets_codex_be_selected_but_not_executed():
+    config = load_model_runtime_config(Path("config/sdlc.toml"))
+    selection = select_runtime(
+        config, RAW_REQUIREMENT_PROCESSOR_ROLE, runtime_override="codex"
+    )
+    runtime, runner = build_from(selection, results=[ok(CODEX), (0, "hello", "")])
+
+    assert_refused(runtime, runner)
+
+
+def test_no_fallback_runtime_is_attempted_when_codex_is_refused():
+    looked_up = []
+    runtime, runner = build(
+        CODEX,
+        results=[ok(CLAUDE), (0, "hello", "")],
+        which=lambda n: looked_up.append(n),
+    )
+
+    assert_refused(runtime, runner, looked_up)
+    assert "claude" not in looked_up
+
+
+def test_a_newer_reported_codex_version_does_not_bypass_the_gate():
+    newer = RuntimeDefinition(
+        name="codex", executable="codex-9.9.9", invocation_mode="exec"
+    )
+    runtime, runner = build(
+        newer,
+        results=[(0, "codex-cli 9.9.9", ""), ok(CODEX), (0, "hello", "")],
+        which=lambda n: f"/opt/bin/{n}",
+    )
+
+    assert_refused(runtime, runner)
+
+
+def test_ordinary_configuration_cannot_disable_the_gate():
+    config = {
+        **CONFIG_WITH_CODEX_DEFAULT,
+        "runtimes": {
+            "codex": {
+                "executable": "codex",
+                "invocation_mode": "exec",
+                "isolation_verified": True,
+                "allow_unsafe": True,
+                "force": True,
+                "environment_passthrough": ["HTTPS_PROXY"],
+            }
+        },
+    }
+    selection = RuntimeSelection(
+        role="r", definition=runtime_definition(config, "codex"), model="m"
+    )
+    runtime, runner = build_from(selection, results=[ok(CODEX), (0, "hello", "")])
+
+    assert_refused(runtime, runner)
+
+
+def test_a_codex_backed_runtime_does_not_block_a_resume_that_needs_no_model():
+    """The gate sits where a model is invoked, not where the runtime is built."""
+    ws, raw, _ = build_workspace()
+    first = process_raw_requirement(
+        ws, FakeModelRuntime([model_output([candidate()])]), raw.id
+    )
+    assert first.code is ProcessResultCode.RAW_REQUIREMENT_PROCESSED
+    set_state(ws, raw, "Process")
+    runtime, runner = build(CODEX, results=[])
+
+    resumed = process_raw_requirement(ws, runtime, raw.id)
+
+    assert resumed.code is ProcessResultCode.RAW_REQUIREMENT_PROCESSED
+    assert not resumed.model_invoked
+    assert runner.calls == []
+
+
+def test_a_codex_backed_processor_run_that_needs_the_model_reports_the_refusal():
+    ws, raw, _ = build_workspace()
+    runtime, runner = build(CODEX, results=[])
+
+    result = process_raw_requirement(ws, runtime, raw.id)
+
+    assert result.code is ProcessResultCode.MODEL_RUNTIME_FAILED
+    assert any(RUNTIME_ISOLATION_UNAVAILABLE in detail for detail in result.details)
+    assert runner.calls == []
+    assert ws.requirements[raw.id].state == "Process"
+
+
+# -- failure diagnostics carry no subprocess output --------------------------
+
+PROMPT_MARKER = "REQ-PRIVATE-TEXT-7f21c"
+TOKEN_MARKER = "tok-synthetic-3b9c4d5e"
+EMAIL_MARKER = "someone.private@example.com"
+STATUS_MARKER = '{"loggedIn": false, "email": "someone.private@example.com"}'
+MARKERS = (PROMPT_MARKER, TOKEN_MARKER, EMAIL_MARKER, STATUS_MARKER)
+NOISE = f"user\n{PROMPT_MARKER}\n{TOKEN_MARKER}\n{EMAIL_MARKER}\n{STATUS_MARKER}"
+
+
+def assert_private(error, caplog):
+    text = str(error) + repr(error) + caplog.text
+    for marker in MARKERS:
+        assert marker not in text, marker
+    assert error.runtime == "claude"
+    assert error.stage in {"authentication", "inference"}
+
+
+def test_a_nonzero_inference_exit_reports_only_the_classification(caplog):
+    caplog.set_level(logging.DEBUG)
+    runtime, _ = build(CLAUDE, results=[ok(CLAUDE), (2, NOISE, NOISE)])
+
+    with pytest.raises(ModelRuntimeError, match="exited 2") as info:
+        runtime.run(PROMPT_MARKER, context=TOKEN_MARKER)
+
+    assert_private(info.value, caplog)
+    assert (info.value.stage, info.value.exit_code) == ("inference", 2)
+
+
+def test_a_nonzero_auth_exit_reports_only_the_classification(caplog):
+    caplog.set_level(logging.DEBUG)
+    runtime, _ = build(CLAUDE, results=[(1, NOISE, NOISE)])
+
+    with pytest.raises(ModelAuthenticationError, match="exited 1") as info:
+        runtime.run(PROMPT_MARKER)
+
+    assert_private(info.value, caplog)
+    assert (info.value.stage, info.value.exit_code) == ("authentication", 1)
+
+
+def test_a_rejected_status_document_is_never_quoted(caplog):
+    caplog.set_level(logging.DEBUG)
+    status = json.dumps(
+        {"loggedIn": True, "authMethod": EMAIL_MARKER, "apiProvider": PROMPT_MARKER}
+    )
+    runtime, _ = build(CLAUDE, results=[(0, status, NOISE)])
+
+    with pytest.raises(ModelAuthenticationError, match="not a subscription") as info:
+        runtime.run(PROMPT_MARKER)
+
+    assert_private(info.value, caplog)
+    assert "unrecognized value" in str(info.value)
+
+
+@pytest.mark.parametrize("stage", ["authentication", "inference"])
+def test_a_timeout_reports_only_the_classification(caplog, stage):
+    caplog.set_level(logging.DEBUG)
+    expired = subprocess.TimeoutExpired(
+        cmd=["claude", PROMPT_MARKER], timeout=1, output=NOISE, stderr=NOISE
+    )
+    results = [expired] if stage == "authentication" else [ok(CLAUDE), expired]
+    runtime, _ = build(CLAUDE, results=results)
+
+    with pytest.raises(ModelRuntimeError, match="did not answer|timed out") as info:
+        runtime.run(PROMPT_MARKER, context=TOKEN_MARKER)
+
+    assert_private(info.value, caplog)
+    assert info.value.stage == stage
+
+
+@pytest.mark.parametrize("stage", ["authentication", "inference"])
+def test_an_os_error_reports_only_its_type(caplog, stage):
+    caplog.set_level(logging.DEBUG)
+    failure = PermissionError(13, NOISE, PROMPT_MARKER)
+    results = [failure] if stage == "authentication" else [ok(CLAUDE), failure]
+    runtime, _ = build(CLAUDE, results=results)
+
+    with pytest.raises(ModelRuntimeError, match="PermissionError") as info:
+        runtime.run(PROMPT_MARKER, context=TOKEN_MARKER)
+
+    assert_private(info.value, caplog)
+    assert info.value.stage == stage

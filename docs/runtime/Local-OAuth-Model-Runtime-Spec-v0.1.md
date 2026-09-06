@@ -6,12 +6,17 @@
 
 Allow SDLC components to invoke reasoning/coding models through the user's already installed and locally authenticated CLI tools.
 
-Supported runtimes for MVP:
+Runtime families:
 
 ```text
-claude
-codex
+claude   login verified; reasoning execution supported (Claude Code 2.1.260)
+codex    login verified; reasoning execution BLOCKED (codex-cli 0.146.0)
 ```
+
+Codex is blocked because its tool boundary failed independent review (see
+section 3). A Codex selection remains representable in configuration, but a
+model call through it fails with `RUNTIME_ISOLATION_UNAVAILABLE` before any
+subprocess starts. Nothing else is substituted.
 
 The SDLC application does not authenticate directly with model-provider APIs.
 
@@ -123,33 +128,39 @@ session init reports `tools: []`, `mcp_servers: []`, `plugins: []` and
 
 `--bare` is not used: it skips OAuth and keychain authentication entirely.
 
-### Codex runtime
+### Codex runtime: blocked
 
-```bash
-codex exec --ignore-user-config --ignore-rules --ephemeral \
-           --skip-git-repo-check --sandbox read-only \
-           --disable shell_tool --disable plugins --disable hooks \
-           --disable multi_agent --disable apps --disable browser_use \
-           --disable computer_use --disable image_generation \
-           --disable memories --disable skill_search --disable code_mode_host \
-           --disable in_app_browser --disable remote_plugin \
-           -c 'web_search="disabled"' -c project_doc_max_bytes=0 \
-           -C <temporary directory> [--model <MODEL>] -
-```
+The Codex family is not eligible for SDLC reasoning execution. The
+independent review of codex-cli 0.146.0 established that with
+`--ignore-user-config`, `--sandbox read-only`, `--disable shell_tool`,
+`--disable code_mode_host`, `--disable unified_exec` and the other feature
+switches, an exec-hosted file viewer still returned the bytes of harmless
+canary files inside and outside the working directory. The shell binding was
+gone; local file reading was not. Read-only sandboxing does not provide a
+text-only model interface.
 
-Verified on 0.146.0: `--ignore-user-config` skips `~/.codex/config.toml`, so
-its MCP servers, plugins, hooks and provider settings do not load while login
-still uses `CODEX_HOME`; `--disable shell_tool` removes command execution
-itself, so `--sandbox read-only` only bounds what could not otherwise be
-removed; `web_search` defaults to `cached` and is turned off explicitly;
-`project_doc_max_bytes=0` loads no project `AGENTS.md` from the working
-directory. The final message is the only stdout content.
+The runtime therefore refuses a Codex model call at its execution boundary,
+before the executable is looked up and before any authentication or
+inference subprocess starts, with `RUNTIME_ISOLATION_UNAVAILABLE`. The
+refusal states that Codex was requested, that the required boundary is not
+established, which reviewed version retained local-file reading, that no
+model was invoked, and that another runtime must be selected explicitly. It
+is not an authentication failure and not a missing executable. No fallback
+to Claude, no model substitution and no retry with fewer restrictions
+occur, and no configuration key re-enables execution.
 
-Known residual on 0.146.0: the user's global `~/.codex/AGENTS.md` is still
-prepended to the child's instructions. It is the user's own instruction text,
-not a tool or a secret, and no per-invocation switch removes it without
-relocating `CODEX_HOME`, which would also relocate the login. The Claude
-runtime's `--safe-mode` does drop `CLAUDE.md`.
+The login check for Codex remains available as a standalone diagnostic and
+is reported as authenticated but not eligible. Interactive developer use of
+Codex outside SDLC is unaffected. The user's global `~/.codex/AGENTS.md`
+being prepended to a Codex child's instructions is a separate known
+property of that CLI; it is neither a workaround nor evidence of tool
+safety.
+
+Re-enabling Codex requires a separately reviewed policy that verifies, on
+the installed version and with canary files inside and outside the working
+directory, that no tool can read or write local files, call MCP or
+connectors, reach the web or delegate. A changed version number alone is
+not verification.
 
 ### Contract correction
 
@@ -190,8 +201,9 @@ explicit run/CLI override
 TOML has no null, so "use the local CLI default model" is expressed by omitting
 the `model` key. Because the reasoning child ignores the user's own settings
 files, that default is the installed CLI build's default model, not the model
-set in `~/.claude/settings.json` or `~/.codex/config.toml`. Configure `model`
-to pin one. The runtime never substitutes a model or a runtime on its own.
+set in `~/.claude/settings.json` or `~/.codex/config.toml`, where the runtime
+is supported at all. Reproducible runs should configure `model` explicitly.
+The runtime never substitutes a model or a runtime on its own.
 
 Model IDs/aliases are configuration data, not hard-coded into agent logic. A
 configured model is one argv element placed after the restrictions; it can
@@ -241,16 +253,25 @@ on the spawned process's command line.
 
 ## 8. What the boundary is and is not
 
-The reasoning child cannot, by construction of the command line, run shell
-commands, read or edit local files, call MCP servers or connectors (Fibery
-included), fetch the web, or delegate to subagents; it cannot see the
-application's secrets or provider overrides; it starts in an empty directory.
-Its CLI still performs its normal login refresh and internal bookkeeping,
-which is required, and managed (policy) settings still apply.
+For the Claude family on 2.1.260, the reasoning child cannot, by construction
+of the command line, run shell commands, read or edit local files, call MCP
+servers or connectors (Fibery included), fetch the web, or delegate to
+subagents; it cannot see the application's secrets or provider overrides; it
+starts in an empty directory. Its CLI still performs its normal login refresh
+and internal bookkeeping, which is required, and managed (policy) settings,
+including any executable hooks they configure, still apply: managed policy
+is a documented trust boundary, not something SDLC bypasses. For the Codex
+family no such boundary is established, and execution is blocked.
 
-It does not remove the user's own instruction files from every CLI (see the
-Codex residual above), and it does not change what the CLI reports to its
-vendor as part of normal operation.
+Failure diagnostics are authored by SDLC from controlled fields: the runtime,
+the stage (authentication or inference), an exit code or timeout
+classification. Subprocess output, the prompt and context, the login status
+document, the environment and stdin never appear in an exception, a result
+detail or a log. Nothing is written to a diagnostic file automatically.
+
+It does not remove the user's own instruction files from every CLI, and it
+does not change what the CLI reports to its vendor as part of normal
+operation.
 
 This is not a hermetic OS sandbox. The restrictions are the CLI's supported
 per-invocation controls, verified on the versions above by inspecting the

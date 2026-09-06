@@ -7,6 +7,18 @@ or `codex` CLI, which already holds a subscription/OAuth session.
 There is deliberately no API-key path, no provider SDK, and no fallback. When
 local authentication cannot be positively established the call fails.
 
+Only CLI families whose reasoning-child boundary has been verified may
+execute a model. Codex is currently refused at the execution boundary: the
+reviewed codex-cli 0.146.0 kept an exec-hosted local-file reader despite every
+disabling flag, so a request for it fails before any subprocess starts and no
+other runtime is substituted. Re-enabling it needs a separately reviewed,
+capability-verified policy, not a version bump.
+
+Failure diagnostics carry only controlled fields: the runtime, the stage, an
+exit code or timeout classification and a message written here. Subprocess
+output, the prompt, the status document and the environment never appear in
+an exception.
+
 The child is a reasoning process, not a coding agent. The processors hand it
 everything it needs on stdin and want only its answer back, so it runs with
 the CLI's supported per-invocation restrictions: no tools, no MCP servers, no
@@ -20,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -45,6 +58,31 @@ STDIN_ARGUMENT = "-"
 DEFAULT_TIMEOUT_SECONDS = 900
 AUTH_CHECK_TIMEOUT_SECONDS = 60
 CHILD_DIRECTORY_PREFIX = "sdlc-model-"
+
+STAGE_AUTHENTICATION = "authentication"
+STAGE_INFERENCE = "inference"
+SAFE_TOKEN = re.compile(r"[A-Za-z0-9._-]{1,32}")
+
+# -- execution support -------------------------------------------------------
+#
+# The tool boundary of the Codex family failed independent verification on
+# codex-cli 0.146.0: with --disable shell_tool, --disable code_mode_host,
+# --disable unified_exec and --sandbox read-only, an exec-hosted file viewer
+# still returned the bytes of files inside and outside the working directory.
+# Until a separately reviewed policy verifies a boundary, Codex is not
+# eligible for SDLC reasoning execution. The decision keys on the family, not
+# on a version number.
+RUNTIME_ISOLATION_UNAVAILABLE = "RUNTIME_ISOLATION_UNAVAILABLE"
+EXECUTION_UNAVAILABLE_FAMILIES = {
+    INVOCATION_MODE_EXEC: (
+        "the Codex CLI was requested, but the tool boundary SDLC requires for "
+        "its reasoning child is not currently established: the reviewed "
+        "installed version, codex-cli 0.146.0, kept an exec-hosted local-file "
+        "reader despite every disabling flag. No model was invoked and no other "
+        "runtime was tried; select a supported runtime explicitly, for example "
+        "the project default or --runtime claude."
+    ),
+}
 
 # -- positive authentication evidence ----------------------------------------
 #
@@ -90,16 +128,14 @@ CLAUDE_RESTRICTIONS = (
     "--no-session-persistence",
 )
 
-# Codex 0.146.0, verified live: --ignore-user-config skips ~/.codex/config.toml
-# (its MCP servers, plugins, hooks, providers) while login still uses
-# CODEX_HOME; --ignore-rules skips execpolicy rules; --ephemeral persists no
-# session; --sandbox read-only is the strictest sandbox for anything that
-# still executes; the feature switches remove the shell tool itself and every
-# other capability surface; web_search "disabled" turns off the native search
-# that is otherwise on by default; project_doc_max_bytes 0 loads no project
-# AGENTS.md from the working directory. The user's global ~/.codex/AGENTS.md
-# is still prepended as instructions: no per-invocation switch removes it on
-# this version without relocating CODEX_HOME, which would relocate the login.
+# Codex 0.146.0: the invocation below is what SDLC would use, and it is NOT
+# sufficient. Independent review showed that --ignore-user-config,
+# --sandbox read-only and every feature switch (shell_tool, code_mode_host,
+# unified_exec, plugins, hooks, multi_agent, apps, ...) still left an
+# exec-hosted file viewer that returned the bytes of files inside and
+# outside the working directory. The family is therefore refused at the
+# execution boundary (EXECUTION_UNAVAILABLE_FAMILIES); these constants stay
+# only so the selection remains representable and the shape is documented.
 CODEX_DISABLED_FEATURES = (
     "shell_tool",
     "plugins",
@@ -128,16 +164,38 @@ CODEX_RESTRICTIONS = (
 )
 CODEX_WORKDIR_FLAG = "-C"
 
-# Never echoed back to the caller: CLI output can name the account.
-CREDENTIAL_MARKERS = ("token", "key", "secret", "bearer")
-
 
 class ModelRuntimeError(Exception):
-    """A model could not be executed through the local CLI."""
+    """A model could not be executed through the local CLI.
+
+    The message is authored here from controlled fields. It never carries
+    subprocess output, the prompt, a status document or the environment.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        runtime: str | None = None,
+        stage: str | None = None,
+        exit_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.runtime = runtime
+        self.stage = stage
+        self.exit_code = exit_code
 
 
 class ModelAuthenticationError(ModelRuntimeError):
     """The local CLI is missing or not positively authenticated in an allowed mode."""
+
+
+class RuntimeIsolationUnavailable(ModelRuntimeError):
+    """The selected CLI family may not execute a model for SDLC.
+
+    Raised before any subprocess starts. Not an authentication failure and
+    not a missing executable: the CLI may be installed and logged in.
+    """
 
 
 @dataclass(frozen=True)
@@ -230,17 +288,44 @@ class LocalCliModelRuntime:
         """Check the executable exists and is authenticated in an allowed mode.
 
         Returns a short sanitized summary of the login method, never the
-        CLI's account output.
+        CLI's account output. Being authenticated is not the same as being
+        eligible to execute: a family whose boundary is unverified is
+        reported as authenticated but not eligible.
         """
         with self._session() as session:
-            return self._check_authentication(session)
+            summary = self._check_authentication(session)
+        reason = EXECUTION_UNAVAILABLE_FAMILIES.get(
+            self._selection.definition.invocation_mode
+        )
+        if reason is not None:
+            return (
+                f"{summary}; authenticated but not eligible for SDLC reasoning "
+                f"execution ({RUNTIME_ISOLATION_UNAVAILABLE})"
+            )
+        return summary
 
     def run(self, prompt: str, context: str = "") -> ModelResponse:
-        """Verify the login, then execute the prompt under the same session."""
+        """Verify the login, then execute the prompt under the same session.
+
+        A family without a verified boundary is refused here, before the
+        executable is looked up and before any subprocess starts.
+        """
+        self._require_execution_supported()
         with self._session() as session:
             self._check_authentication(session)
             return self._invoke(
                 session, f"{context}\n\n{prompt}" if context else prompt
+            )
+
+    def _require_execution_supported(self) -> None:
+        definition = self._selection.definition
+        reason = EXECUTION_UNAVAILABLE_FAMILIES.get(definition.invocation_mode)
+        if reason is not None:
+            raise RuntimeIsolationUnavailable(
+                f"{RUNTIME_ISOLATION_UNAVAILABLE}: runtime {definition.name!r}: "
+                f"{reason}",
+                runtime=definition.name,
+                stage=STAGE_INFERENCE,
             )
 
     # -- session -------------------------------------------------------------
@@ -254,13 +339,15 @@ class LocalCliModelRuntime:
         if executable is None:
             raise ModelAuthenticationError(
                 f"The {definition.name!r} runtime needs the {definition.executable!r} "
-                "executable, which is not on PATH."
+                "executable, which is not on PATH.",
+                runtime=definition.name,
+                stage=STAGE_AUTHENTICATION,
             )
         parent = os.environ if self._environment is None else self._environment
         try:
             env = child_environment(parent, definition.environment_passthrough)
         except ValueError as error:
-            raise ModelRuntimeError(str(error)) from error
+            raise ModelRuntimeError(str(error), runtime=definition.name) from error
         directory = tempfile.TemporaryDirectory(prefix=CHILD_DIRECTORY_PREFIX)
         cwd = Path(directory.name).resolve()
         if cwd.is_relative_to(Path.cwd().resolve()):
@@ -296,18 +383,25 @@ class LocalCliModelRuntime:
         except subprocess.TimeoutExpired as error:
             raise ModelAuthenticationError(
                 f"{definition.executable} {' '.join(args)} did not answer within "
-                f"{invocation.timeout}s; authentication could not be established."
+                f"{invocation.timeout}s; authentication could not be established.",
+                runtime=definition.name,
+                stage=STAGE_AUTHENTICATION,
             ) from error
         except OSError as error:
             raise ModelAuthenticationError(
                 f"Could not run {definition.executable} {' '.join(args)}: "
-                f"{type(error).__name__}."
+                f"{type(error).__name__}.",
+                runtime=definition.name,
+                stage=STAGE_AUTHENTICATION,
             ) from error
         if result.returncode != 0:
             raise ModelAuthenticationError(
                 f"{definition.executable} is not authenticated ({' '.join(args)} "
-                f"exited {result.returncode}). Log in with the local CLI; SDLC will "
-                "not fall back to an API key."
+                f"exited {result.returncode}; its output is not reported). Log in "
+                "with the local CLI; SDLC will not fall back to an API key.",
+                runtime=definition.name,
+                stage=STAGE_AUTHENTICATION,
+                exit_code=result.returncode,
             )
         return summarize(definition, result.stdout, result.stderr)
 
@@ -326,17 +420,26 @@ class LocalCliModelRuntime:
             result = self._run(invocation)
         except subprocess.TimeoutExpired as error:
             raise ModelRuntimeError(
-                f"{definition.executable} timed out after {self._timeout}s."
+                f"{definition.executable} timed out after {self._timeout}s during "
+                "inference; no response was produced.",
+                runtime=definition.name,
+                stage=STAGE_INFERENCE,
             ) from error
         except OSError as error:
             raise ModelRuntimeError(
-                f"Could not execute {definition.executable}: {type(error).__name__}."
+                f"Could not execute {definition.executable} for inference: "
+                f"{type(error).__name__}.",
+                runtime=definition.name,
+                stage=STAGE_INFERENCE,
             ) from error
 
         if result.returncode != 0:
             raise ModelRuntimeError(
-                f"{definition.executable} exited {result.returncode}: "
-                f"{redact(result.stderr)[:500]}"
+                f"{definition.executable} exited {result.returncode} during "
+                "inference; its output is not reported.",
+                runtime=definition.name,
+                stage=STAGE_INFERENCE,
+                exit_code=result.returncode,
             )
         return ModelResponse(
             text=result.stdout, runtime=definition.name, model=self._selection.model
@@ -395,32 +498,38 @@ def _claude_login_summary(
     definition: RuntimeDefinition, stdout: str, stderr: str
 ) -> str:
     """Accept only an explicit claude.ai login routed through the first-party API."""
+
+    def refuse(message: str) -> ModelAuthenticationError:
+        return ModelAuthenticationError(
+            message, runtime=definition.name, stage=STAGE_AUTHENTICATION
+        )
+
     try:
         status = json.loads(stdout)
     except ValueError as error:
-        raise ModelAuthenticationError(
+        raise refuse(
             f"{definition.executable} auth status did not return the expected JSON "
             "document; authentication could not be established."
         ) from error
     if not isinstance(status, dict):
-        raise ModelAuthenticationError(
+        raise refuse(
             f"{definition.executable} auth status returned an unexpected document."
         )
     if status.get(CLAUDE_LOGGED_IN_KEY) is not True:
-        raise ModelAuthenticationError(
+        raise refuse(
             f"{definition.executable} reports it is logged out. Log in with the "
             "local CLI; SDLC will not fall back to an API key."
         )
     method = status.get(CLAUDE_AUTH_METHOD_KEY)
     if method not in CLAUDE_ALLOWED_AUTH_METHODS:
-        raise ModelAuthenticationError(
+        raise refuse(
             f"{definition.executable} is authenticated through {_label(method)}, "
             "which is not a subscription login. SDLC requires the claude.ai account "
             "login and never uses API-key or Console billing authentication."
         )
     provider = status.get(CLAUDE_API_PROVIDER_KEY)
     if provider not in CLAUDE_ALLOWED_API_PROVIDERS:
-        raise ModelAuthenticationError(
+        raise refuse(
             f"{definition.executable} routes requests through {_label(provider)}, "
             "not the first-party API. SDLC does not use third-party provider routes."
         )
@@ -441,19 +550,19 @@ def _codex_login_summary(
     if logged_out or login_lines != [CODEX_CHATGPT_LOGIN_LINE]:
         raise ModelAuthenticationError(
             f"{definition.executable} did not report a ChatGPT login. SDLC requires "
-            "the ChatGPT account login and never uses API-key authentication."
+            "the ChatGPT account login and never uses API-key authentication.",
+            runtime=definition.name,
+            stage=STAGE_AUTHENTICATION,
         )
     return f"{definition.executable}: {CODEX_CHATGPT_LOGIN_LINE}"
 
 
 def _label(value: object) -> str:
-    return repr(value) if isinstance(value, str) else "an unknown method"
+    """Name a status value only when it is a short plain token.
 
-
-def redact(text: str) -> str:
-    """Drop lines that look like they carry a credential."""
-    return "\n".join(
-        line
-        for line in text.splitlines()
-        if not any(marker in line.lower() for marker in CREDENTIAL_MARKERS)
-    ).strip()
+    Anything else is described, not quoted: the status document may carry
+    account details, and they never belong in an exception.
+    """
+    if isinstance(value, str) and SAFE_TOKEN.fullmatch(value):
+        return repr(value)
+    return "an unrecognized value"

@@ -107,13 +107,29 @@ The model runs as a reasoning child, not a coding agent: the processors send
 it everything it needs on stdin and take only its answer back. The child gets
 an explicit minimal environment (never `FIBERY_TOKEN`, provider API keys or
 base-URL overrides), an empty temporary working directory outside the
-repository, and the CLI's own per-invocation restrictions that remove tools,
-MCP servers, hooks, plugins, skills, web retrieval and subagents. The user's
-interactive Claude Code and Codex settings are not changed. Because the
-child ignores those settings, an omitted `model` in `config/sdlc.toml` means
-the CLI build's default model, not the one chosen in the user's own CLI
-settings; set `model` to pin one. Verified against Claude Code 2.1.260 and
-codex-cli 0.146.0; see the runtime specification for the exact policy.
+repository, and the CLI's own per-invocation restrictions. The user's
+interactive Claude Code and Codex settings are not changed.
+
+Support matrix, as independently reviewed:
+
+| Runtime | Login check | Reasoning execution |
+|---|---|---|
+| Claude Code 2.1.260 | verified | supported: tools, MCP, hooks, plugins, skills, web retrieval and subagents removed by supported CLI controls; managed (policy) settings still apply |
+| codex-cli 0.146.0 | verified | blocked: the tool boundary failed review, an exec-hosted file reader kept reading local files despite every disabling flag |
+
+A Codex selection still parses, but any model call through it fails with
+`RUNTIME_ISOLATION_UNAVAILABLE` before a subprocess starts, and no other
+runtime is substituted. This does not make Codex safe; it stops SDLC from
+using a path that failed the required boundary. Interactive use of Codex
+outside SDLC is unaffected. The restrictions are CLI controls, not OS-level
+isolation.
+
+Because the child ignores the user's own CLI settings, an omitted `model` in
+`config/sdlc.toml` means the CLI build's default model, not the one chosen
+in the user's interactive settings; reproducible runs should set `model`
+explicitly. Failure diagnostics name the runtime, the stage and an exit code
+or timeout, never the child's output, the prompt or the login status
+document. See the runtime specification for the exact policy.
 
 ## Recovering an empty Result Document
 

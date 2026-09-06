@@ -19,9 +19,13 @@ runtime = "claude"
 # `invocation_mode` names the CLI family: "print" is Claude Code (`claude -p`),
 # "exec" is Codex (`codex exec`). The authentication check (claude.ai login on
 # the first-party API; ChatGPT login) and the reasoning-child restrictions
-# (no tools, MCP, hooks, plugins, skills, web retrieval or subagents; a minimal
-# environment; an empty temporary working directory) follow the family and
-# are not configurable here.
+# follow the family and are not configurable here.
+#
+# Support matrix: Claude Code (verified on 2.1.260) executes. Codex is
+# blocked for SDLC reasoning execution: its tool boundary failed review on
+# codex-cli 0.146.0, so a run selecting it fails with
+# RUNTIME_ISOLATION_UNAVAILABLE before any subprocess and nothing else is
+# substituted. The selection stays representable; no key here re-enables it.
 #
 # `environment_passthrough` may list extra variable names the CLI needs in a
 # particular environment (for example HTTPS_PROXY). Provider, API-key,
@@ -29,8 +33,8 @@ runtime = "claude"
 #
 # Under the restrictions the CLI ignores the user's own settings, so "use the
 # local CLI default model" means that CLI build's default, not the model set
-# in ~/.claude/settings.json or ~/.codex/config.toml. Set `model` here to pin
-# one.
+# in ~/.claude/settings.json or ~/.codex/config.toml. Reproducible runs
+# should set `model` here explicitly.
 
 [model_runtime.runtimes.claude]
 executable = "claude"
