@@ -40,6 +40,12 @@ from sdlc.process_result import (
     parse_process_result,
     parse_process_result_name,
 )
+from sdlc.result_shell import (
+    RECOVERY_OPTION,
+    document_label,
+    is_empty_body,
+    recovery_hint,
+)
 from sdlc.results import StandardReviewResult, StandardReviewResultCode
 from sdlc.review_prompt import build_review_prompt
 from sdlc.review_result import (
@@ -54,6 +60,7 @@ from sdlc.review_result import (
 )
 from sdlc.standard_review import (
     InvalidReviewOutput,
+    ReviewOutput,
     ReviewSeverity,
     parse_review_output,
 )
@@ -80,9 +87,10 @@ class _StageFailed(Exception):
 
 @dataclass
 class _Journal:
-    """Durable Fibery changes this run made."""
+    """Durable Fibery changes this run made, and whether the model was asked."""
 
     created: list[str] = field(default_factory=list)
+    model_invoked: bool = False
 
     @property
     def has_durable_state(self) -> bool:
@@ -110,6 +118,9 @@ class _Context:
     relations: RequirementRelations
     existing_standards: tuple[RequirementRecord, ...]
     reviews: tuple[tuple[DocumentNode, ReviewResult], ...]
+    # An empty Review Result shell the operator named for recovery, with the
+    # iteration its name reserves. Never part of `reviews`.
+    shell: tuple[DocumentNode, int] | None = None
 
     @property
     def bindings(self) -> _Bindings:
@@ -128,26 +139,34 @@ def review_standard_requirement(
     workspace: RawProcessorWorkspace,
     model: ModelRuntime,
     entity_id: str,
+    recover_empty_result: str | None = None,
 ) -> StandardReviewResult:
-    """Independently review one Standard Requirement in Review."""
+    """Independently review one Standard Requirement in Review.
+
+    `recover_empty_result` names one Review Result Document whose body was
+    never stored after a failed persistence. It is explicit permission to run
+    the reviewer again and complete that exact Document in place, keeping its
+    reserved iteration; it never creates another artifact and never
+    overwrites a non-empty one.
+    """
     journal = _Journal()
-    model_invoked = False
     try:
-        context = _load_context(workspace, entity_id)
+        context = _load_context(workspace, entity_id, recover_empty_result)
         bindings = context.bindings
 
         if _already_reviewed(context, bindings):
             return _no_changes_result(context)
 
-        result, model_invoked = _produce_review(
-            workspace, model, context, bindings, journal
-        )
+        if context.shell is not None:
+            result = _recover_review(workspace, model, context, bindings, journal)
+        else:
+            result = _produce_review(workspace, model, context, bindings, journal)
         _recheck_bindings(workspace, context, bindings)
         _transition_to_ready(workspace, context, journal)
     except _StageFailed as failure:
-        return _failure_result(failure, journal, model_invoked)
+        return _failure_result(failure, journal)
 
-    return _reviewed_result(result, model_invoked, journal)
+    return _reviewed_result(result, journal.model_invoked, journal)
 
 
 def _already_reviewed(context: _Context, bindings: _Bindings) -> bool:
@@ -250,9 +269,7 @@ def _no_changes_result(context: _Context) -> StandardReviewResult:
     )
 
 
-def _failure_result(
-    failure: _StageFailed, journal: _Journal, model_invoked: bool
-) -> StandardReviewResult:
+def _failure_result(failure: _StageFailed, journal: _Journal) -> StandardReviewResult:
     """Durable state means PARTIAL_REVIEW, never a normal completion.
 
     A failed transition to Ready is reported as a failure even though the
@@ -267,17 +284,18 @@ def _failure_result(
         return StandardReviewResult(
             code=StandardReviewResultCode.PARTIAL_REVIEW,
             message=(
-                "The review did not complete; the Requirement stays in Review "
-                "and the Review Result is left in place."
+                "The review did not complete. What this run made durable is "
+                "listed below and left in place; the details say what a retry "
+                "can do."
             ),
-            model_invoked=model_invoked,
+            model_invoked=journal.model_invoked,
             created=tuple(journal.created),
             details=(failure.code.value, failure.message, *failure.causes),
         )
     return StandardReviewResult(
         code=failure.code,
         message=failure.message,
-        model_invoked=model_invoked,
+        model_invoked=journal.model_invoked,
         created=tuple(journal.created),
         details=failure.causes,
     )
@@ -286,7 +304,9 @@ def _failure_result(
 # -- context ----------------------------------------------------------------
 
 
-def _load_context(workspace: RawProcessorWorkspace, entity_id: str) -> _Context:
+def _load_context(
+    workspace: RawProcessorWorkspace, entity_id: str, recovering: str | None = None
+) -> _Context:
     """Read the Requirement and everything needed to review it."""
     requirement = _load_requirement(workspace, entity_id)
     try:
@@ -315,7 +335,9 @@ def _load_context(workspace: RawProcessorWorkspace, entity_id: str) -> _Context:
         )
 
     root = attached[0]
-    process_results, reviews = _read_children(workspace, requirement, root)
+    process_results, reviews, shell = _read_children(
+        workspace, requirement, root, recovering
+    )
     if not process_results:
         raise _StageFailed(
             StandardReviewResultCode.NO_PROCESS_RESULT,
@@ -344,6 +366,7 @@ def _load_context(workspace: RawProcessorWorkspace, entity_id: str) -> _Context:
             if record.id != requirement.id and record.requirement_id
         ),
         reviews=reviews,
+        shell=shell,
     )
 
 
@@ -383,13 +406,20 @@ def _read_children(
     workspace: RawProcessorWorkspace,
     requirement: RequirementRecord,
     root: DocumentNode,
-) -> tuple[tuple[ProcessResult, ...], tuple[tuple[DocumentNode, ReviewResult], ...]]:
+    recovering: str | None = None,
+) -> tuple[
+    tuple[ProcessResult, ...],
+    tuple[tuple[DocumentNode, ReviewResult], ...],
+    tuple[DocumentNode, int] | None,
+]:
     """Split the Root Document's children into Process and Review history.
 
     Both capabilities write numbered children under the same Root Document, so
     they are told apart by name. Anything else nested there is neither, and is
     ignored: the reviewer's source material is the Root Document, not whatever
-    else happens to sit beneath it.
+    else happens to sit beneath it. When `recovering` names a child, that
+    child must be an empty Review Result shell of this Requirement reserving
+    the next iteration; it is returned separately and never parsed as history.
     """
     try:
         children = workspace.child_documents(root.id)
@@ -404,6 +434,9 @@ def _read_children(
     reviews: list[tuple[DocumentNode, ReviewResult]] = []
     seen_process: dict[int, str] = {}
     seen_reviews: dict[int, str] = {}
+    shell: tuple[DocumentNode, int] | None = None
+    if recovering is not None:
+        _require_named_artifact(children, requirement, recovering)
     for child in children:
         process_name = parse_process_result_name(child.name)
         if process_name is not None and process_name[0] == requirement.requirement_id:
@@ -435,13 +468,91 @@ def _read_children(
                 (seen_reviews[iteration], child.id),
             )
         seen_reviews[iteration] = child.id
+        if recovering is not None and child.id == recovering:
+            _check_shell(workspace, child)
+            shell = (child, iteration)
+            continue
         reviews.append(
             (child, _read_review_result(workspace, child, requirement, iteration))
         )
 
     process.sort(key=lambda result: result.iteration)
     reviews.sort(key=lambda pair: pair[1].iteration)
-    return tuple(process), tuple(reviews)
+    if recovering is not None:
+        _check_shell_is_terminal(requirement, recovering, shell, reviews)
+    return tuple(process), tuple(reviews), shell
+
+
+def _require_named_artifact(
+    children: list[DocumentNode], requirement: RequirementRecord, recovering: str
+) -> None:
+    """The named Document must be one of this Requirement's Review Results."""
+    named = next((child for child in children if child.id == recovering), None)
+    parsed = parse_review_result_name(named.name) if named is not None else None
+    if parsed is None or parsed[0] != requirement.requirement_id:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_STATE_CONFLICT,
+            f"{recovering!r} is not a Review Result Document of "
+            f"{requirement.requirement_id} under its Root Document.",
+        )
+
+
+def _check_shell(workspace: RawProcessorWorkspace, node: DocumentNode) -> None:
+    """Fail closed: only a genuinely empty, writable Review Result may be filled."""
+    if not node.secret:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_RESULT_WRITE_FAILED,
+            f"Review Result Document {document_label(node)} exposes no content "
+            "secret; it cannot be completed in place.",
+        )
+    try:
+        content = workspace.read_document_content(node.secret)
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardReviewResultCode.FIBERY_READ_FAILED,
+            f"Could not read Review Result Document {document_label(node)}.",
+            (str(error),),
+        ) from error
+    if is_empty_body(content):
+        return
+    try:
+        parse_review_result(content)
+    except InvalidReviewResult as error:
+        raise _StageFailed(
+            StandardReviewResultCode.INVALID_REVIEW_RESULT,
+            f"Review Result Document {document_label(node)} is not empty and "
+            "does not parse; it cannot be recovered over.",
+            (str(error),),
+        ) from error
+    raise _StageFailed(
+        StandardReviewResultCode.REVIEW_STATE_CONFLICT,
+        f"Review Result Document {document_label(node)} already holds a valid "
+        f"result. Run the ordinary operation without {RECOVERY_OPTION}.",
+    )
+
+
+def _check_shell_is_terminal(
+    requirement: RequirementRecord,
+    recovering: str,
+    shell: tuple[DocumentNode, int] | None,
+    reviews: list[tuple[DocumentNode, ReviewResult]],
+) -> None:
+    """The shell must reserve exactly the next review iteration."""
+    if shell is None:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_STATE_CONFLICT,
+            f"{recovering!r} is not a Review Result Document of "
+            f"{requirement.requirement_id} under its Root Document.",
+        )
+    node, iteration = shell
+    expected = reviews[-1][1].iteration + 1 if reviews else FIRST_ITERATION
+    if iteration != expected:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_STATE_CONFLICT,
+            f"Review Result Document {document_label(node)} reserves iteration "
+            f"{iteration}, but only the terminal unfinished iteration "
+            f"{expected} can be completed in place.",
+        )
 
 
 def _read_process_result(
@@ -496,6 +607,12 @@ def _read_review_result(
     try:
         result = parse_review_result(content)
     except InvalidReviewResult as error:
+        if is_empty_body(content):
+            raise _StageFailed(
+                StandardReviewResultCode.INVALID_REVIEW_RESULT,
+                f"Review Result Document {document_label(node)} of "
+                f"{requirement.requirement_id} is empty. {recovery_hint(node)}",
+            ) from error
         raise _StageFailed(
             StandardReviewResultCode.INVALID_REVIEW_RESULT,
             f"Review Result {iteration} of {requirement.requirement_id} cannot "
@@ -522,11 +639,42 @@ def _produce_review(
     context: _Context,
     bindings: _Bindings,
     journal: _Journal,
-) -> tuple[ReviewResult, bool]:
+) -> ReviewResult:
     """Invoke the reviewer once and persist the iteration before mutating."""
     latest = context.latest_review
     iteration = latest.iteration + 1 if latest else FIRST_ITERATION
+    result = _build_result(
+        context, bindings, iteration, _verify(model, context, journal)
+    )
+    _persist_result(workspace, context, result, journal)
+    return result
 
+
+def _recover_review(
+    workspace: RawProcessorWorkspace,
+    model: ModelRuntime,
+    context: _Context,
+    bindings: _Bindings,
+    journal: _Journal,
+) -> ReviewResult:
+    """Run the reviewer once and complete the named empty shell in place.
+
+    The earlier response is gone; this is a new review of the current input,
+    written into the same Document under its reserved iteration only if a
+    fresh read shows the shell is still there, still unique and still empty.
+    The usual binding re-check before Ready still follows.
+    """
+    shell, iteration = context.shell
+    result = _build_result(
+        context, bindings, iteration, _verify(model, context, journal)
+    )
+    current = _current_shell(workspace, context, shell, iteration)
+    _store_result(workspace, current, result, journal)
+    return result
+
+
+def _verify(model: ModelRuntime, context: _Context, journal: _Journal) -> ReviewOutput:
+    """One reviewer invocation, validated against the review contract."""
     prompt, model_context = build_review_prompt(
         requirement=context.requirement,
         project_name=context.project.name,
@@ -535,6 +683,7 @@ def _produce_review(
         relations=context.relations,
         existing_standards=context.existing_standards,
     )
+    journal.model_invoked = True
     try:
         response = model.run(prompt, model_context)
     except ModelRuntimeError as error:
@@ -543,9 +692,8 @@ def _produce_review(
             "The configured local model runtime could not run the review.",
             (str(error),),
         ) from error
-
     try:
-        review = parse_review_output(
+        return parse_review_output(
             response.text,
             context.process_result.findings,
             context.process_result.proposed_relations,
@@ -557,7 +705,11 @@ def _produce_review(
             (str(error),),
         ) from error
 
-    result = build_review_result(
+
+def _build_result(
+    context: _Context, bindings: _Bindings, iteration: int, review: ReviewOutput
+) -> ReviewResult:
+    return build_review_result(
         requirement_id=context.requirement.requirement_id or "",
         iteration=iteration,
         reviewed_document_fingerprint=bindings.document_fingerprint,
@@ -565,8 +717,58 @@ def _produce_review(
         reviewed_process_output_fingerprint=bindings.process_output_fingerprint,
         review=review,
     )
-    _persist_result(workspace, context, result, journal)
-    return result, True
+
+
+def _read_body(workspace: RawProcessorWorkspace, node: DocumentNode) -> str:
+    try:
+        return workspace.read_document_content(node.secret or "")
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardReviewResultCode.FIBERY_READ_FAILED,
+            f"Could not read Review Result Document {document_label(node)}.",
+            (str(error),),
+        ) from error
+
+
+def _current_shell(
+    workspace: RawProcessorWorkspace,
+    context: _Context,
+    shell: DocumentNode,
+    iteration: int,
+) -> DocumentNode:
+    """Freshly prove the shell is still the unique, empty reserved iteration."""
+    requirement = context.requirement
+    try:
+        children = workspace.child_documents(context.root_document.id)
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardReviewResultCode.FIBERY_READ_FAILED,
+            "Could not re-list the Requirement's child Documents before filling "
+            "the empty Review Result.",
+            (str(error),),
+        ) from error
+    same_iteration = [
+        child
+        for child in children
+        if parse_review_result_name(child.name)
+        == (requirement.requirement_id, iteration)
+    ]
+    current = next((child for child in same_iteration if child.id == shell.id), None)
+    if current is not None and not is_empty_body(_read_body(workspace, current)):
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_STATE_CONFLICT,
+            f"Review Result Document {document_label(shell)} was filled by another "
+            "actor while the model was running; refusing to overwrite it.",
+        )
+    if current is None or len(same_iteration) != 1 or current.name != shell.name:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_STATE_CONFLICT,
+            f"Review Result Document {document_label(shell)} is no longer the "
+            f"single Review Result reserving iteration {iteration}; nothing was "
+            "written.",
+        )
+    _check_shell(workspace, current)
+    return current
 
 
 def _persist_result(
@@ -575,42 +777,70 @@ def _persist_result(
     result: ReviewResult,
     journal: _Journal,
 ) -> None:
-    """Write the iteration and read it back before trusting it."""
+    """Create the iteration's Document, then write and read back its body.
+
+    The creation is journaled as soon as the create call returns an identity,
+    separately from the body: a created shell is not a persisted result.
+    """
     name = review_result_name(result.requirement_id, result.iteration)
     try:
         node = workspace.create_child_document(name, context.root_document.id)
-        if not node.secret:
-            raise _StageFailed(
-                StandardReviewResultCode.REVIEW_RESULT_WRITE_FAILED,
-                "The Review Result document exposes no content secret.",
-            )
-        workspace.write_document_content(node.secret, render_review_result(result))
-        stored = workspace.read_document_content(node.secret)
     except FiberyError as error:
         raise _StageFailed(
             StandardReviewResultCode.REVIEW_RESULT_WRITE_FAILED,
-            f"Could not persist {name}.",
+            f"Could not create {name}; nothing durable is known to exist.",
             (str(error),),
         ) from error
+    journal.created.append(f"Review Result Document {document_label(node)} created")
+    if not node.secret:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_RESULT_WRITE_FAILED,
+            f"Review Result Document {document_label(node)} exposes no content "
+            "secret; its body was not written.",
+        )
+    _store_result(workspace, node, result, journal)
 
+
+def _store_result(
+    workspace: RawProcessorWorkspace,
+    node: DocumentNode,
+    result: ReviewResult,
+    journal: _Journal,
+) -> None:
+    """Write the body into an existing Document and prove it stored."""
+    try:
+        workspace.write_document_content(
+            node.secret or "", render_review_result(result)
+        )
+        stored = workspace.read_document_content(node.secret or "")
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_RESULT_WRITE_FAILED,
+            f"The body of Review Result Document {document_label(node)} was not "
+            "confirmed stored. A retry reads the Document: a valid body is used "
+            f"normally; an empty one needs {RECOVERY_OPTION} {node.id}.",
+            (str(error),),
+        ) from error
     try:
         read_back = parse_review_result(stored)
     except InvalidReviewResult as error:
         raise _StageFailed(
             StandardReviewResultCode.REVIEW_RESULT_WRITE_FAILED,
-            f"{name} does not read back as valid.",
+            f"Review Result Document {document_label(node)} does not read back as "
+            "valid.",
             (str(error),),
         ) from error
-    if not read_back.reviews(
+    if read_back.iteration != result.iteration or not read_back.reviews(
         result.reviewed_document_fingerprint,
         result.reviewed_process_iteration,
         result.reviewed_process_output_fingerprint,
     ):
         raise _StageFailed(
             StandardReviewResultCode.REVIEW_RESULT_WRITE_FAILED,
-            f"{name} reads back bound to a different reviewed state.",
+            f"Review Result Document {document_label(node)} reads back bound to a "
+            "different reviewed state.",
         )
-    journal.created.append(f"{name} ({node.id})")
+    journal.created.append(f"Review Result {document_label(node)} persisted")
 
 
 def _recheck_bindings(
@@ -634,7 +864,7 @@ def _recheck_bindings(
             (str(error),),
         ) from error
 
-    process_results, _ = _read_children(
+    process_results, _, _ = _read_children(
         workspace, context.requirement, context.root_document
     )
     if not process_results:

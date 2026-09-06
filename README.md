@@ -96,6 +96,39 @@ Check local authentication with:
 bash scripts/check-local-model-auth.sh
 ```
 
+## Recovering an empty Result Document
+
+Each model-backed command creates its Result as a child Document first and
+writes the body second. If the body write fails after the create succeeded,
+Fibery holds a named, correctly placed, empty Document. The failing run
+reports it: its `created` list names the Document as *created*, not
+*persisted*, and the details give the exact id. An ordinary retry refuses
+that shell with `INVALID_PROCESSING_RESULT` or `INVALID_REVIEW_RESULT`,
+names it, and calls no model.
+
+To complete the shell in place, name it explicitly:
+
+```bash
+sdlc project requirement process   --requirement <RAW id>      --recover-empty-result <document id>
+sdlc project requirement normalize --requirement <Standard id> --recover-empty-result <document id>
+sdlc project requirement review    --requirement <Standard id> --recover-empty-result <document id>
+```
+
+This runs the model again on the current input and writes into the same
+Document, keeping its name, parent and reserved iteration. It does not
+reconstruct the earlier response. It refuses, without writing, when the
+Document is not that Requirement's own current Result shell, when its body is
+not empty, when a newer Result already exists above it, when a Review Result
+already reviewed that iteration, when a RAW Requirement already produced
+candidates, or when another actor filled or renamed the shell while the model
+was running. A valid Result named by mistake is never overwritten: run the
+ordinary command instead.
+
+This is for an observed create-success, body-write-failure. Emptiness alone
+cannot prove a Document was never completed and cleared later, and explicit
+selection is not multi-writer safety: do not recover while another run may be
+working on the same item.
+
 ## Development agents
 
 Claude Code project agents live in `.claude/agents/`.

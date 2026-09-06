@@ -43,9 +43,23 @@ from sdlc.process_result import (
     render_process_result,
 )
 from sdlc.raw_source import content_equivalent
+from sdlc.result_shell import (
+    RECOVERY_OPTION,
+    document_label,
+    is_empty_body,
+    recovery_hint,
+)
 from sdlc.results import StandardProcessResult, StandardProcessResultCode
-from sdlc.review_result import parse_review_result_name
-from sdlc.standard_analysis import InvalidAnalysisOutput, parse_analysis_output
+from sdlc.review_result import (
+    InvalidReviewResult,
+    parse_review_result,
+    parse_review_result_name,
+)
+from sdlc.standard_analysis import (
+    AnalysisResult,
+    InvalidAnalysisOutput,
+    parse_analysis_output,
+)
 from sdlc.standard_prompt import build_analysis_prompt
 
 STANDARD_TYPE = "Standard"
@@ -102,27 +116,52 @@ class _Context:
     raw_ancestry: str
     existing_standards: tuple[RequirementRecord, ...]
     results: tuple[tuple[DocumentNode, ProcessResult], ...]
+    # An empty Process Result shell the operator named for recovery, with the
+    # iteration its name reserves. Never part of `results`.
+    shell: tuple[DocumentNode, int] | None = None
 
     @property
     def latest(self) -> tuple[DocumentNode, ProcessResult] | None:
         return self.results[-1] if self.results else None
+
+    @property
+    def next_iteration(self) -> int:
+        return self.latest[1].iteration + 1 if self.latest else FIRST_ITERATION
 
 
 def process_standard_requirement(
     workspace: RawProcessorWorkspace,
     model: ModelRuntime,
     entity_id: str,
+    recover_empty_result: str | None = None,
 ) -> StandardProcessResult:
-    """Normalize and analyze one Standard Requirement in Process."""
+    """Normalize and analyze one Standard Requirement in Process.
+
+    `recover_empty_result` names one Process Result Document whose body was
+    never stored after a failed persistence. It is explicit permission to run
+    the model again and complete that exact Document in place, keeping its
+    reserved iteration; it never creates another artifact and never
+    overwrites a non-empty one.
+    """
     journal = _Journal()
     try:
-        context = _load_context(workspace, entity_id)
+        context = _load_context(workspace, entity_id, recover_empty_result)
 
         resumable = _resumable_result(context)
         if resumable is None and _is_unchanged(context):
             return _no_changes_result(context)
 
-        if resumable is not None:
+        if context.shell is not None:
+            if resumable is not None:
+                raise _StageFailed(
+                    StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+                    f"{context.requirement.requirement_id} still matches the input "
+                    f"of Process Result {resumable.iteration}, whose rewrite never "
+                    "landed; that resume, not the empty shell, is what a run "
+                    f"without {RECOVERY_OPTION} completes.",
+                )
+            result = _recover_result(workspace, model, context, journal)
+        elif resumable is not None:
             result = resumable
         else:
             result = _produce_result(workspace, model, context, journal)
@@ -191,8 +230,9 @@ def _failure_result(failure: _StageFailed, journal: _Journal) -> StandardProcess
         return StandardProcessResult(
             code=StandardProcessResultCode.PARTIAL_PROCESSING,
             message=(
-                "Processing did not complete; the Requirement stays in Process "
-                "and a retry will resume."
+                "Processing did not complete. What this run made durable is "
+                "listed below and left in place; the details say what a retry "
+                "can do."
             ),
             model_invoked=journal.model_invoked,
             created=tuple(journal.created),
@@ -210,7 +250,9 @@ def _failure_result(failure: _StageFailed, journal: _Journal) -> StandardProcess
 # -- context ----------------------------------------------------------------
 
 
-def _load_context(workspace: RawProcessorWorkspace, entity_id: str) -> _Context:
+def _load_context(
+    workspace: RawProcessorWorkspace, entity_id: str, recovering: str | None = None
+) -> _Context:
     """Read the Requirement and everything needed to process it."""
     try:
         requirement = workspace.read_requirement(entity_id)
@@ -263,7 +305,9 @@ def _load_context(workspace: RawProcessorWorkspace, entity_id: str) -> _Context:
         )
 
     root = attached[0]
-    results, child_content = _read_children(workspace, requirement, root)
+    results, child_content, shell = _read_children(
+        workspace, requirement, root, recovering
+    )
     try:
         root_content = workspace.read_document_content(root.secret or "")
     except FiberyError as error:
@@ -287,6 +331,7 @@ def _load_context(workspace: RawProcessorWorkspace, entity_id: str) -> _Context:
             if record.id != requirement.id and record.requirement_id
         ),
         results=results,
+        shell=shell,
     )
 
 
@@ -294,11 +339,19 @@ def _read_children(
     workspace: RawProcessorWorkspace,
     requirement: RequirementRecord,
     root: DocumentNode,
-) -> tuple[tuple[tuple[DocumentNode, ProcessResult], ...], str]:
+    recovering: str | None = None,
+) -> tuple[
+    tuple[tuple[DocumentNode, ProcessResult], ...],
+    str,
+    tuple[DocumentNode, int] | None,
+]:
     """Split the Root Document's children into Process Results and source.
 
     A previous Process Result is this processor's own output and must never be
-    fed back to the model as requirement content.
+    fed back to the model as requirement content. When `recovering` names a
+    child, that child must be an empty Process Result shell of this
+    Requirement reserving the next iteration; it is returned separately and is
+    not parsed as history.
     """
     try:
         children = workspace.child_documents(root.id)
@@ -312,8 +365,13 @@ def _read_children(
     results: list[tuple[DocumentNode, ProcessResult]] = []
     seen_iterations: dict[int, str] = {}
     sections: list[str] = []
+    reviews: list[DocumentNode] = []
+    shell: tuple[DocumentNode, int] | None = None
+    if recovering is not None:
+        _require_named_artifact(children, requirement, recovering)
     for child in children:
         if _is_review_artifact(child.name, requirement.requirement_id):
+            reviews.append(child)
             continue
         parsed_name = parse_process_result_name(child.name)
         if parsed_name is None or parsed_name[0] != requirement.requirement_id:
@@ -340,10 +398,119 @@ def _read_children(
                 (seen_iterations[iteration], child.id),
             )
         seen_iterations[iteration] = child.id
+        if recovering is not None and child.id == recovering:
+            _check_shell(workspace, child, requirement)
+            shell = (child, iteration)
+            continue
         results.append((child, _read_result(workspace, child, requirement, iteration)))
 
     results.sort(key=lambda pair: pair[1].iteration)
-    return tuple(results), "\n\n".join(sections)
+    if recovering is not None:
+        _check_shell_is_terminal(
+            workspace, requirement, recovering, shell, results, reviews
+        )
+    return tuple(results), "\n\n".join(sections), shell
+
+
+def _require_named_artifact(
+    children: list[DocumentNode], requirement: RequirementRecord, recovering: str
+) -> None:
+    """The named Document must be one of this Requirement's Process Results."""
+    named = next((child for child in children if child.id == recovering), None)
+    parsed = parse_process_result_name(named.name) if named is not None else None
+    if parsed is None or parsed[0] != requirement.requirement_id:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"{recovering!r} is not a Process Result Document of "
+            f"{requirement.requirement_id} under its Root Document.",
+        )
+
+
+def _check_shell(
+    workspace: RawProcessorWorkspace, node: DocumentNode, requirement: RequirementRecord
+) -> None:
+    """Fail closed: only a genuinely empty, writable Process Result may be filled."""
+    if not node.secret:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,
+            f"Process Result Document {document_label(node)} exposes no content "
+            "secret; it cannot be completed in place.",
+        )
+    try:
+        content = workspace.read_document_content(node.secret)
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.FIBERY_READ_FAILED,
+            f"Could not read Process Result Document {document_label(node)}.",
+            (str(error),),
+        ) from error
+    if is_empty_body(content):
+        return
+    try:
+        parse_process_result(content)
+    except InvalidProcessResult as error:
+        raise _StageFailed(
+            StandardProcessResultCode.INVALID_PROCESSING_RESULT,
+            f"Process Result Document {document_label(node)} is not empty and "
+            "does not parse; it cannot be recovered over.",
+            (str(error),),
+        ) from error
+    raise _StageFailed(
+        StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+        f"Process Result Document {document_label(node)} already holds a valid "
+        f"result. Run the ordinary operation without {RECOVERY_OPTION}.",
+    )
+
+
+def _check_shell_is_terminal(
+    workspace: RawProcessorWorkspace,
+    requirement: RequirementRecord,
+    recovering: str,
+    shell: tuple[DocumentNode, int] | None,
+    results: list[tuple[DocumentNode, ProcessResult]],
+    reviews: list[DocumentNode],
+) -> None:
+    """The shell must reserve exactly the next iteration and be unconsumed."""
+    if shell is None:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"{recovering!r} is not a Process Result Document of "
+            f"{requirement.requirement_id} under its Root Document.",
+        )
+    node, iteration = shell
+    expected = results[-1][1].iteration + 1 if results else FIRST_ITERATION
+    if iteration != expected:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Process Result Document {document_label(node)} reserves iteration "
+            f"{iteration}, but only the terminal unfinished iteration "
+            f"{expected} can be completed in place.",
+        )
+    for review in reviews:
+        try:
+            reviewed = parse_review_result(
+                workspace.read_document_content(review.secret or "")
+            )
+        except FiberyError as error:
+            raise _StageFailed(
+                StandardProcessResultCode.FIBERY_READ_FAILED,
+                f"Could not read Review Result {document_label(review)}.",
+                (str(error),),
+            ) from error
+        except InvalidReviewResult as error:
+            raise _StageFailed(
+                StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+                f"Review Result {document_label(review)} cannot be read, so it is "
+                "unknown whether it consumed the empty iteration; refusing.",
+                (str(error),),
+            ) from error
+        if reviewed.reviewed_process_iteration == iteration:
+            raise _StageFailed(
+                StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+                f"Review Result {document_label(review)} already reviewed "
+                f"iteration {iteration}; the empty shell cannot be regenerated "
+                "underneath it.",
+            )
 
 
 def _is_review_artifact(name: str, requirement_id: str | None) -> bool:
@@ -375,6 +542,12 @@ def _read_result(
     try:
         result = parse_process_result(content)
     except InvalidProcessResult as error:
+        if is_empty_body(content):
+            raise _StageFailed(
+                StandardProcessResultCode.INVALID_PROCESSING_RESULT,
+                f"Process Result Document {document_label(node)} of "
+                f"{requirement.requirement_id} is empty. {recovery_hint(node)}",
+            ) from error
         raise _StageFailed(
             StandardProcessResultCode.INVALID_PROCESSING_RESULT,
             f"Process Result {iteration} of {requirement.requirement_id} cannot "
@@ -569,9 +742,53 @@ def _produce_result(
     journal: _Journal,
 ) -> ProcessResult:
     """Invoke the model once and persist the iteration before mutating."""
-    latest = context.latest
-    iteration = latest[1].iteration + 1 if latest else FIRST_ITERATION
+    result = build_process_result(
+        requirement_id=context.requirement.requirement_id or "",
+        iteration=context.next_iteration,
+        input_fingerprint=context.input_fingerprint,
+        analysis=_analyze(model, context, journal),
+    )
+    # The model reasoned over the captured input; persist only if it is still
+    # the input. A stale output is dropped, never recorded as an iteration.
+    _require_unchanged(
+        workspace, context, context.root_content, "while the model was running"
+    )
+    _persist_result(workspace, context, result, journal)
+    return result
 
+
+def _recover_result(
+    workspace: RawProcessorWorkspace,
+    model: ModelRuntime,
+    context: _Context,
+    journal: _Journal,
+) -> ProcessResult:
+    """Run the model once and complete the named empty shell in place.
+
+    The earlier response is gone; this is a new analysis of the current
+    input, written into the same Document under its reserved iteration only
+    if a fresh read shows the shell is still there, still unique and still
+    empty. The same input guards as a normal iteration apply.
+    """
+    shell, iteration = context.shell
+    result = build_process_result(
+        requirement_id=context.requirement.requirement_id or "",
+        iteration=iteration,
+        input_fingerprint=context.input_fingerprint,
+        analysis=_analyze(model, context, journal),
+    )
+    _require_unchanged(
+        workspace, context, context.root_content, "while the model was running"
+    )
+    current = _current_shell(workspace, context, shell, iteration)
+    _store_result(workspace, current, result, journal)
+    return result
+
+
+def _analyze(
+    model: ModelRuntime, context: _Context, journal: _Journal
+) -> AnalysisResult:
+    """One model invocation, validated against the analysis contract."""
     prompt, model_context = build_analysis_prompt(
         requirement=context.requirement,
         project_name=context.project.name,
@@ -589,9 +806,8 @@ def _produce_result(
             "The configured local model runtime could not run the analysis.",
             (str(error),),
         ) from error
-
     try:
-        analysis = parse_analysis_output(response.text)
+        return parse_analysis_output(response.text)
     except InvalidAnalysisOutput as error:
         raise _StageFailed(
             StandardProcessResultCode.INVALID_MODEL_OUTPUT,
@@ -599,19 +815,57 @@ def _produce_result(
             (str(error),),
         ) from error
 
-    result = build_process_result(
-        requirement_id=context.requirement.requirement_id or "",
-        iteration=iteration,
-        input_fingerprint=context.input_fingerprint,
-        analysis=analysis,
-    )
-    # The model reasoned over the captured input; persist only if it is still
-    # the input. A stale output is dropped, never recorded as an iteration.
-    _require_unchanged(
-        workspace, context, context.root_content, "while the model was running"
-    )
-    _persist_result(workspace, context, result, journal)
-    return result
+
+def _read_body(workspace: RawProcessorWorkspace, node: DocumentNode) -> str:
+    try:
+        return workspace.read_document_content(node.secret or "")
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.FIBERY_READ_FAILED,
+            f"Could not read Process Result Document {document_label(node)}.",
+            (str(error),),
+        ) from error
+
+
+def _current_shell(
+    workspace: RawProcessorWorkspace,
+    context: _Context,
+    shell: DocumentNode,
+    iteration: int,
+) -> DocumentNode:
+    """Freshly prove the shell is still the unique, empty reserved iteration."""
+    requirement = context.requirement
+    try:
+        children = workspace.child_documents(context.root_document.id)
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.FIBERY_READ_FAILED,
+            "Could not re-list the Requirement's child Documents before filling "
+            "the empty Process Result.",
+            (str(error),),
+        ) from error
+    same_iteration = [
+        child
+        for child in children
+        if parse_process_result_name(child.name)
+        == (requirement.requirement_id, iteration)
+    ]
+    current = next((child for child in same_iteration if child.id == shell.id), None)
+    if current is not None and not is_empty_body(_read_body(workspace, current)):
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Process Result Document {document_label(shell)} was filled by another "
+            "actor while the model was running; refusing to overwrite it.",
+        )
+    if current is None or len(same_iteration) != 1 or current.name != shell.name:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Process Result Document {document_label(shell)} is no longer the "
+            f"single Process Result reserving iteration {iteration}; nothing was "
+            "written.",
+        )
+    _check_shell(workspace, current, requirement)
+    return current
 
 
 def _persist_result(
@@ -620,33 +874,70 @@ def _persist_result(
     result: ProcessResult,
     journal: _Journal,
 ) -> None:
-    """Write the iteration and read it back before trusting it."""
+    """Create the iteration's Document, then write and read back its body.
+
+    The creation is journaled as soon as the create call returns an identity,
+    separately from the body: a created shell is not a persisted result.
+    """
     name = process_result_name(result.requirement_id, result.iteration)
     try:
         node = workspace.create_child_document(name, context.root_document.id)
-        if not node.secret:
-            raise _StageFailed(
-                StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,
-                "The Process Result document exposes no content secret.",
-            )
-        workspace.write_document_content(node.secret, render_process_result(result))
-        stored = workspace.read_document_content(node.secret)
     except FiberyError as error:
         raise _StageFailed(
             StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,
-            f"Could not persist {name}.",
+            f"Could not create {name}; nothing durable is known to exist.",
             (str(error),),
         ) from error
+    journal.created.append(f"Process Result Document {document_label(node)} created")
+    if not node.secret:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,
+            f"Process Result Document {document_label(node)} exposes no content "
+            "secret; its body was not written.",
+        )
+    _store_result(workspace, node, result, journal)
 
+
+def _store_result(
+    workspace: RawProcessorWorkspace,
+    node: DocumentNode,
+    result: ProcessResult,
+    journal: _Journal,
+) -> None:
+    """Write the body into an existing Document and prove it stored."""
     try:
-        parse_process_result(stored)
+        workspace.write_document_content(
+            node.secret or "", render_process_result(result)
+        )
+        stored = workspace.read_document_content(node.secret or "")
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,
+            f"The body of Process Result Document {document_label(node)} was not "
+            "confirmed stored. A retry reads the Document: a valid body resumes "
+            f"normally; an empty one needs {RECOVERY_OPTION} {node.id}.",
+            (str(error),),
+        ) from error
+    try:
+        read_back = parse_process_result(stored)
     except InvalidProcessResult as error:
         raise _StageFailed(
             StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,
-            f"{name} does not read back as valid.",
+            f"Process Result Document {document_label(node)} does not read back "
+            "as valid.",
             (str(error),),
         ) from error
-    journal.created.append(f"{name} ({node.id})")
+    if (
+        read_back.iteration != result.iteration
+        or read_back.requirement_id != result.requirement_id
+        or read_back.input_fingerprint != result.input_fingerprint
+    ):
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,
+            f"Process Result Document {document_label(node)} reads back as a "
+            "different iteration or input.",
+        )
+    journal.created.append(f"Process Result {document_label(node)} persisted")
 
 
 def _apply_document(

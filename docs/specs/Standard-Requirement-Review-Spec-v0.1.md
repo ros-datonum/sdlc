@@ -370,6 +370,22 @@ Other cases:
 A failed `Ready` transition is always reported as a failure and never as normal
 completion.
 
+### Empty Result Documents
+
+A Result is created as a child Document before its body is written. If the
+body write fails after the create returned, the empty Document remains; the
+run reports it as *created*, never *persisted*, with its id. It is not a
+Result: an ordinary retry refuses it by id, invokes no model and writes
+nothing. It may be completed in place only when named explicitly through
+`--recover-empty-result <document id>`, which runs the model again on the
+current input, writes into the same Document under its reserved name and
+iteration after a fresh read proves it is still the single, still-empty
+shell, and reads the body back through the strict parser before any
+downstream step. Recovery refuses any non-empty body, any Document that is
+not this Requirement's terminal unfinished Result, and any evidence that the
+iteration was already consumed downstream. Explicit selection is not
+multi-writer safety.
+
 ## 15. Iterations and no-change
 
 Review Result iterations are monotonic — `0001`, `0002`, `0003` — never
