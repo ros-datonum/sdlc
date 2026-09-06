@@ -120,9 +120,12 @@ reconstruct the earlier response. It refuses, without writing, when the
 Document is not that Requirement's own current Result shell, when its body is
 not empty, when a newer Result already exists above it, when a Review Result
 already reviewed that iteration, when a RAW Requirement already produced
-candidates, or when another actor filled or renamed the shell while the model
-was running. A valid Result named by mistake is never overwritten: run the
-ordinary command instead.
+candidates, or when the Requirement's Type, State, Requirement ID or attached
+Root Document changed, or another actor filled or renamed the shell, while the
+model was running. Those are fresh reads taken immediately before the write: a
+change visible then is refused; a change that lands between that check and the
+write is not detected. A valid Result named by mistake is never overwritten:
+run the ordinary command instead.
 
 This is for an observed create-success, body-write-failure. Emptiness alone
 cannot prove a Document was never completed and cleared later, and explicit

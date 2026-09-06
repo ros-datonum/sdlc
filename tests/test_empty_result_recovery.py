@@ -12,6 +12,8 @@ log, which records processor writes only.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from processor_fake import FakeModelRuntime, build_workspace, candidate, model_output
@@ -25,7 +27,11 @@ from sdlc.raw_processor import process_raw_requirement
 from sdlc.results import ProcessResultCode as RawCode
 from sdlc.results import StandardProcessResultCode as ProcessCode
 from sdlc.results import StandardReviewResultCode as ReviewCode
-from sdlc.review_result import parse_review_result
+from sdlc.review_result import (
+    parse_review_result,
+    render_review_result,
+    review_result_name,
+)
 from sdlc.standard_processor import process_standard_requirement
 from sdlc.standard_reviewer import review_standard_requirement
 from standard_fake import analysis_output, build_standard_workspace, set_state
@@ -180,6 +186,13 @@ def leave_a_shell(stage):
     [shell] = result_documents(ws, stage)
     assert ws.content[shell.secret] == ""
     return ws, record, root, shell, failure
+
+
+def replace_document(ws, document_id, **changes):
+    """Change a Document in the fake's data, as an external actor would."""
+    index = next(i for i, d in enumerate(ws.documents) if d.id == document_id)
+    ws.documents[index] = DocumentNode(**{**ws.documents[index].__dict__, **changes})
+    return ws.documents[index]
 
 
 class ChangingModelRuntime:
@@ -612,3 +625,282 @@ def test_ready_and_apply_gain_no_recovery_option(command):
                 "doc-1",
             ]
         )
+
+
+# -- B1: the Requirement itself is re-verified before the shell is filled ----
+
+ACCEPTED_STATE = {"raw": "Process", "process": "Process", "review": "Review"}
+
+
+def _state_moves_away(ws, record, root):
+    set_state(ws, record, "Draft")
+
+
+def _root_is_detached(ws, record, root):
+    replace_document(ws, root.id, entity_public_id=None)
+
+
+def _root_is_replaced(ws, record, root):
+    """A new Root takes over the attachment; the old Root and its shell remain."""
+    replace_document(ws, root.id, entity_public_id=None)
+    ws.documents.append(
+        DocumentNode(
+            id="replacement-root",
+            name=root.name,
+            folder_id=root.folder_id,
+            entity_public_id=record.public_id,
+            secret="replacement-secret",
+            parent_document_id=None,
+        )
+    )
+    ws.content["replacement-secret"] = ws.content[root.secret]
+
+
+DRIFTS = [_state_moves_away, _root_is_detached, _root_is_replaced]
+
+
+@pytest.mark.parametrize("drift", DRIFTS, ids=lambda f: f.__name__.strip("_"))
+@pytest.mark.parametrize("stage", STAGES, ids=repr)
+def test_a_requirement_that_drifts_during_the_model_call_keeps_its_empty_shell(
+    stage, drift
+):
+    ws, record, root, shell, _ = leave_a_shell(stage)
+    before = len(ws.mutations)
+
+    model = ChangingModelRuntime(OUTPUTS[stage.name], lambda: drift(ws, record, root))
+    result = stage.run(ws, record, model, recover=shell.id)
+
+    assert result.code is stage.codes["conflict"], result
+    assert result.model_invoked is True, "the model did run; say so"
+    assert len(model.calls) == 1, "no automatic model retry"
+    assert ws.mutations[before:] == [], "no fill, no downstream mutation"
+    assert ws.content[shell.secret] == ""
+    assert shell in ws.child_documents(root.id), "the old Root still lists the shell"
+    if drift is _state_moves_away:
+        assert ws.requirements[record.id].state == "Draft"
+    else:
+        assert ws.requirements[record.id].state == ACCEPTED_STATE[stage.name]
+        assert root.id not in {
+            d.id for d in ws.documents_attached_to_requirement(record.public_id)
+        }
+
+
+@pytest.mark.parametrize("stage", STAGES, ids=repr)
+def test_a_replaced_root_is_caught_even_though_the_old_root_still_lists_the_shell(
+    stage,
+):
+    """Shell-only verification cannot see this: re-listing under the cached Root
+    succeeds and the shell is still empty. Only a fresh attachment read can."""
+    ws, record, root, shell, _ = leave_a_shell(stage)
+    _root_is_replaced(ws, record, root)
+    assert shell.id in [d.id for d in ws.child_documents(root.id)]
+    assert ws.content[shell.secret] == ""
+    before = len(ws.mutations)
+
+    model = model_for(stage)
+    result = stage.run(ws, record, model, recover=shell.id)
+
+    assert result.code is stage.codes["conflict"]
+    assert ws.mutations[before:] == []
+    assert ws.content[shell.secret] == ""
+    assert "Root Document" in " ".join((result.message, *result.details))
+
+
+@pytest.mark.parametrize("stage", STAGES, ids=repr)
+def test_a_failed_fresh_requirement_read_before_filling_writes_nothing(stage):
+    ws, record, _, shell, _ = leave_a_shell(stage)
+    original = ws.read_requirement
+    seen = {"n": 0}
+
+    def fail_the_fresh_read(entity_id):
+        seen["n"] += 1
+        if seen["n"] == 2:  # 1 = context read, 2 = the pre-write fresh read
+            raise FiberyError("induced")
+        return original(entity_id)
+
+    ws.read_requirement = fail_the_fresh_read
+    before = len(ws.mutations)
+
+    model = model_for(stage)
+    result = stage.run(ws, record, model, recover=shell.id)
+
+    assert result.code is stage.codes["read_failed"]
+    assert len(model.calls) == 1
+    assert ws.mutations[before:] == []
+    assert ws.content[shell.secret] == ""
+    assert seen["n"] == 2, "the fresh read happens after the model, before the write"
+
+
+@pytest.mark.parametrize("stage", STAGES, ids=repr)
+def test_the_fresh_requirement_read_happens_after_the_model_and_before_the_write(
+    stage,
+):
+    ws, record, _, shell, _ = leave_a_shell(stage)
+    original = ws.read_requirement
+    order = []
+    ws.read_requirement = lambda entity_id: (order.append("read"), original(entity_id))[
+        1
+    ]
+    model = ChangingModelRuntime(OUTPUTS[stage.name], lambda: order.append("model"))
+    original_write = ws.write_document_content
+
+    def record_write(secret, markdown):
+        order.append("write")
+        original_write(secret, markdown)
+
+    ws.write_document_content = record_write
+
+    result = stage.run(ws, record, model, recover=shell.id)
+
+    assert result.code is stage.codes["ok"], result
+    first_write = order.index("write")
+    assert order[:first_write].count("model") == 1
+    assert "read" in order[order.index("model") : first_write]
+
+
+# -- B2: a Review Result read back must belong to this Requirement -----------
+
+FOREIGN_REQUIREMENT_ID = "SDLC-FR-9999"
+
+
+def _review_document(ws, secret):
+    return next(
+        (d for d in ws.documents if d.secret == secret and "Review Result" in d.name),
+        None,
+    )
+
+
+def _read_back_as(ws, requirement_id):
+    """Make the first non-empty read of the Review Result return a payload that
+    is valid, has the same iteration, bindings and verdict, and names
+    `requirement_id`. With the reviewer's own id it is a faithful control."""
+    original = ws.read_document_content
+    seen = {"n": 0}
+
+    def substituted(secret):
+        content = original(secret)
+        if _review_document(ws, secret) is not None and content and not seen["n"]:
+            seen["n"] += 1
+            parsed = parse_review_result(content)
+            return render_review_result(replace(parsed, requirement_id=requirement_id))
+        return content
+
+    ws.read_document_content = substituted
+    return seen
+
+
+@pytest.mark.parametrize("recovery", [False, True], ids=["persist", "recover"])
+def test_a_review_that_reads_back_for_another_requirement_is_rejected(recovery):
+    if recovery:
+        ws, requirement, _, shell, _ = leave_a_shell(REVIEW)
+    else:
+        ws, requirement, _ = REVIEW.build()
+        shell = None
+    seen = _read_back_as(ws, FOREIGN_REQUIREMENT_ID)
+    before = len(ws.mutations)
+    model = model_for(REVIEW)
+
+    result = REVIEW.run(ws, requirement, model, recover=shell.id if shell else None)
+
+    assert seen["n"] == 1, "the substituted read-back was what the reviewer saw"
+    assert result.code is not ReviewCode.REQUIREMENT_REVIEWED
+    assert ReviewCode.REVIEW_RESULT_WRITE_FAILED.value in (
+        result.code.value,
+        *result.details,
+    )
+    assert FOREIGN_REQUIREMENT_ID in " ".join((result.message, *result.details))
+    assert ws.requirements[requirement.id].state == "Review"
+    [document] = result_documents(ws, REVIEW)
+    writes = ws.mutations[before:]
+    assert writes.count(f"write_content {document.secret}") == 1
+    assert [
+        m
+        for m in writes
+        if not m.startswith(("create_child_document", "write_content"))
+    ] == []
+    assert not any("persisted" in item for item in result.created)
+    if recovery:
+        assert document.id == shell.id
+    else:
+        assert any("created" in item for item in result.created)
+        assert document.id in " ".join(result.created)
+    # The body actually stored is the reviewer's own; it is left as found.
+    assert parse_review_result(ws.content[document.secret]).requirement_id == (
+        requirement.requirement_id
+    )
+
+
+@pytest.mark.parametrize("recovery", [False, True], ids=["persist", "recover"])
+def test_a_review_that_reads_back_with_its_own_identity_is_accepted(recovery):
+    if recovery:
+        ws, requirement, _, shell, _ = leave_a_shell(REVIEW)
+    else:
+        ws, requirement, _ = REVIEW.build()
+        shell = None
+    seen = _read_back_as(ws, requirement.requirement_id)
+
+    result = REVIEW.run(
+        ws, requirement, model_for(REVIEW), recover=shell.id if shell else None
+    )
+
+    assert seen["n"] == 1
+    assert result.code is ReviewCode.REQUIREMENT_REVIEWED, result
+    assert ws.requirements[requirement.id].state == "Ready"
+
+
+# -- the reviewer's terminal-iteration rule ----------------------------------
+
+
+def _review_history_with_two_iterations():
+    """Review 0001 and 0002 exist; Process ran once more, so a third review is
+    due and the no-change rule does not apply. The fixture is eligible."""
+    ws, requirement, root, _ = build_review_workspace()
+    assert REVIEW.run(ws, requirement, model_for(REVIEW)).code is REVIEW.codes["ok"]
+    for edit in ("once", "twice"):
+        set_state(ws, requirement, "Process")
+        ws.content[root.secret] += f"\nEdited {edit}.\n"
+        processed = process_standard_requirement(
+            ws, FakeModelRuntime([PROCESS_OUTPUT]), requirement.id
+        )
+        assert processed.code is ProcessCode.REQUIREMENT_PROCESSED
+        if processed.iteration == 2:
+            assert (
+                REVIEW.run(ws, requirement, model_for(REVIEW)).code
+                is (REVIEW.codes["ok"])
+            )
+    set_state(ws, requirement, "Review")
+    reviews = {
+        d.name: d for d in ws.documents if d.name.startswith(requirement.requirement_id)
+    }
+    first = reviews[review_result_name(requirement.requirement_id, 1)]
+    second = reviews[review_result_name(requirement.requirement_id, 2)]
+    return ws, requirement, first, second
+
+
+def test_the_two_iteration_review_fixture_is_eligible_for_an_ordinary_review():
+    ws, requirement, _, _ = _review_history_with_two_iterations()
+    result = REVIEW.run(ws, requirement, model_for(REVIEW))
+    assert result.code is ReviewCode.REQUIREMENT_REVIEWED
+    assert result.iteration == 3
+
+
+def test_a_review_hole_beneath_a_newer_review_is_not_recovered():
+    ws, requirement, first, second = _review_history_with_two_iterations()
+    ws.content[first.secret] = ""  # a hole beneath iteration 2
+    newer = ws.content[second.secret]
+    before = len(ws.mutations)
+    model = model_for(REVIEW)
+
+    result = REVIEW.run(ws, requirement, model, recover=first.id)
+
+    assert result.code is ReviewCode.REVIEW_STATE_CONFLICT
+    assert "terminal" in result.message
+    assert not model.was_invoked
+    assert ws.mutations[before:] == []
+    assert ws.content[first.secret] == ""
+    assert ws.content[second.secret] == newer
+    assert sorted(d.name[-4:] for d in ws.documents if "Review Result" in d.name) == [
+        "0001",
+        "0002",
+    ]
+    assert ws.requirements[requirement.id].state == "Review"

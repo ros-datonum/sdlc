@@ -46,6 +46,7 @@ from sdlc.requirement_id import namespaced_requirement_id
 from sdlc.result_shell import (
     RECOVERY_OPTION,
     document_label,
+    eligibility_drift,
     is_empty_body,
     recovery_hint,
 )
@@ -74,9 +75,10 @@ class _StageFailed(Exception):
 
 @dataclass
 class _Journal:
-    """Durable Fibery objects this run created."""
+    """Durable Fibery objects this run created, and whether the model was asked."""
 
     created: list[str] = field(default_factory=list)
+    model_invoked: bool = False
 
     @property
     def has_durable_state(self) -> bool:
@@ -109,7 +111,6 @@ def process_raw_requirement(
     creates a second artifact and never overwrites a non-empty one.
     """
     journal = _Journal()
-    model_invoked = False
     try:
         context = _load_context(workspace, raw_entity_id)
         existing, shell = _find_processing_result(
@@ -117,20 +118,18 @@ def process_raw_requirement(
         )
 
         if shell is not None:
-            result, model_invoked = _recover_processing_result(
+            result = _recover_processing_result(
                 workspace, model, context, shell, journal
             )
         elif existing is None:
-            result, model_invoked = _produce_processing_result(
-                workspace, model, context, journal
-            )
+            result = _produce_processing_result(workspace, model, context, journal)
         else:
             result = existing
 
         applied = _apply_candidates(workspace, context, result, journal)
         _transition_to_review(workspace, context, journal)
     except _StageFailed as failure:
-        return _failure_result(failure, journal, model_invoked)
+        return _failure_result(failure, journal)
 
     return ProcessResult(
         code=ProcessResultCode.RAW_REQUIREMENT_PROCESSED,
@@ -144,14 +143,12 @@ def process_raw_requirement(
             f"{f.kind.value} {f.requirement_id}: {f.detail}" for f in result.findings
         ),
         no_candidate_reason=result.no_candidate_reason,
-        model_invoked=model_invoked,
+        model_invoked=journal.model_invoked,
         created=tuple(journal.created),
     )
 
 
-def _failure_result(
-    failure: _StageFailed, journal: _Journal, model_invoked: bool
-) -> ProcessResult:
+def _failure_result(failure: _StageFailed, journal: _Journal) -> ProcessResult:
     """Map a stage failure onto a result code.
 
     Once anything durable exists the run is PARTIAL_PROCESSING: the RAW stays in
@@ -168,14 +165,14 @@ def _failure_result(
                 "listed below and left in place; the details say what a retry "
                 "can do."
             ),
-            model_invoked=model_invoked,
+            model_invoked=journal.model_invoked,
             created=tuple(journal.created),
             details=(failure.code.value, failure.message, *failure.causes),
         )
     return ProcessResult(
         code=failure.code,
         message=failure.message,
-        model_invoked=model_invoked,
+        model_invoked=journal.model_invoked,
         created=tuple(journal.created),
         details=failure.causes,
     )
@@ -470,7 +467,7 @@ def _produce_processing_result(
     model: ModelRuntime,
     context: _Context,
     journal: _Journal,
-) -> tuple[ProcessingResult, bool]:
+) -> ProcessingResult:
     """Invoke the model once and persist the validated decomposition.
 
     Persisting comes before any candidate entity exists, so a retry can always
@@ -483,15 +480,20 @@ def _produce_processing_result(
         raw_body=context.raw_body,
         existing_standards=context.existing_standards,
     )
-    result = _decompose(model, context, prompt, model_context)
+    result = _decompose(model, context, prompt, model_context, journal)
     _persist_processing_result(workspace, context, result, journal)
-    return result, True
+    return result
 
 
 def _decompose(
-    model: ModelRuntime, context: _Context, prompt: str, model_context: str
+    model: ModelRuntime,
+    context: _Context,
+    prompt: str,
+    model_context: str,
+    journal: _Journal,
 ) -> ProcessingResult:
     """One model invocation, validated against the decomposition contract."""
+    journal.model_invoked = True
     try:
         response = model.run(prompt, model_context)
     except ModelRuntimeError as error:
@@ -518,12 +520,13 @@ def _recover_processing_result(
     context: _Context,
     shell: DocumentNode,
     journal: _Journal,
-) -> tuple[ProcessingResult, bool]:
+) -> ProcessingResult:
     """Run the model once and complete the named empty shell in place.
 
     The earlier response is gone; this is a new decomposition of the current
-    RAW input, written into the same Document only if a fresh read shows it
-    is still the single, still-empty Processing Result under this Root.
+    RAW input, written into the same Document only if fresh reads show the
+    RAW is still this stage's target with the same Root, and the shell is
+    still the single, still-empty Processing Result under it.
     """
     prompt, model_context = build_prompt(
         raw_requirement_id=context.raw.requirement_id or "",
@@ -532,7 +535,8 @@ def _recover_processing_result(
         raw_body=context.raw_body,
         existing_standards=context.existing_standards,
     )
-    result = _decompose(model, context, prompt, model_context)
+    result = _decompose(model, context, prompt, model_context, journal)
+    _require_still_eligible(workspace, context)
     current = _processing_result_node(workspace, context)
     if current is None or current.id != shell.id or current.name != shell.name:
         raise _StageFailed(
@@ -547,7 +551,39 @@ def _recover_processing_result(
             "another actor while the model was running; refusing to overwrite it.",
         )
     _store_processing_result(workspace, current, result, journal)
-    return result, True
+    return result
+
+
+def _require_still_eligible(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> None:
+    """Freshly prove the RAW is still in Process with the same Root Document.
+
+    Taken immediately before the recovered body is written. The shell is then
+    re-listed under a Root that is known to be current, not merely cached.
+    """
+    raw = context.raw
+    try:
+        current = workspace.read_requirement(raw.id)
+        attached = workspace.documents_attached_to_requirement(raw.public_id)
+    except FiberyError as error:
+        raise _StageFailed(
+            ProcessResultCode.FIBERY_READ_FAILED,
+            f"Could not re-read {raw.requirement_id} before filling the empty "
+            "Processing Result; nothing was written.",
+            (str(error),),
+        ) from error
+    drift = eligibility_drift(
+        raw, context.root_document, current, attached, RAW_TYPE, PROCESS_STATE
+    )
+    if drift:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"{raw.requirement_id} changed while the model was running. The empty "
+            "Processing Result was not filled and nothing else was written; the "
+            "change made outside this run stands.",
+            drift,
+        )
 
 
 def _persist_processing_result(

@@ -43,6 +43,7 @@ from sdlc.process_result import (
 from sdlc.result_shell import (
     RECOVERY_OPTION,
     document_label,
+    eligibility_drift,
     is_empty_body,
     recovery_hint,
 )
@@ -660,17 +661,56 @@ def _recover_review(
     """Run the reviewer once and complete the named empty shell in place.
 
     The earlier response is gone; this is a new review of the current input,
-    written into the same Document under its reserved iteration only if a
-    fresh read shows the shell is still there, still unique and still empty.
-    The usual binding re-check before Ready still follows.
+    written into the same Document under its reserved iteration only if fresh
+    reads show the Requirement is still in Review with the same Root, and the
+    shell is still there, still unique and still empty. The usual binding
+    re-check before Ready still follows.
     """
     shell, iteration = context.shell
     result = _build_result(
         context, bindings, iteration, _verify(model, context, journal)
     )
+    _require_still_eligible(workspace, context)
     current = _current_shell(workspace, context, shell, iteration)
     _store_result(workspace, current, result, journal)
     return result
+
+
+def _require_still_eligible(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> None:
+    """Freshly prove the Requirement is still in Review with the same Root.
+
+    Taken immediately before the recovered body is written. The shell is then
+    re-listed under a Root that is known to be current, not merely cached.
+    """
+    requirement = context.requirement
+    try:
+        current = workspace.read_requirement(requirement.id)
+        attached = workspace.documents_attached_to_requirement(requirement.public_id)
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardReviewResultCode.FIBERY_READ_FAILED,
+            f"Could not re-read {requirement.requirement_id} before filling the "
+            "empty Review Result; nothing was written.",
+            (str(error),),
+        ) from error
+    drift = eligibility_drift(
+        requirement,
+        context.root_document,
+        current,
+        attached,
+        STANDARD_TYPE,
+        REVIEW_STATE,
+    )
+    if drift:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_STATE_CONFLICT,
+            f"{requirement.requirement_id} changed while the model was running. "
+            "The empty Review Result was not filled and nothing else was "
+            "written; the change made outside this run stands.",
+            drift,
+        )
 
 
 def _verify(model: ModelRuntime, context: _Context, journal: _Journal) -> ReviewOutput:
@@ -830,6 +870,13 @@ def _store_result(
             "valid.",
             (str(error),),
         ) from error
+    if read_back.requirement_id != result.requirement_id:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_RESULT_WRITE_FAILED,
+            f"Review Result Document {document_label(node)} reads back for "
+            f"{read_back.requirement_id!r}, not {result.requirement_id!r}; it "
+            "was left as found and the Requirement was not moved.",
+        )
     if read_back.iteration != result.iteration or not read_back.reviews(
         result.reviewed_document_fingerprint,
         result.reviewed_process_iteration,
