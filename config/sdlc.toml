@@ -16,19 +16,31 @@ transport = "local_cli_oauth"
 runtime = "claude"
 # model = "..."   # omitted: use the local CLI default model
 
+# `invocation_mode` names the CLI family: "print" is Claude Code (`claude -p`),
+# "exec" is Codex (`codex exec`). The authentication check (claude.ai login on
+# the first-party API; ChatGPT login) and the reasoning-child restrictions
+# (no tools, MCP, hooks, plugins, skills, web retrieval or subagents; a minimal
+# environment; an empty temporary working directory) follow the family and
+# are not configurable here.
+#
+# `environment_passthrough` may list extra variable names the CLI needs in a
+# particular environment (for example HTTPS_PROXY). Provider, API-key,
+# base-URL and application-secret names are refused when the file loads.
+#
+# Under the restrictions the CLI ignores the user's own settings, so "use the
+# local CLI default model" means that CLI build's default, not the model set
+# in ~/.claude/settings.json or ~/.codex/config.toml. Set `model` here to pin
+# one.
+
 [model_runtime.runtimes.claude]
 executable = "claude"
-auth_check_args = ["auth", "status"]
 invocation_mode = "print"
-# Reject Console/API-billing auth: the runtime requires subscription login.
-forbid_console_api_auth = true
+# environment_passthrough = []
 
 [model_runtime.runtimes.codex]
 executable = "codex"
-auth_check_args = ["login", "status"]
 invocation_mode = "exec"
-# Reject API-key auth: the runtime requires ChatGPT OAuth login.
-require_chatgpt_oauth = true
+# environment_passthrough = []
 
 [model_runtime.roles.raw_requirement_processor]
 runtime = "claude"

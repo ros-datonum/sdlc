@@ -20,18 +20,8 @@ CONFIG = {
     "transport": "local_cli_oauth",
     "default": {"runtime": "claude"},
     "runtimes": {
-        "claude": {
-            "executable": "claude",
-            "auth_check_args": ["auth", "status"],
-            "invocation_mode": "print",
-            "forbid_console_api_auth": True,
-        },
-        "codex": {
-            "executable": "codex",
-            "auth_check_args": ["login", "status"],
-            "invocation_mode": "exec",
-            "require_chatgpt_oauth": True,
-        },
+        "claude": {"executable": "claude", "invocation_mode": "print"},
+        "codex": {"executable": "codex", "invocation_mode": "exec"},
     },
     "roles": {RAW_REQUIREMENT_PROCESSOR_ROLE: {"runtime": "claude"}},
 }
@@ -199,12 +189,10 @@ runtime = "claude"
 
 [model_runtime.runtimes.claude]
 executable = "claude"
-auth_check_args = ["auth", "status"]
 invocation_mode = "print"
 
 [model_runtime.runtimes.codex]
 executable = "codex"
-auth_check_args = ["login", "status"]
 invocation_mode = "exec"
 
 [model_runtime.roles.standard_requirement_processor]
@@ -227,3 +215,86 @@ def test_the_project_configures_a_reviewer_role():
     loaded = load_model_runtime_config(PROJECT_CONFIG)
     selection = select_runtime(loaded, STANDARD_REQUIREMENT_REVIEWER_ROLE)
     assert selection.definition.executable in {"claude", "codex"}
+
+
+# -- the authentication guard is not configuration -----------------------------
+
+
+def test_legacy_auth_keys_are_ignored_and_cannot_weaken_anything():
+    """Older configurations listed the auth command and policy booleans. The
+    guard is now a property of the CLI family, so these keys change nothing."""
+    config = with_config(
+        runtimes={
+            "claude": {
+                "executable": "claude",
+                "invocation_mode": "print",
+                "auth_check_args": [],
+                "forbid_console_api_auth": False,
+                "require_chatgpt_oauth": False,
+            }
+        }
+    )
+
+    definition = runtime_definition(config, "claude")
+
+    assert not hasattr(definition, "auth_check_args")
+    assert not hasattr(definition, "forbid_console_api_auth")
+    assert definition.environment_passthrough == ()
+
+
+def test_environment_passthrough_accepts_harmless_names():
+    config = with_config(
+        runtimes={
+            "claude": {
+                "executable": "claude",
+                "invocation_mode": "print",
+                "environment_passthrough": ["HTTPS_PROXY", "NO_PROXY"],
+            }
+        }
+    )
+
+    assert runtime_definition(config, "claude").environment_passthrough == (
+        "HTTPS_PROXY",
+        "NO_PROXY",
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_BASE_URL",
+        "FIBERY_TOKEN",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "AWS_PROFILE",
+        "MY_SECRET",
+    ],
+)
+def test_environment_passthrough_refuses_provider_and_secret_names(name):
+    config = with_config(
+        runtimes={
+            "claude": {
+                "executable": "claude",
+                "invocation_mode": "print",
+                "environment_passthrough": [name],
+            }
+        }
+    )
+
+    with pytest.raises(ModelRuntimeConfigError, match=name):
+        runtime_definition(config, "claude")
+
+
+def test_environment_passthrough_must_be_a_list_of_names():
+    config = with_config(
+        runtimes={
+            "claude": {
+                "executable": "claude",
+                "invocation_mode": "print",
+                "environment_passthrough": "HTTPS_PROXY",
+            }
+        }
+    )
+
+    with pytest.raises(ModelRuntimeConfigError, match="list"):
+        runtime_definition(config, "claude")

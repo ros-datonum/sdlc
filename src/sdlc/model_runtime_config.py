@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sdlc.model_runtime_environment import DeniedEnvironmentName, require_allowed
+
 DEFAULT_CONFIG_PATH = Path("config/sdlc.toml")
 
 MODEL_RUNTIME_KEY = "model_runtime"
@@ -29,10 +31,8 @@ RUNTIME_KEY = "runtime"
 MODEL_KEY = "model"
 
 EXECUTABLE_KEY = "executable"
-AUTH_CHECK_ARGS_KEY = "auth_check_args"
 INVOCATION_MODE_KEY = "invocation_mode"
-FORBID_CONSOLE_API_AUTH_KEY = "forbid_console_api_auth"
-REQUIRE_CHATGPT_OAUTH_KEY = "require_chatgpt_oauth"
+ENVIRONMENT_PASSTHROUGH_KEY = "environment_passthrough"
 
 RAW_REQUIREMENT_PROCESSOR_ROLE = "raw_requirement_processor"
 STANDARD_REQUIREMENT_PROCESSOR_ROLE = "standard_requirement_processor"
@@ -45,14 +45,19 @@ class ModelRuntimeConfigError(Exception):
 
 @dataclass(frozen=True)
 class RuntimeDefinition:
-    """How to reach one local CLI runtime."""
+    """How to reach one local CLI runtime.
+
+    The authentication check and the child-process boundary are properties of
+    the CLI family named by `invocation_mode`, not configuration: nothing in
+    this file can switch them off. `environment_passthrough` may add variable
+    names the CLI needs in a particular environment; provider, API-key and
+    application-secret names are refused when the configuration loads.
+    """
 
     name: str
     executable: str
-    auth_check_args: tuple[str, ...]
     invocation_mode: str
-    forbid_console_api_auth: bool = False
-    require_chatgpt_oauth: bool = False
+    environment_passthrough: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -163,11 +168,21 @@ def runtime_definition(config: dict[str, Any], name: str) -> RuntimeDefinition:
             f"Runtime {name!r} must define {EXECUTABLE_KEY!r} and "
             f"{INVOCATION_MODE_KEY!r}."
         )
+    passthrough = defined.get(ENVIRONMENT_PASSTHROUGH_KEY) or []
+    if not isinstance(passthrough, list) or not all(
+        isinstance(item, str) for item in passthrough
+    ):
+        raise ModelRuntimeConfigError(
+            f"Runtime {name!r}: {ENVIRONMENT_PASSTHROUGH_KEY!r} must be a list of "
+            "environment variable names."
+        )
+    try:
+        allowed = require_allowed(passthrough)
+    except DeniedEnvironmentName as error:
+        raise ModelRuntimeConfigError(f"Runtime {name!r}: {error}") from error
     return RuntimeDefinition(
         name=name,
         executable=executable,
-        auth_check_args=tuple(defined.get(AUTH_CHECK_ARGS_KEY) or ()),
         invocation_mode=invocation_mode,
-        forbid_console_api_auth=bool(defined.get(FORBID_CONSOLE_API_AUTH_KEY)),
-        require_chatgpt_oauth=bool(defined.get(REQUIRE_CHATGPT_OAUTH_KEY)),
+        environment_passthrough=allowed,
     )

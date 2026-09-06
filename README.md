@@ -96,6 +96,25 @@ Check local authentication with:
 bash scripts/check-local-model-auth.sh
 ```
 
+Before every model call the runtime proves the login positively: Claude must
+report a `claude.ai` login on the first-party API from `claude auth status
+--json`; Codex must print its own `Logged in using ChatGPT` line from
+`codex login status`. Anything else, including a logged-out status with exit
+code 0, an API-key or Console login, third-party provider routing, or
+unreadable output, fails the run. No configuration key can relax this.
+
+The model runs as a reasoning child, not a coding agent: the processors send
+it everything it needs on stdin and take only its answer back. The child gets
+an explicit minimal environment (never `FIBERY_TOKEN`, provider API keys or
+base-URL overrides), an empty temporary working directory outside the
+repository, and the CLI's own per-invocation restrictions that remove tools,
+MCP servers, hooks, plugins, skills, web retrieval and subagents. The user's
+interactive Claude Code and Codex settings are not changed. Because the
+child ignores those settings, an omitted `model` in `config/sdlc.toml` means
+the CLI build's default model, not the one chosen in the user's own CLI
+settings; set `model` to pin one. Verified against Claude Code 2.1.260 and
+codex-cli 0.146.0; see the runtime specification for the exact policy.
+
 ## Recovering an empty Result Document
 
 Each model-backed command creates its Result as a child Document first and
