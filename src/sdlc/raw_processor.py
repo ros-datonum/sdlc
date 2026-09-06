@@ -43,6 +43,13 @@ from sdlc.raw_processing import InvalidModelOutput, parse_model_output
 from sdlc.raw_prompt import build_prompt
 from sdlc.raw_source import content_equivalent
 from sdlc.requirement_id import namespaced_requirement_id
+from sdlc.result_shell import (
+    RECOVERY_OPTION,
+    document_label,
+    eligibility_drift,
+    is_empty_body,
+    recovery_hint,
+)
 from sdlc.results import ProcessResult, ProcessResultCode
 
 RAW_TYPE = "Raw"
@@ -68,9 +75,10 @@ class _StageFailed(Exception):
 
 @dataclass
 class _Journal:
-    """Durable Fibery objects this run created."""
+    """Durable Fibery objects this run created, and whether the model was asked."""
 
     created: list[str] = field(default_factory=list)
+    model_invoked: bool = False
 
     @property
     def has_durable_state(self) -> bool:
@@ -93,25 +101,35 @@ def process_raw_requirement(
     workspace: RawProcessorWorkspace,
     model: ModelRuntime,
     raw_entity_id: str,
+    recover_empty_result: str | None = None,
 ) -> ProcessResult:
-    """Decompose one RAW Requirement into Standard Draft candidates."""
+    """Decompose one RAW Requirement into Standard Draft candidates.
+
+    `recover_empty_result` names one Processing Result Document whose body was
+    never stored after a failed persistence. It is explicit permission to run
+    the model again and complete that exact Document in place; it never
+    creates a second artifact and never overwrites a non-empty one.
+    """
     journal = _Journal()
-    model_invoked = False
     try:
         context = _load_context(workspace, raw_entity_id)
-        existing = _find_processing_result(workspace, context)
+        existing, shell = _find_processing_result(
+            workspace, context, recover_empty_result
+        )
 
-        if existing is None:
-            result, model_invoked = _produce_processing_result(
-                workspace, model, context, journal
+        if shell is not None:
+            result = _recover_processing_result(
+                workspace, model, context, shell, journal
             )
+        elif existing is None:
+            result = _produce_processing_result(workspace, model, context, journal)
         else:
             result = existing
 
         applied = _apply_candidates(workspace, context, result, journal)
         _transition_to_review(workspace, context, journal)
     except _StageFailed as failure:
-        return _failure_result(failure, journal, model_invoked)
+        return _failure_result(failure, journal)
 
     return ProcessResult(
         code=ProcessResultCode.RAW_REQUIREMENT_PROCESSED,
@@ -125,14 +143,12 @@ def process_raw_requirement(
             f"{f.kind.value} {f.requirement_id}: {f.detail}" for f in result.findings
         ),
         no_candidate_reason=result.no_candidate_reason,
-        model_invoked=model_invoked,
+        model_invoked=journal.model_invoked,
         created=tuple(journal.created),
     )
 
 
-def _failure_result(
-    failure: _StageFailed, journal: _Journal, model_invoked: bool
-) -> ProcessResult:
+def _failure_result(failure: _StageFailed, journal: _Journal) -> ProcessResult:
     """Map a stage failure onto a result code.
 
     Once anything durable exists the run is PARTIAL_PROCESSING: the RAW stays in
@@ -145,17 +161,18 @@ def _failure_result(
         return ProcessResult(
             code=ProcessResultCode.PARTIAL_PROCESSING,
             message=(
-                "Processing did not complete; the RAW Requirement stays in "
-                "Process and a retry will resume."
+                "Processing did not complete. What this run made durable is "
+                "listed below and left in place; the details say what a retry "
+                "can do."
             ),
-            model_invoked=model_invoked,
+            model_invoked=journal.model_invoked,
             created=tuple(journal.created),
             details=(failure.code.value, failure.message, *failure.causes),
         )
     return ProcessResult(
         code=failure.code,
         message=failure.message,
-        model_invoked=model_invoked,
+        model_invoked=journal.model_invoked,
         created=tuple(journal.created),
         details=failure.causes,
     )
@@ -297,46 +314,38 @@ def _single_child(workspace: RawProcessorWorkspace, parent_id: str, name: str) -
 
 
 def _find_processing_result(
-    workspace: RawProcessorWorkspace, context: _Context
-) -> ProcessingResult | None:
+    workspace: RawProcessorWorkspace, context: _Context, recovering: str | None
+) -> tuple[ProcessingResult | None, DocumentNode | None]:
     """Resolve the existing Processing Result, if this RAW has one.
 
     This is the idempotency boundary: a Processing Result means the model has
-    already run and must not run again.
+    already run and must not run again. The one exception is an empty shell
+    the operator named for recovery: it is returned as the second element and
+    the model may run again to fill it.
     """
-    expected = processing_result_name(context.raw.requirement_id or "")
-    try:
-        children = workspace.child_documents(context.root_document.id)
-    except FiberyError as error:
-        raise _StageFailed(
-            ProcessResultCode.FIBERY_READ_FAILED,
-            "Could not list the RAW Requirement's child Documents.",
-            (str(error),),
-        ) from error
+    node = _processing_result_node(workspace, context)
+    if node is None:
+        if recovering is not None:
+            raise _StageFailed(
+                ProcessResultCode.PROCESSING_STATE_CONFLICT,
+                f"No Processing Result Document {recovering!r} exists under the "
+                f"Root Document of {context.raw.requirement_id}.",
+            )
+        return None, None
+    content = _read_result_body(workspace, node)
+    if recovering is not None:
+        _check_recoverable(workspace, context, node, content, recovering)
+        return None, node
 
-    matches = [child for child in children if child.name == expected]
-    if not matches:
-        return None
-    if len(matches) > 1:
-        raise _StageFailed(
-            ProcessResultCode.PROCESSING_STATE_CONFLICT,
-            f"{context.raw.requirement_id} has {len(matches)} Processing Result "
-            "documents. Refusing to guess which one is authoritative.",
-            tuple(node.id for node in matches),
-        )
-
-    node = matches[0]
-    try:
-        content = workspace.read_document_content(node.secret or "")
-    except FiberyError as error:
-        raise _StageFailed(
-            ProcessResultCode.FIBERY_READ_FAILED,
-            "Could not read the Processing Result document.",
-            (str(error),),
-        ) from error
     try:
         result = parse_processing_result(content)
     except InvalidProcessingResult as error:
+        if is_empty_body(content):
+            raise _StageFailed(
+                ProcessResultCode.INVALID_PROCESSING_RESULT,
+                f"Processing Result Document {document_label(node)} of "
+                f"{context.raw.requirement_id} is empty. {recovery_hint(node)}",
+            ) from error
         raise _StageFailed(
             ProcessResultCode.INVALID_PROCESSING_RESULT,
             f"The Processing Result of {context.raw.requirement_id} cannot be "
@@ -349,7 +358,108 @@ def _find_processing_result(
             f"The Processing Result names {result.raw_requirement_id!r} but is "
             f"attached to {context.raw.requirement_id!r}.",
         )
-    return result
+    return result, None
+
+
+def _processing_result_node(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> DocumentNode | None:
+    """The single Processing Result child by name, or None; two is a conflict."""
+    expected = processing_result_name(context.raw.requirement_id or "")
+    try:
+        children = workspace.child_documents(context.root_document.id)
+    except FiberyError as error:
+        raise _StageFailed(
+            ProcessResultCode.FIBERY_READ_FAILED,
+            "Could not list the RAW Requirement's child Documents.",
+            (str(error),),
+        ) from error
+    matches = [child for child in children if child.name == expected]
+    if len(matches) > 1:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"{context.raw.requirement_id} has {len(matches)} Processing Result "
+            "documents. Refusing to guess which one is authoritative.",
+            tuple(node.id for node in matches),
+        )
+    return matches[0] if matches else None
+
+
+def _read_result_body(workspace: RawProcessorWorkspace, node: DocumentNode) -> str:
+    try:
+        return workspace.read_document_content(node.secret or "")
+    except FiberyError as error:
+        raise _StageFailed(
+            ProcessResultCode.FIBERY_READ_FAILED,
+            f"Could not read Processing Result Document {document_label(node)}.",
+            (str(error),),
+        ) from error
+
+
+def _check_recoverable(
+    workspace: RawProcessorWorkspace,
+    context: _Context,
+    node: DocumentNode,
+    content: str,
+    recovering: str,
+) -> None:
+    """Fail closed: only the named, empty, unconsumed shell may be filled."""
+    if node.id != recovering:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"{recovering!r} is not the Processing Result Document of "
+            f"{context.raw.requirement_id}; that is {document_label(node)}.",
+        )
+    if not node.secret:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_RESULT_WRITE_FAILED,
+            f"Processing Result Document {document_label(node)} exposes no "
+            "content secret; it cannot be completed in place.",
+        )
+    if not is_empty_body(content):
+        try:
+            parse_processing_result(content)
+        except InvalidProcessingResult as error:
+            raise _StageFailed(
+                ProcessResultCode.INVALID_PROCESSING_RESULT,
+                f"Processing Result Document {document_label(node)} is not empty "
+                "and does not parse; it cannot be recovered over.",
+                (str(error),),
+            ) from error
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Processing Result Document {document_label(node)} already holds a "
+            f"valid result. Run the ordinary operation without {RECOVERY_OPTION}.",
+        )
+    produced = _candidates_derived_from(workspace, context)
+    if produced:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"{context.raw.requirement_id} already produced Standard candidates "
+            "although its Processing Result is empty; a new decomposition would "
+            "not correspond to them. Refusing to regenerate.",
+            tuple(produced),
+        )
+
+
+def _candidates_derived_from(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> tuple[str, ...]:
+    """Requirement IDs of Standard Requirements that already derive from this RAW."""
+    try:
+        return tuple(
+            standard.requirement_id or standard.id
+            for standard in context.existing_standards
+            if any(
+                raw.id == context.raw.id for raw in workspace.derived_from(standard.id)
+            )
+        )
+    except FiberyError as error:
+        raise _StageFailed(
+            ProcessResultCode.FIBERY_READ_FAILED,
+            "Could not read the provenance of existing Standard Requirements.",
+            (str(error),),
+        ) from error
 
 
 def _produce_processing_result(
@@ -357,7 +467,7 @@ def _produce_processing_result(
     model: ModelRuntime,
     context: _Context,
     journal: _Journal,
-) -> tuple[ProcessingResult, bool]:
+) -> ProcessingResult:
     """Invoke the model once and persist the validated decomposition.
 
     Persisting comes before any candidate entity exists, so a retry can always
@@ -370,6 +480,20 @@ def _produce_processing_result(
         raw_body=context.raw_body,
         existing_standards=context.existing_standards,
     )
+    result = _decompose(model, context, prompt, model_context, journal)
+    _persist_processing_result(workspace, context, result, journal)
+    return result
+
+
+def _decompose(
+    model: ModelRuntime,
+    context: _Context,
+    prompt: str,
+    model_context: str,
+    journal: _Journal,
+) -> ProcessingResult:
+    """One model invocation, validated against the decomposition contract."""
+    journal.model_invoked = True
     try:
         response = model.run(prompt, model_context)
     except ModelRuntimeError as error:
@@ -387,10 +511,79 @@ def _produce_processing_result(
             "The model's response does not satisfy the decomposition contract.",
             (str(error),),
         ) from error
+    return build_processing_result(context.raw.requirement_id or "", decomposition)
 
-    result = build_processing_result(context.raw.requirement_id or "", decomposition)
-    _persist_processing_result(workspace, context, result, journal)
-    return result, True
+
+def _recover_processing_result(
+    workspace: RawProcessorWorkspace,
+    model: ModelRuntime,
+    context: _Context,
+    shell: DocumentNode,
+    journal: _Journal,
+) -> ProcessingResult:
+    """Run the model once and complete the named empty shell in place.
+
+    The earlier response is gone; this is a new decomposition of the current
+    RAW input, written into the same Document only if fresh reads show the
+    RAW is still this stage's target with the same Root, and the shell is
+    still the single, still-empty Processing Result under it.
+    """
+    prompt, model_context = build_prompt(
+        raw_requirement_id=context.raw.requirement_id or "",
+        raw_title=context.raw.title or "",
+        project_name=context.project.name,
+        raw_body=context.raw_body,
+        existing_standards=context.existing_standards,
+    )
+    result = _decompose(model, context, prompt, model_context, journal)
+    _require_still_eligible(workspace, context)
+    current = _processing_result_node(workspace, context)
+    if current is None or current.id != shell.id or current.name != shell.name:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Processing Result Document {document_label(shell)} is no longer the "
+            "Processing Result under this Root; nothing was written.",
+        )
+    if not is_empty_body(_read_result_body(workspace, current)):
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Processing Result Document {document_label(shell)} was filled by "
+            "another actor while the model was running; refusing to overwrite it.",
+        )
+    _store_processing_result(workspace, current, result, journal)
+    return result
+
+
+def _require_still_eligible(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> None:
+    """Freshly prove the RAW is still in Process with the same Root Document.
+
+    Taken immediately before the recovered body is written. The shell is then
+    re-listed under a Root that is known to be current, not merely cached.
+    """
+    raw = context.raw
+    try:
+        current = workspace.read_requirement(raw.id)
+        attached = workspace.documents_attached_to_requirement(raw.public_id)
+    except FiberyError as error:
+        raise _StageFailed(
+            ProcessResultCode.FIBERY_READ_FAILED,
+            f"Could not re-read {raw.requirement_id} before filling the empty "
+            "Processing Result; nothing was written.",
+            (str(error),),
+        ) from error
+    drift = eligibility_drift(
+        raw, context.root_document, current, attached, RAW_TYPE, PROCESS_STATE
+    )
+    if drift:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"{raw.requirement_id} changed while the model was running. The empty "
+            "Processing Result was not filled and nothing else was written; the "
+            "change made outside this run stands.",
+            drift,
+        )
 
 
 def _persist_processing_result(
@@ -399,33 +592,67 @@ def _persist_processing_result(
     result: ProcessingResult,
     journal: _Journal,
 ) -> None:
-    """Write the artifact and read it back before trusting it."""
+    """Create the artifact Document, then write and read back its body.
+
+    The creation is journaled as soon as the create call returns an identity,
+    separately from the body: a created shell is not a persisted result.
+    """
     name = processing_result_name(context.raw.requirement_id or "")
     try:
         node = workspace.create_child_document(name, context.root_document.id)
-        if not node.secret:
-            raise _StageFailed(
-                ProcessResultCode.PROCESSING_RESULT_WRITE_FAILED,
-                "The Processing Result document exposes no content secret.",
-            )
-        workspace.write_document_content(node.secret, render_processing_result(result))
-        stored = workspace.read_document_content(node.secret)
     except FiberyError as error:
         raise _StageFailed(
             ProcessResultCode.PROCESSING_RESULT_WRITE_FAILED,
-            "Could not persist the Processing Result.",
+            "Could not create the Processing Result Document; nothing durable "
+            "is known to exist.",
             (str(error),),
         ) from error
+    journal.created.append(f"Processing Result Document {document_label(node)} created")
+    if not node.secret:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_RESULT_WRITE_FAILED,
+            f"Processing Result Document {document_label(node)} exposes no "
+            "content secret; its body was not written.",
+        )
+    _store_processing_result(workspace, node, result, journal)
 
+
+def _store_processing_result(
+    workspace: RawProcessorWorkspace,
+    node: DocumentNode,
+    result: ProcessingResult,
+    journal: _Journal,
+) -> None:
+    """Write the body into an existing Document and prove it stored."""
     try:
-        parse_processing_result(stored)
+        workspace.write_document_content(
+            node.secret or "", render_processing_result(result)
+        )
+        stored = workspace.read_document_content(node.secret or "")
+    except FiberyError as error:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_RESULT_WRITE_FAILED,
+            f"The body of Processing Result Document {document_label(node)} was "
+            "not confirmed stored. A retry reads the Document: a valid body "
+            f"resumes normally; an empty one needs {RECOVERY_OPTION} {node.id}.",
+            (str(error),),
+        ) from error
+    try:
+        read_back = parse_processing_result(stored)
     except InvalidProcessingResult as error:
         raise _StageFailed(
             ProcessResultCode.PROCESSING_RESULT_WRITE_FAILED,
-            "The persisted Processing Result does not read back as valid.",
+            f"Processing Result Document {document_label(node)} does not read "
+            "back as valid.",
             (str(error),),
         ) from error
-    journal.created.append(f"Processing Result {name} ({node.id})")
+    if read_back.raw_requirement_id != result.raw_requirement_id:
+        raise _StageFailed(
+            ProcessResultCode.PROCESSING_RESULT_WRITE_FAILED,
+            f"Processing Result Document {document_label(node)} reads back for "
+            f"{read_back.raw_requirement_id!r}.",
+        )
+    journal.created.append(f"Processing Result {document_label(node)} persisted")
 
 
 # -- candidate application --------------------------------------------------

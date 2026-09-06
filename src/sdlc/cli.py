@@ -32,6 +32,7 @@ from sdlc.ready_decision import (
 )
 from sdlc.requirement_add import add_raw_requirement
 from sdlc.requirement_apply import apply_standard_requirement
+from sdlc.result_shell import RECOVERY_OPTION
 from sdlc.results import (
     AddResult,
     AddResultCode,
@@ -97,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     process.add_argument("--runtime", help="Override the configured model runtime.")
     process.add_argument("--model", help="Override the configured model.")
+    _add_recovery_option(process, "Processing Result")
     process.set_defaults(handler=_run_requirement_process)
 
     normalize = requirement_commands.add_parser(
@@ -108,6 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     normalize.add_argument("--runtime", help="Override the configured model runtime.")
     normalize.add_argument("--model", help="Override the configured model.")
+    _add_recovery_option(normalize, "Process Result")
     normalize.set_defaults(handler=_run_standard_process)
 
     review = requirement_commands.add_parser(
@@ -119,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument("--runtime", help="Override the configured model runtime.")
     review.add_argument("--model", help="Override the configured model.")
+    _add_recovery_option(review, "Review Result")
     review.set_defaults(handler=_run_standard_review)
 
     approve = requirement_commands.add_parser(
@@ -157,6 +161,20 @@ def build_parser() -> argparse.ArgumentParser:
     apply.set_defaults(handler=_run_requirement_apply)
 
     return parser
+
+
+def _add_recovery_option(command: argparse.ArgumentParser, artifact: str) -> None:
+    """Explicit permission to complete one empty Result Document in place."""
+    command.add_argument(
+        RECOVERY_OPTION,
+        dest="recover_empty_result",
+        metavar="DOCUMENT_ID",
+        help=(
+            f"Complete the named empty {artifact} Document in place after a failed "
+            "body write. Runs the model again; never creates a second artifact or "
+            "overwrites a non-empty one."
+        ),
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -244,7 +262,10 @@ def _run_requirement_process(
         space_id=settings.space_id,
     )
     result = process_raw_requirement(
-        workspace, LocalCliModelRuntime(selection), arguments.requirement
+        workspace,
+        LocalCliModelRuntime(selection),
+        arguments.requirement,
+        recover_empty_result=arguments.recover_empty_result,
     )
     render_process_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
@@ -271,7 +292,10 @@ def _run_standard_process(
         space_id=settings.space_id,
     )
     result = process_standard_requirement(
-        workspace, LocalCliModelRuntime(selection), arguments.requirement
+        workspace,
+        LocalCliModelRuntime(selection),
+        arguments.requirement,
+        recover_empty_result=arguments.recover_empty_result,
     )
     render_standard_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
@@ -298,7 +322,10 @@ def _run_standard_review(
         space_id=settings.space_id,
     )
     result = review_standard_requirement(
-        workspace, LocalCliModelRuntime(selection), arguments.requirement
+        workspace,
+        LocalCliModelRuntime(selection),
+        arguments.requirement,
+        recover_empty_result=arguments.recover_empty_result,
     )
     render_review_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
