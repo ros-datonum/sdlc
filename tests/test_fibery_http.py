@@ -96,10 +96,15 @@ def build_views_workspace(payloads):
     return _build(payloads)
 
 
+def unpaced():
+    """Client keyword arguments that satisfy pacing without real waiting."""
+    return {"clock": lambda: 0.0, "sleeper": lambda seconds: None}
+
+
 def _build(payloads):
     opener = StubOpener(payloads)
     workspace = FiberyHttpWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener),
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()),
         space=SETTINGS.space,
         space_id=SETTINGS.space_id,
     )
@@ -124,7 +129,7 @@ def test_unsuccessful_envelope_becomes_a_fibery_error():
     opener = StubOpener(
         [[{"success": False, "result": {"name": "entity.error/x", "message": "nope"}}]]
     )
-    client = FiberyClient(SETTINGS, url_opener=opener)
+    client = FiberyClient(SETTINGS, url_opener=opener, **unpaced())
 
     with pytest.raises(FiberyError, match="entity.error/x"):
         client.command("fibery.schema/query")
@@ -136,7 +141,7 @@ def test_http_error_becomes_a_fibery_error():
             request.full_url, 401, "Unauthorized", {}, io.BytesIO(b"Unauthorized")
         )
 
-    client = FiberyClient(SETTINGS, url_opener=failing)
+    client = FiberyClient(SETTINGS, url_opener=failing, **unpaced())
 
     with pytest.raises(FiberyError, match="401"):
         client.command("fibery.schema/query")
@@ -144,7 +149,7 @@ def test_http_error_becomes_a_fibery_error():
 
 def test_json_rpc_error_becomes_a_fibery_error():
     opener = StubOpener([{"jsonrpc": "2.0", "id": 1, "error": {"message": "bad"}}])
-    client = FiberyClient(SETTINGS, url_opener=opener)
+    client = FiberyClient(SETTINGS, url_opener=opener, **unpaced())
 
     with pytest.raises(FiberyError, match="bad"):
         client.views_rpc("query-views", {})
@@ -171,7 +176,7 @@ def test_field_names_are_resolved_from_the_workspace_schema():
 def test_missing_project_database_is_reported():
     opener = StubOpener([ok({"fibery/types": []})])
     workspace = FiberyHttpWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
 
     with pytest.raises(FiberyError, match="SDLC/Project"):
@@ -192,7 +197,7 @@ def test_missing_required_field_is_reported():
     }
     opener = StubOpener([ok(schema)])
     workspace = FiberyHttpWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
 
     with pytest.raises(FiberyError, match="'code'"):

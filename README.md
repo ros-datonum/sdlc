@@ -77,6 +77,26 @@ Views API reference.
 Folder names are not unique: siblings may share a name. Folders created by a
 run are therefore read back by their own id, never by name.
 
+### Request pacing and rate limits
+
+Fibery allows 3 requests per second per token and 7 per workspace and answers
+HTTP 429 beyond that. Every request the CLI sends, reads and writes on every
+endpoint, goes through one client that spaces request starts at least 0.5 s
+apart on a monotonic clock, including the first request of each process, so
+sequential commands never open with a burst. Only requests explicitly known to
+be read-only (schema and entity queries, folder and view queries, document
+reads) are retried after a 429, at most 3 attempts in total with bounded
+backoff inside a 10 s wait budget, honouring a valid `Retry-After` and failing
+rather than retrying early when the server asks for more. A mutation that
+receives a 429, a timeout or a dropped connection is attempted once and
+reported; rerunning the command resumes from durable state through the
+existing recovery paths, because the transport cannot prove a rejected write
+was never applied.
+
+Pacing is per process. Simultaneous SDLC commands and unrelated clients share
+the workspace limits without coordination: run one SDLC command at a time per
+workspace. Pacing adds waits; it does not make read-then-write checks atomic.
+
 ## Model runtime
 
 The RAW Requirement Processor is the first capability allowed to invoke a model.
