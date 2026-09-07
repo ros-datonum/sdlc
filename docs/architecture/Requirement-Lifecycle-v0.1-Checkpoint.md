@@ -139,6 +139,10 @@ Standing items, recorded so they are not mistaken for guarantees:
   after HTTP 429, at most three attempts. A rate-limited mutation is reported
   once and resumed from durable state on rerun; nothing coordinates
   simultaneous SDLC processes, so one command runs at a time per workspace.
+- A tree equal to the latest Process Result's input but not its output is
+  ambiguous between an unfinished rewrite and a deliberate return to that
+  input (audit A11); Standard Process refuses it and the operator chooses
+  `--resume-result` or `--new-iteration-after` explicitly.
 - A failed final transition can be indistinguishable from a deliberate manual
   return to the previous State; the frozen capabilities preserve the observed
   State rather than guess, and recovery is manual.

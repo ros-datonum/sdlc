@@ -15,7 +15,12 @@ from sdlc.fibery_http import (
     FiberyRawProcessorWorkspace,
     FiberyRequirementWorkspace,
 )
-from sdlc.model_runtime import LocalCliModelRuntime
+from sdlc.model_runtime import (
+    LocalCliModelRuntime,
+    ModelResponse,
+    ModelRuntime,
+    ModelRuntimeError,
+)
 from sdlc.model_runtime_config import (
     RAW_REQUIREMENT_PROCESSOR_ROLE,
     STANDARD_REQUIREMENT_PROCESSOR_ROLE,
@@ -49,7 +54,11 @@ from sdlc.results import (
     StandardReviewResult,
     StandardReviewResultCode,
 )
-from sdlc.standard_processor import process_standard_requirement
+from sdlc.standard_processor import (
+    NEW_ITERATION_OPTION,
+    RESUME_OPTION,
+    process_standard_requirement,
+)
 from sdlc.standard_review import ReviewVerdict
 from sdlc.standard_reviewer import review_standard_requirement
 
@@ -110,7 +119,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     normalize.add_argument("--runtime", help="Override the configured model runtime.")
     normalize.add_argument("--model", help="Override the configured model.")
-    _add_recovery_option(normalize, "Process Result")
+    choices = normalize.add_mutually_exclusive_group()
+    _add_recovery_option(choices, "Process Result")
+    choices.add_argument(
+        RESUME_OPTION,
+        dest="resume_result",
+        metavar="DOCUMENT_ID",
+        help=(
+            "Apply the persisted output of the named latest Process Result when "
+            "the current normative tree is still its input. Invokes no model and "
+            "creates no artifact."
+        ),
+    )
+    choices.add_argument(
+        NEW_ITERATION_OPTION,
+        dest="new_iteration_after",
+        metavar="DOCUMENT_ID",
+        help=(
+            "Process the current normative tree as a new iteration after the named "
+            "latest Process Result, when the tree is that Result's input. Runs the "
+            "model once; the named Result is left unchanged."
+        ),
+    )
     normalize.set_defaults(handler=_run_standard_process)
 
     review = requirement_commands.add_parser(
@@ -163,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_recovery_option(command: argparse.ArgumentParser, artifact: str) -> None:
+def _add_recovery_option(command: argparse._ActionsContainer, artifact: str) -> None:
     """Explicit permission to complete one empty Result Document in place."""
     command.add_argument(
         RECOVERY_OPTION,
@@ -271,17 +301,33 @@ def _run_requirement_process(
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
 
 
+class _ResumeWithoutModel:
+    """The runtime handed to an explicit resume: it must never be asked.
+
+    A resume applies persisted output only, so no configured runtime is
+    selected or launched for it; an unavailable runtime cannot block it.
+    """
+
+    def run(self, prompt: str, context: str = "") -> ModelResponse:
+        raise ModelRuntimeError(f"An explicit {RESUME_OPTION} never invokes a model.")
+
+
 def _run_standard_process(
     arguments: argparse.Namespace, out: TextIO, error_out: TextIO
 ) -> int:
     try:
         settings = load_fibery_settings()
-        selection = select_runtime(
-            load_model_runtime_config(),
-            STANDARD_REQUIREMENT_PROCESSOR_ROLE,
-            runtime_override=arguments.runtime,
-            model_override=arguments.model,
-        )
+        model: ModelRuntime
+        if arguments.resume_result is not None:
+            model = _ResumeWithoutModel()
+        else:
+            selection = select_runtime(
+                load_model_runtime_config(),
+                STANDARD_REQUIREMENT_PROCESSOR_ROLE,
+                runtime_override=arguments.runtime,
+                model_override=arguments.model,
+            )
+            model = LocalCliModelRuntime(selection)
     except (ConfigurationError, ModelRuntimeConfigError) as error:
         print(str(error), file=error_out)
         return EXIT_FAILURE
@@ -293,9 +339,11 @@ def _run_standard_process(
     )
     result = process_standard_requirement(
         workspace,
-        LocalCliModelRuntime(selection),
+        model,
         arguments.requirement,
         recover_empty_result=arguments.recover_empty_result,
+        resume_result=arguments.resume_result,
+        new_iteration_after=arguments.new_iteration_after,
     )
     render_standard_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE

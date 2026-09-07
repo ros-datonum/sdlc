@@ -308,11 +308,15 @@ def test_a_resume_detects_a_change_made_after_its_context_read():
     )
     before = len(ws.mutations)
 
+    # A11: the resume is explicit; the drift guard still runs inside it.
     model = FakeModelRuntime([analysis_output({"title": "Different"})])
-    result = run(ws, std, model)
+    result = process_standard_requirement(
+        ws, model, std.id, resume_result=process_results(ws)[0].id
+    )
 
     assert not model.was_invoked, "the existing result is reused"
     assert result.code is Code.PROCESSING_STATE_CONFLICT
+    assert "the Root Document content changed" in result.details
     assert ws.content[root.secret] == edited
     assert len(process_results(ws)) == 1
     assert processor_writes(ws, before) == []
@@ -389,7 +393,9 @@ def test_a_legitimate_incomplete_rewrite_still_resumes():
     set_state(ws, std, "Process")
 
     model = FakeModelRuntime([OUTPUT])
-    result = run(ws, std, model)
+    result = process_standard_requirement(
+        ws, model, std.id, resume_result=process_results(ws)[0].id
+    )
 
     assert not model.was_invoked
     assert result.code is Code.REQUIREMENT_PROCESSED

@@ -584,6 +584,16 @@ def test_a_body_stored_despite_a_raised_write_is_used_by_the_next_retry(stage):
     assert not model.was_invoked, "the stored body is recognised, not regenerated"
     assert ws.content[document.secret] == stored
     assert [d.id for d in result_documents(ws, stage)] == [document.id]
+    if stage is PROCESS:
+        # A11: the Root still holds the input, which an ordinary run cannot
+        # tell from an intentional revert; the operator resumes explicitly.
+        assert retry.code is ProcessCode.PROCESSING_STATE_CONFLICT
+        assert document.id in retry.message
+        retry = process_standard_requirement(
+            ws, model, record.id, resume_result=document.id
+        )
+        assert not model.was_invoked
+        assert ws.content[document.secret] == stored
     expected = ReviewCode.NO_CHANGES_TO_REVIEW if stage is REVIEW else stage.codes["ok"]
     assert retry.code is expected
 
