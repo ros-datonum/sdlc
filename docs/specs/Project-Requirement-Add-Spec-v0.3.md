@@ -163,6 +163,19 @@ The command must not:
 - repair semantic gaps with an LLM;
 - classify formal Requirement types.
 
+Structure is read from headings outside fenced code blocks. A supported fence
+is a backtick fence (three backticks at the start of a line, with or without
+an info string) closed by three backticks at the start of a line, or running
+to the end of the file when it is never closed; this is the same boundary the
+content canonicalizer keeps verbatim. Inside a fence, a line that looks like a
+level-1 title, a level-2 section or an Export Metadata entry is literal example
+text: it never counts as the title or a section, never satisfies a missing
+required section, never opens or duplicates one, and never supplies transport
+metadata. Fenced text stays, unchanged, in the section that encloses it. The
+first non-blank line of the file must still be the real title, so an example
+placed before the title is invalid. Tilde fences, indented code blocks and HTML
+blocks are not recognized as fences in this version.
+
 Invalid source:
 
 ```text
