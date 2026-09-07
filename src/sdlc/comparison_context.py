@@ -22,17 +22,25 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sdlc.fibery_workspace import FiberyError, RequirementRecord
+from sdlc.model_runtime import assemble_model_input
 
 STANDARD_TYPE = "Standard"
 APPLIED_STATE = "Applied"
 UNSPECIFIED = "unspecified"
 
 # Admission limits for the small-corpus contract. The record limit is the
-# former index cap kept as a limit rather than a cut; the input limit is an
-# application budget in characters of the rendered section, not a claim
-# about any model's token capacity.
+# former index cap kept as a limit rather than a cut.
 COMPARISON_RECORD_LIMIT = 100
-COMPARISON_INPUT_LIMIT_CHARACTERS = 400_000
+
+# The bound on the complete SDLC-assembled model input: the exact text handed
+# to the runtime (instructions, target, sources, persisted claims, peers and
+# schemas together), measured in Unicode code points with len(). It is an
+# application limit, not a claim about any model's token capacity, and it
+# refuses rather than truncates. The peer section is checked against the same
+# number early, before the rest is assembled; that early check never stands
+# in for the final one.
+MAX_ASSEMBLED_INPUT_CHARS = 400_000
+COMPARISON_INPUT_LIMIT_CHARACTERS = MAX_ASSEMBLED_INPUT_CHARS
 
 STANDING_APPROVED = "approved normative comparison (Applied)"
 STANDING_CANDIDATE = "candidate, not approved authority"
@@ -148,6 +156,23 @@ def assemble_comparison_context(
             "it was not truncated and the model was not invoked.",
         )
     return context
+
+
+def require_input_within_budget(stage: str, prompt: str, context: str) -> None:
+    """Refuse an assembled model input above MAX_ASSEMBLED_INPUT_CHARS.
+
+    Called after everything has been assembled and immediately before the
+    runtime call, on the same text the runtime sends. Nothing is truncated,
+    summarized or dropped; the invocation simply does not happen.
+    """
+    length = len(assemble_model_input(prompt, context))
+    if length > MAX_ASSEMBLED_INPUT_CHARS:
+        raise ComparisonContextError(
+            f"The complete assembled model input for {stage} is {length} "
+            f"characters, above the {MAX_ASSEMBLED_INPUT_CHARS}-character limit; "
+            "it was refused whole, without truncation, and the model was not "
+            "invoked.",
+        )
 
 
 def _require_identities(peers: list[RequirementRecord], project_id: str) -> None:

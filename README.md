@@ -170,9 +170,15 @@ Project's other Standard Requirements as comparison material: each one's
 Requirement ID, Title, Type, State, actual Category (`unspecified` when
 unset) and complete current Root Document, in Requirement ID order, with
 only Applied peers labelled as approved comparisons. The corpus is bounded
-at 100 peers and 400,000 rendered characters and is never truncated: more
-than that, or a peer whose identity or Root Document cannot be established,
-refuses the run with `COMPARISON_CONTEXT_INCOMPLETE` before any model call.
+at 100 peers, and the complete assembled model input (instructions, target,
+sources, persisted claims, peers and schemas, exactly the text handed to the
+runtime, counted in Unicode code points) is bounded at 400,000 characters;
+the peer section is checked against the same number early, but the final
+check runs on the whole input immediately before the model call. Nothing is
+truncated: more than that, or a peer whose identity or Root Document cannot
+be established, refuses the run with `COMPARISON_CONTEXT_INCOMPLETE` before
+any model call, and a resume that needs no model call is not affected. The
+character bound is an application limit, not a token-capacity guarantee.
 Review additionally refuses when a Process finding or relation names a
 Requirement that is not an included peer. This is Root-Document comparison;
 details that live only in child Documents are not covered.

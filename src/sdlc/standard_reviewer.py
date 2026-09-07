@@ -28,6 +28,7 @@ from sdlc.comparison_context import (
     ComparisonContext,
     ComparisonContextError,
     assemble_comparison_context,
+    require_input_within_budget,
 )
 from sdlc.fibery_workspace import (
     DocumentNode,
@@ -735,6 +736,12 @@ def _verify(
         relations=context.relations,
         comparison=_comparison_context(workspace, context),
     )
+    try:
+        require_input_within_budget("Standard Review", prompt, model_context)
+    except ComparisonContextError as error:
+        raise _StageFailed(
+            StandardReviewResultCode.COMPARISON_CONTEXT_INCOMPLETE, error.message
+        ) from error
     journal.model_invoked = True
     try:
         response = model.run(prompt, model_context)

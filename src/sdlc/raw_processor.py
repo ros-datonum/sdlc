@@ -25,6 +25,7 @@ from sdlc.comparison_context import (
     ComparisonContext,
     ComparisonContextError,
     assemble_comparison_context,
+    require_input_within_budget,
 )
 from sdlc.fibery_workspace import (
     DocumentNode,
@@ -513,7 +514,17 @@ def _decompose(
     model_context: str,
     journal: _Journal,
 ) -> ProcessingResult:
-    """One model invocation, validated against the decomposition contract."""
+    """One model invocation, validated against the decomposition contract.
+
+    The complete assembled input is measured here, after every section has
+    been added and before the invocation is recorded or made.
+    """
+    try:
+        require_input_within_budget("RAW Process", prompt, model_context)
+    except ComparisonContextError as error:
+        raise _StageFailed(
+            ProcessResultCode.COMPARISON_CONTEXT_INCOMPLETE, error.message
+        ) from error
     journal.model_invoked = True
     try:
         response = model.run(prompt, model_context)

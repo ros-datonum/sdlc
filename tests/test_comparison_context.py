@@ -638,3 +638,223 @@ def test_a_refused_recovery_reads_no_peers(stage):
 
     assert result.code is not stage.codes["ok"]
     assert not model.was_invoked and reads == []
+
+
+# -- the complete assembled input is bounded, not only the peer section -------
+
+from sdlc.comparison_context import MAX_ASSEMBLED_INPUT_CHARS  # noqa: E402
+from sdlc.model_runtime import assemble_model_input  # noqa: E402
+
+PRIVATE_LINE = "PRIVATE-SOURCE-LINE-4c1d"
+PADDING_SECTION = "\n\n## Padding\n\n"
+
+
+def _target_root(ws, target, stage):
+    """The target's Root Document secret, whichever stage built the fixture."""
+    [document] = [d for d in ws.documents if d.entity_public_id == target.public_id]
+    return document.secret
+
+
+def pad_target(ws, target, stage, filler):
+    """Append a padding section to the target's Root; the fake stops
+    re-serializing so the assembled length moves exactly with the padding."""
+    ws.reserializes = False
+    secret = _target_root(ws, target, stage)
+    ws.content[secret] = (
+        ws.content[secret].rstrip("\n") + PADDING_SECTION + filler + "\n"
+    )
+    return secret
+
+
+def assembled_of(model):
+    call = model.calls[0]
+    return assemble_model_input(call["prompt"], call["context"])
+
+
+def run_padded(stage, filler, peers=(), bodies=None):
+    ws, target = stage.build(list(peers))
+    for record in peers:
+        with_root(ws, record, (bodies or {}).get(record.id))
+    pad_target(ws, target, stage, filler)
+    model = FakeModelRuntime([stage.ok_output])
+    before = len(ws.mutations)
+    result = stage.run(ws, ws.requirements[target.id], model)
+    return ws, model, result, before
+
+
+def assert_refused_whole(stage, ws, model, result, before, label):
+    assert result.code is stage.codes["context"], (label, result)
+    assert not model.was_invoked
+    assert result.model_invoked is False
+    assert ws.mutations[before:] == []
+    assert (
+        not [d for d in ws.documents if "Result" in d.name and d.name.endswith("0001")]
+        or stage is REVIEW
+    )
+    text = " ".join((result.message, *result.details))
+    assert (
+        "complete assembled model input" in text
+        and str(MAX_ASSEMBLED_INPUT_CHARS) in text
+    )
+    assert "without truncation" in text
+    assert PRIVATE_LINE not in text and "x" * 50 not in text
+
+
+@pytest.mark.parametrize("stage", STAGES, ids=repr)
+def test_an_oversized_target_with_a_small_peer_section_is_refused_whole(stage):
+    filler = PRIVATE_LINE + "x" * (MAX_ASSEMBLED_INPUT_CHARS + 1)
+    ws, model, result, before = run_padded(stage, filler, peers=[peer(41)])
+
+    assert_refused_whole(stage, ws, model, result, before, "oversized target")
+    assert "characters, above the" in result.message
+
+
+@pytest.mark.parametrize("stage", STAGES, ids=repr)
+def test_sections_each_below_the_limit_but_together_above_it_are_refused(stage):
+    half = MAX_ASSEMBLED_INPUT_CHARS // 2 + 10_000
+    peer_body = "# SDLC-FR-0041 — T\n\n## Requirement\n\n" + "p" * half + "\n"
+    ws, model, result, before = run_padded(
+        stage, "x" * half, peers=[peer(41)], bodies={"std-peer-41": peer_body}
+    )
+
+    assert_refused_whole(stage, ws, model, result, before, "combined sections")
+
+
+def test_a_review_enlarged_by_its_bound_process_claims_is_refused_whole():
+    claims = [finding(FindingKind.AMBIGUOUS, "c" * 100_000) for _ in range(3)]
+    ws, req = _review_build([peer(41)], findings=claims)
+    with_root(
+        ws, peer(41), "# SDLC-FR-0041 — T\n\n## Requirement\n\n" + "p" * 120_000 + "\n"
+    )
+    ws.reserializes = False
+    model = FakeModelRuntime([review_output()])
+    before = len(ws.mutations)
+
+    result = review_standard_requirement(ws, model, req.id)
+
+    assert_refused_whole(REVIEW, ws, model, result, before, "review claims")
+
+
+@pytest.mark.parametrize("stage", STAGES, ids=repr)
+@pytest.mark.parametrize("unit", ["x", "é"], ids=["ascii", "two-byte-code-point"])
+def test_exactly_the_limit_is_admitted_and_one_more_is_refused(stage, unit):
+    probe = 1_000
+    _, model, result, _ = run_padded(stage, unit * probe, peers=[peer(41)])
+    assert result.code is stage.codes["ok"], result
+    delta = MAX_ASSEMBLED_INPUT_CHARS - len(assembled_of(model))
+
+    _, model, result, _ = run_padded(stage, unit * (probe + delta), peers=[peer(41)])
+    assert result.code is stage.codes["ok"], result
+    text = assembled_of(model)
+    assert len(text) == MAX_ASSEMBLED_INPUT_CHARS, "counted in code points"
+    if unit != "x":
+        assert len(text.encode("utf-8")) > MAX_ASSEMBLED_INPUT_CHARS, (
+            "bytes are not the unit"
+        )
+    assert (
+        text.startswith("# Project")
+        and text.rstrip().endswith("}")
+        or "Allowed" in text
+    )
+
+    ws, model, result, before = run_padded(
+        stage, unit * (probe + delta + 1), peers=[peer(41)]
+    )
+    assert_refused_whole(stage, ws, model, result, before, "one above")
+    assert str(MAX_ASSEMBLED_INPUT_CHARS + 1) in result.message
+
+
+@pytest.mark.parametrize("stage", STAGES, ids=repr)
+def test_an_admitted_input_reaches_the_runtime_exactly_as_measured(stage):
+    _, model, result, _ = run_padded(stage, "x" * 5_000, peers=[peer(41)])
+
+    assert result.code is stage.codes["ok"]
+    call = model.calls[0]
+    assert assembled_of(model) == f"{call['context']}\n\n{call['prompt']}"
+    assert "x" * 5_000 in call["context"] and CONSTRAINT in call["context"]
+
+
+# -- explicit recovery under the same bound ------------------------------------
+
+
+@pytest.mark.parametrize("stage", STAGES, ids=repr)
+def test_an_oversized_regeneration_input_refuses_and_leaves_the_shell_untouched(stage):
+    ws, target = stage.build([peer(41)])
+    with_root(ws, peer(41))
+    ws.failures["write_document_content"] = FiberyError("body write failed")
+    stage.run(ws, target, FakeModelRuntime([stage.ok_output]))
+    suffix = {
+        "raw": "Processing Result",
+        "process": "Process Result 0001",
+        "review": "Review Result 0001",
+    }[stage.name]
+    [shell] = [d for d in ws.documents if d.name.endswith(suffix)]
+    assert ws.content[shell.secret] == ""
+    pad_target(ws, target, stage, "x" * (MAX_ASSEMBLED_INPUT_CHARS + 1))
+    model = FakeModelRuntime([stage.ok_output])
+    before = len(ws.mutations)
+    documents_before = [(d.id, d.name, d.parent_document_id) for d in ws.documents]
+
+    result = stage.run(
+        ws, ws.requirements[target.id], model, recover_empty_result=shell.id
+    )
+
+    assert result.code is stage.codes["context"], result
+    assert not model.was_invoked and result.model_invoked is False
+    assert ws.mutations[before:] == []
+    assert ws.content[shell.secret] == ""
+    assert [
+        (d.id, d.name, d.parent_document_id) for d in ws.documents
+    ] == documents_before
+
+
+# -- no-model paths never assemble or budget a new prompt --------------------
+
+
+def test_a_valid_raw_resume_ignores_an_oversized_target_and_peers():
+    ws, raw = _raw_build([peer(41)])
+    with_root(ws, peer(41))
+    assert (
+        process_raw_requirement(ws, FakeModelRuntime([RAW_OUTPUT]), raw.id).code
+        is RawCode.RAW_REQUIREMENT_PROCESSED
+    )
+    set_state(ws, raw, "Process")
+    pad_target(ws, raw, RAW, "x" * (MAX_ASSEMBLED_INPUT_CHARS + 1))
+    with_root(
+        ws,
+        peer(41),
+        "# SDLC-FR-0041 — T\n\n## Requirement\n\n"
+        + "p" * (MAX_ASSEMBLED_INPUT_CHARS + 1),
+    )
+    model = FakeModelRuntime([RAW_OUTPUT])
+
+    resumed = process_raw_requirement(ws, model, ws.requirements[raw.id].id)
+
+    assert resumed.code is RawCode.RAW_REQUIREMENT_PROCESSED
+    assert not model.was_invoked
+
+
+@pytest.mark.parametrize("stage", [PROCESS, REVIEW], ids=repr)
+def test_a_no_change_path_ignores_oversized_peer_data(stage):
+    ws, target = stage.build([peer(41)])
+    with_root(ws, peer(41))
+    first = stage.run(ws, target, FakeModelRuntime([stage.ok_output]))
+    assert first.code is stage.codes["ok"], first
+    set_state(ws, target, "Process" if stage is PROCESS else "Review")
+    with_root(
+        ws,
+        peer(41),
+        "# SDLC-FR-0041 — T\n\n## Requirement\n\n"
+        + "p" * (MAX_ASSEMBLED_INPUT_CHARS + 1),
+    )
+    model = FakeModelRuntime([stage.ok_output])
+
+    again = stage.run(ws, ws.requirements[target.id], model)
+
+    expected = (
+        ProcessCode.NO_CHANGES_TO_PROCESS
+        if stage is PROCESS
+        else ReviewCode.NO_CHANGES_TO_REVIEW
+    )
+    assert again.code is expected
+    assert not model.was_invoked

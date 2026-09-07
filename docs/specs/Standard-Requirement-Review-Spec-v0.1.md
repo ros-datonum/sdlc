@@ -68,7 +68,9 @@ the Requirement's existing real Depends On / Affects relations
 ```
 
 The comparison corpus follows the same scope, labelling, limits and refusal
-rules as the Standard Requirement Process specification. In addition, every
+rules as the Standard Requirement Process specification, including the
+400,000-character bound on the complete assembled reviewer input, which here
+includes the persisted Process claims. In addition, every
 Requirement named by a Process comparison finding or proposed relation must
 resolve unambiguously to an included same-Project Standard with actual Root
 content; a Requirement ID that merely looks valid is not evidence, and an

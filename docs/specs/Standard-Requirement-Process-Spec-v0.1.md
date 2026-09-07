@@ -107,16 +107,23 @@ duplicate, conflict, change or dependency; it never authorizes replacing the
 target's intent.
 
 The corpus is bounded, not truncated: at most 100 other Standard
-Requirements, and a rendered comparison section of at most 400,000
-characters (an application budget, not a model capacity claim). More than
-that, a peer without a Requirement ID, an ambiguous Requirement ID, a peer
-with no or several Root Documents, an unreadable or empty Root, or a peer
-from another Project refuses the invocation with
-`COMPARISON_CONTEXT_INCOMPLETE`: no model call, no mutation. The query asks
-for two rows past the limit so a cut cannot pass as a complete Project; a
-refusal reports a lower bound, never an exact total. The corpus is read only
-when a new model invocation is certain, so a resume, a no-change result or a
-refused recovery never loads it.
+Requirements, and the complete assembled model input of at most 400,000
+characters. That input is exactly the text handed to the runtime,
+instructions and context together (target document, child documents, RAW
+source, peers, schemas and, for Review, the persisted Process claims),
+measured in Unicode code points immediately before the model call, after
+everything has been assembled; the peer section is checked against the
+same number earlier, but only the final whole-input check admits an
+invocation. The number is an application budget, not a model-capacity
+claim. More than that, a peer without a Requirement ID, an ambiguous
+Requirement ID, a peer with no or several Root Documents, an unreadable or
+empty Root, or a peer from another Project refuses the invocation with
+`COMPARISON_CONTEXT_INCOMPLETE`: no model call, no mutation, no truncation.
+The query asks for two rows past the limit so a cut cannot pass as a
+complete Project; a refusal reports a lower bound, never an exact total.
+The corpus is read and the input measured only when a new model invocation
+is certain, so a resume, a no-change result or a refused recovery is never
+affected.
 
 This is Root-Document comparison. It does not verify details that live only
 in a peer's normative child Documents, which remains an open finding.
