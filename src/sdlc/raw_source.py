@@ -79,6 +79,11 @@ CONTINUATION_INDENT_PATTERN = re.compile(
 # never closed. Fibery returns fenced content verbatim, so nothing inside one
 # is Fibery serialization and nothing inside one may be normalized. The group
 # makes `split` return prose and fences alternately: odd segments are fences.
+#
+# The same boundary decides document structure: a heading-looking line inside
+# a fence is literal example text, never the title or a section. Only this
+# backtick grammar is supported; tilde fences, indented code blocks and HTML
+# blocks are ordinary lines to both the canonicalizer and the schema scan.
 FENCED_BLOCK_PATTERN = re.compile(
     r"(^```[^\n]*\n.*?(?:^```[ \t]*$|\Z))", re.MULTILINE | re.DOTALL
 )
@@ -119,19 +124,27 @@ class RawRequirementSource:
         return self.metadata.get("Project Name")
 
 
+@dataclass(frozen=True)
+class _SourceLine:
+    """One line of the artifact and whether a supported fence encloses it."""
+
+    text: str
+    is_fenced: bool
+
+
 def parse_raw_requirement(text: str) -> RawRequirementSource:
     """Validate the artifact and return it, or raise InvalidRequirementSource."""
     if not text.strip():
         raise InvalidRequirementSource("The source file is empty.")
 
-    lines = _normalize_line_endings(text).split("\n")
+    lines = _source_lines(_normalize_line_endings(text))
     title = _read_title(lines)
     sections = _read_sections(lines)
     _check_sections(sections)
     metadata = _read_metadata(sections[METADATA_SECTION])
     _check_format(metadata)
 
-    body = _build_body(title, lines, sections)
+    body = _build_body(title, sections)
     return RawRequirementSource(
         title=title,
         body=body,
@@ -216,15 +229,43 @@ def _normalize_line_endings(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _read_title(lines: list[str]) -> str:
-    """schema.md section 3: the first non-blank line is the level-1 heading."""
-    first = next((line for line in lines if line.strip()), "")
+def _source_lines(text: str) -> list[_SourceLine]:
+    """Split the artifact into lines, marking those a supported fence encloses.
+
+    The boundary is FENCED_BLOCK_PATTERN, the one canonical_markdown keeps
+    verbatim, so the structural scan and the canonical form agree on what is
+    example text. Fence delimiters themselves count as fenced. Nothing is
+    removed or blanked: every line is kept, only its structural role changes.
+    """
+    fenced: set[int] = set()
+    line = 0
+    for index, segment in enumerate(FENCED_BLOCK_PATTERN.split(text)):
+        newlines = segment.count("\n")
+        if index % 2 == 1:
+            fenced.update(range(line, line + newlines + 1))
+        line += newlines
+    return [
+        _SourceLine(text=content, is_fenced=index in fenced)
+        for index, content in enumerate(text.split("\n"))
+    ]
+
+
+def _read_title(lines: list[_SourceLine]) -> str:
+    """schema.md section 3: the first non-blank line is the level-1 heading.
+
+    The first non-blank line is taken as it is: an example before the title
+    puts a fence opener first, which is not a title. Further level-1 headings
+    are counted outside fences only; inside one, `# ...` is example text.
+    """
+    first = next((line.text for line in lines if line.text.strip()), "")
     match = TITLE_PATTERN.match(first)
     if match is None:
         raise InvalidRequirementSource(
             "The first non-blank line must be a level-1 heading holding the title."
         )
-    headings = [line for line in lines if TITLE_PATTERN.match(line)]
+    headings = [
+        line for line in lines if not line.is_fenced and TITLE_PATTERN.match(line.text)
+    ]
     if len(headings) > 1:
         raise InvalidRequirementSource(
             f"The artifact must contain exactly one level-1 heading, found "
@@ -233,11 +274,17 @@ def _read_title(lines: list[str]) -> str:
     return match.group("title")
 
 
-def _read_sections(lines: list[str]) -> dict[str, list[str]]:
-    sections: dict[str, list[str]] = {}
+def _read_sections(lines: list[_SourceLine]) -> dict[str, list[_SourceLine]]:
+    """Group lines under the level-2 headings found outside fences.
+
+    A `## ...` line inside a fence is example text and stays in the section
+    that encloses the fence, so it can neither open a section nor satisfy a
+    required one.
+    """
+    sections: dict[str, list[_SourceLine]] = {}
     current: str | None = None
     for line in lines:
-        match = SECTION_PATTERN.match(line)
+        match = None if line.is_fenced else SECTION_PATTERN.match(line.text)
         if match is not None:
             current = match.group("name")
             if current in sections:
@@ -250,7 +297,7 @@ def _read_sections(lines: list[str]) -> dict[str, list[str]]:
     return sections
 
 
-def _check_sections(sections: dict[str, list[str]]) -> None:
+def _check_sections(sections: dict[str, list[_SourceLine]]) -> None:
     missing = [name for name in REQUIRED_SECTIONS if name not in sections]
     if missing:
         raise InvalidRequirementSource(
@@ -273,10 +320,14 @@ def _check_sections(sections: dict[str, list[str]]) -> None:
         )
 
 
-def _read_metadata(metadata_lines: list[str]) -> dict[str, str]:
+def _read_metadata(metadata_lines: list[_SourceLine]) -> dict[str, str]:
+    """Transport metadata: the key/value bullets of the genuine section.
+
+    A fenced example inside the section is literal and carries no metadata.
+    """
     metadata: dict[str, str] = {}
     for line in metadata_lines:
-        match = METADATA_PATTERN.match(line)
+        match = None if line.is_fenced else METADATA_PATTERN.match(line.text)
         if match is not None:
             metadata[match.group("key").strip()] = match.group("value").strip("` ")
     return metadata
@@ -296,12 +347,15 @@ def _check_format(metadata: dict[str, str]) -> None:
         )
 
 
-def _build_body(title: str, lines: list[str], sections: dict[str, list[str]]) -> str:
-    """Title plus every content section, with Export Metadata removed."""
+def _build_body(title: str, sections: dict[str, list[_SourceLine]]) -> str:
+    """Title plus every content section, with Export Metadata removed.
+
+    Fenced lines are kept exactly as written, in the section they sit in.
+    """
     kept: list[str] = [f"# {title}", ""]
     for name in SECTION_ORDER:
         if name == METADATA_SECTION or name not in sections:
             continue
         kept.append(f"## {name}")
-        kept.extend(sections[name])
+        kept.extend(line.text for line in sections[name])
     return "\n".join(kept).strip("\n") + "\n"
