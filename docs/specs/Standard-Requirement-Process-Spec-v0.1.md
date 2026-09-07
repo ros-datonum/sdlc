@@ -84,11 +84,42 @@ its Root Document
 its child Documents, recursively, excluding this capability's own artifacts
 the Project
 the RAW Requirement it derives from, and that RAW's Root Document
-existing Standard Requirements in the Project: ID, Title, requirement text
+other Standard Requirements in the Project, as comparison material: for
+each, Requirement ID, Title, Type, State, Category and its complete current
+Root Document (child Documents are not included; see the comparison scope
+below)
 ```
 
 The originating RAW is included so Process can distinguish "the source never
 said this" from "decomposition dropped it".
+
+### Comparison scope and limits
+
+The comparison corpus is the Project's other Standard Requirements, resolved
+through their entity association to exactly one Root Document each and read
+in full, in deterministic Requirement ID order. The target is excluded; RAW
+records and other Projects are never comparison material. Every entry names
+its actual State and Category (`unspecified` when the Field is unset, never
+inferred from Type, ID or Title); only an Applied peer is labelled an
+approved normative comparison, any other State is a candidate under review
+and nothing in this stage approves it. Comparison material can reveal a
+duplicate, conflict, change or dependency; it never authorizes replacing the
+target's intent.
+
+The corpus is bounded, not truncated: at most 100 other Standard
+Requirements, and a rendered comparison section of at most 400,000
+characters (an application budget, not a model capacity claim). More than
+that, a peer without a Requirement ID, an ambiguous Requirement ID, a peer
+with no or several Root Documents, an unreadable or empty Root, or a peer
+from another Project refuses the invocation with
+`COMPARISON_CONTEXT_INCOMPLETE`: no model call, no mutation. The query asks
+for two rows past the limit so a cut cannot pass as a complete Project; a
+refusal reports a lower bound, never an exact total. The corpus is read only
+when a new model invocation is certain, so a resume, a no-change result or a
+refused recovery never loads it.
+
+This is Root-Document comparison. It does not verify details that live only
+in a peer's normative child Documents, which remains an open finding.
 
 No Milestones, Epics, Stories, Tasks, or unrelated project state.
 

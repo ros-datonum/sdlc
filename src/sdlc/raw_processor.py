@@ -21,6 +21,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sdlc.comparison_context import (
+    ComparisonContext,
+    ComparisonContextError,
+    assemble_comparison_context,
+)
 from sdlc.fibery_workspace import (
     DocumentNode,
     FiberyError,
@@ -478,11 +483,27 @@ def _produce_processing_result(
         raw_title=context.raw.title or "",
         project_name=context.project.name,
         raw_body=context.raw_body,
-        existing_standards=context.existing_standards,
+        comparison=_comparison_context(workspace, context),
     )
     result = _decompose(model, context, prompt, model_context, journal)
     _persist_processing_result(workspace, context, result, journal)
     return result
+
+
+def _comparison_context(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> ComparisonContext:
+    """Read the peers' Root Documents only once a new model call is certain."""
+    try:
+        return assemble_comparison_context(
+            workspace, context.project.id, context.raw.id, context.existing_standards
+        )
+    except ComparisonContextError as error:
+        raise _StageFailed(
+            ProcessResultCode.COMPARISON_CONTEXT_INCOMPLETE,
+            error.message,
+            error.details,
+        ) from error
 
 
 def _decompose(
@@ -533,7 +554,7 @@ def _recover_processing_result(
         raw_title=context.raw.title or "",
         project_name=context.project.name,
         raw_body=context.raw_body,
-        existing_standards=context.existing_standards,
+        comparison=_comparison_context(workspace, context),
     )
     result = _decompose(model, context, prompt, model_context, journal)
     _require_still_eligible(workspace, context)

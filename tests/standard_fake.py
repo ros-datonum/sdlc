@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 
-from processor_fake import FakeProcessorWorkspace, reserialize_like_fibery
+from processor_fake import (
+    FakeProcessorWorkspace,
+    attach_peer_roots,
+    reserialize_like_fibery,
+)
 from sdlc.fibery_workspace import (
     DocumentNode,
     FolderNode,
@@ -92,6 +96,7 @@ def build_standard_workspace(
         records.append(raw)
 
     ws = FakeProcessorWorkspace(project, [root, reqs, *stages], records)
+    attach_peer_roots(ws, others)
     doc = DocumentNode(
         id="std-doc-1",
         name=f"{REQUIREMENT_ID} — {standard.title}",

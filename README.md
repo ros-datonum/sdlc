@@ -163,6 +163,20 @@ explicitly. Failure diagnostics name the runtime, the stage and an exit code
 or timeout, never the child's output, the prompt or the login status
 document. See the runtime specification for the exact policy.
 
+## Comparison context for reasoning
+
+RAW Process, Standard Process and Standard Review send the model the
+Project's other Standard Requirements as comparison material: each one's
+Requirement ID, Title, Type, State, actual Category (`unspecified` when
+unset) and complete current Root Document, in Requirement ID order, with
+only Applied peers labelled as approved comparisons. The corpus is bounded
+at 100 peers and 400,000 rendered characters and is never truncated: more
+than that, or a peer whose identity or Root Document cannot be established,
+refuses the run with `COMPARISON_CONTEXT_INCOMPLETE` before any model call.
+Review additionally refuses when a Process finding or relation names a
+Requirement that is not an included peer. This is Root-Document comparison;
+details that live only in child Documents are not covered.
+
 ## Recovering an empty Result Document
 
 Each model-backed command creates its Result as a child Document first and

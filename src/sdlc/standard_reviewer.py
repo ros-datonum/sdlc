@@ -24,6 +24,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sdlc.comparison_context import (
+    ComparisonContext,
+    ComparisonContextError,
+    assemble_comparison_context,
+)
 from sdlc.fibery_workspace import (
     DocumentNode,
     FiberyError,
@@ -362,9 +367,7 @@ def _load_context(
         process_result=process_results[-1],
         relations=relations,
         existing_standards=tuple(
-            record
-            for record in standards
-            if record.id != requirement.id and record.requirement_id
+            record for record in standards if record.id != requirement.id
         ),
         reviews=reviews,
         shell=shell,
@@ -645,7 +648,7 @@ def _produce_review(
     latest = context.latest_review
     iteration = latest.iteration + 1 if latest else FIRST_ITERATION
     result = _build_result(
-        context, bindings, iteration, _verify(model, context, journal)
+        context, bindings, iteration, _verify(workspace, model, context, journal)
     )
     _persist_result(workspace, context, result, journal)
     return result
@@ -668,7 +671,7 @@ def _recover_review(
     """
     shell, iteration = context.shell
     result = _build_result(
-        context, bindings, iteration, _verify(model, context, journal)
+        context, bindings, iteration, _verify(workspace, model, context, journal)
     )
     _require_still_eligible(workspace, context)
     current = _current_shell(workspace, context, shell, iteration)
@@ -713,15 +716,24 @@ def _require_still_eligible(
         )
 
 
-def _verify(model: ModelRuntime, context: _Context, journal: _Journal) -> ReviewOutput:
-    """One reviewer invocation, validated against the review contract."""
+def _verify(
+    workspace: RawProcessorWorkspace,
+    model: ModelRuntime,
+    context: _Context,
+    journal: _Journal,
+) -> ReviewOutput:
+    """One reviewer invocation, validated against the review contract.
+
+    The comparison corpus is read here, once a new invocation is certain,
+    and every peer the Process claims refer to must be in it with content.
+    """
     prompt, model_context = build_review_prompt(
         requirement=context.requirement,
         project_name=context.project.name,
         root_content=context.root_content,
         process_result=context.process_result,
         relations=context.relations,
-        existing_standards=context.existing_standards,
+        comparison=_comparison_context(workspace, context),
     )
     journal.model_invoked = True
     try:
@@ -757,6 +769,45 @@ def _build_result(
         reviewed_process_output_fingerprint=bindings.process_output_fingerprint,
         review=review,
     )
+
+
+def _comparison_context(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> ComparisonContext:
+    """The peers with content, and proof that every claimed target is among them."""
+    try:
+        comparison = assemble_comparison_context(
+            workspace,
+            context.project.id,
+            context.requirement.id,
+            context.existing_standards,
+        )
+    except ComparisonContextError as error:
+        raise _StageFailed(
+            StandardReviewResultCode.COMPARISON_CONTEXT_INCOMPLETE,
+            error.message,
+            error.details,
+        ) from error
+    resolvable = comparison.requirement_ids | {context.requirement.requirement_id}
+    claimed = {
+        finding.requirement_id
+        for finding in context.process_result.findings
+        if finding.requirement_id
+    } | {
+        relation.requirement_id
+        for relation in context.process_result.proposed_relations
+    }
+    unresolved = sorted(target for target in claimed if target not in resolvable)
+    if unresolved:
+        raise _StageFailed(
+            StandardReviewResultCode.COMPARISON_CONTEXT_INCOMPLETE,
+            "The Process Result names Requirements that are not Standard "
+            "Requirements of this Project with a readable Root Document; their "
+            "claims cannot be verified against evidence, so the reviewer was not "
+            "invoked.",
+            tuple(unresolved),
+        )
+    return comparison
 
 
 def _read_body(workspace: RawProcessorWorkspace, node: DocumentNode) -> str:

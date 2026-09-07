@@ -1,9 +1,10 @@
 """The bounded prompt for independent Standard Requirement review.
 
 Context is the Requirement, its current Root Document, the persisted claims of
-the latest Process Result, the relations it already has, and a concise index of
-the Project's other Standard Requirements. No Milestones, Epics, Stories, Tasks
-or Project Phases, and no earlier iteration of anything.
+the latest Process Result, the relations it already has, and the Project's
+other Standard Requirements as comparison material (entity metadata plus each
+one's complete current Root Document). No Milestones, Epics, Stories, Tasks or
+Project Phases, and no earlier iteration of anything.
 
 Two exclusions carry the independence of this stage:
 
@@ -19,12 +20,15 @@ Fibery mechanics, and never for a verdict: deriving that is the code's job.
 
 from __future__ import annotations
 
+from sdlc.comparison_context import (
+    ComparisonContext,
+    render_comparison_section,
+    render_target_metadata,
+)
 from sdlc.fibery_workspace import RequirementRecord, RequirementRelations
 from sdlc.process_result import ProcessResult
 from sdlc.standard_analysis import FindingKind
 from sdlc.standard_review import ReviewSeverity, VerificationOutcome
-
-EXISTING_STANDARD_LIMIT = 100
 
 INSTRUCTIONS = """\
 You are independently reviewing one Standard Requirement in an SDLC system.
@@ -84,6 +88,10 @@ Rules:
 - Do not propose changes, rewrites, updates, retirement or supersession of any
   Requirement, and do not describe an action to take. You are reporting, not
   instructing.
+- Every other Standard Requirement named by a claim is supplied with its full
+  Root Document; verify comparison claims against that text, not the title.
+  A peer that is not Applied is a candidate under review, not approved
+  authority, and nothing here approves it.
 - Emit no field that is not listed above. Unknown fields are rejected.
 """
 
@@ -94,7 +102,7 @@ def build_review_prompt(
     root_content: str,
     process_result: ProcessResult,
     relations: RequirementRelations,
-    existing_standards: tuple[RequirementRecord, ...],
+    comparison: ComparisonContext,
 ) -> tuple[str, str]:
     """Return the instruction prompt and the context sent on stdin."""
     context = "\n".join(
@@ -104,7 +112,7 @@ def build_review_prompt(
             "",
             "# Requirement under review",
             f"{requirement.requirement_id} — {requirement.title}",
-            f"Category: {requirement.type_name or 'unknown'}",
+            *render_target_metadata(requirement),
             "",
             "# Current Requirement document",
             root_content or "(empty)",
@@ -117,7 +125,7 @@ def build_review_prompt(
             "",
             _existing_relations_section(relations),
             "",
-            _existing_section(existing_standards),
+            render_comparison_section(comparison),
             "",
             f"# Allowed finding kinds\n{', '.join(k.value for k in FindingKind)}",
             f"# Allowed severities\n{', '.join(s.value for s in ReviewSeverity)}",
@@ -170,18 +178,3 @@ def _existing_relations_section(relations: RequirementRelations) -> str:
     lines = [f"- DEPENDS_ON {value}" for value in relations.depends_on]
     lines += [f"- AFFECTS {value}" for value in relations.affects]
     return "\n".join([header, *lines]) if lines else f"{header}\n(none)"
-
-
-def _existing_section(existing: tuple[RequirementRecord, ...]) -> str:
-    """A concise index of the Project's other Standard Requirements."""
-    header = "# Other Standard Requirements in this Project"
-    lines = [
-        f"- {record.requirement_id}: {record.title}"
-        for record in existing[:EXISTING_STANDARD_LIMIT]
-        if record.requirement_id
-    ]
-    if not lines:
-        return f"{header}\n(none)"
-    if len(existing) > EXISTING_STANDARD_LIMIT:
-        lines.append(f"- ... and {len(existing) - EXISTING_STANDARD_LIMIT} more")
-    return "\n".join([header, *lines])

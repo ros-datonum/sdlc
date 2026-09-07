@@ -1,7 +1,8 @@
 """The bounded prompt for Standard Requirement normalization and analysis.
 
-Context is the Requirement, its documents, the RAW it came from, and a concise
-index of the Project's other Standard Requirements. No Milestones, Epics,
+Context is the Requirement, its documents, the RAW it came from, and the
+Project's other Standard Requirements as comparison material (entity metadata
+plus each one's complete current Root Document). No Milestones, Epics,
 Stories, Tasks or Project Phases.
 
 The model is asked for structured data only, never for reasoning, never for
@@ -10,10 +11,13 @@ Fibery mechanics, and never for permission to change anything.
 
 from __future__ import annotations
 
+from sdlc.comparison_context import (
+    ComparisonContext,
+    render_comparison_section,
+    render_target_metadata,
+)
 from sdlc.fibery_workspace import RequirementRecord
 from sdlc.standard_analysis import FindingKind, RelationKind
-
-EXISTING_STANDARD_LIMIT = 100
 
 INSTRUCTIONS = """\
 You are normalizing and analyzing one Standard Requirement in an SDLC system.
@@ -62,6 +66,10 @@ Rules:
   observations only. You cannot modify, retire or supersede anything.
 - Relations are proposals for an independent reviewer to confirm. Proposing one
   does not create it.
+- The other Standard Requirements are supplied with their full Root Documents
+  so comparison findings and relations rest on what they actually state.
+  They never authorize changing this Requirement's intent, and one that is
+  not Applied is a candidate under review, not approved authority.
 - Emit no field that is not listed above. Unknown fields are rejected.
 """
 
@@ -72,7 +80,7 @@ def build_analysis_prompt(
     root_content: str,
     child_content: str,
     raw_ancestry: str,
-    existing_standards: tuple[RequirementRecord, ...],
+    comparison: ComparisonContext,
 ) -> tuple[str, str]:
     """Return the instruction prompt and the context sent on stdin."""
     context = "\n".join(
@@ -82,7 +90,7 @@ def build_analysis_prompt(
             "",
             "# Requirement under analysis",
             f"{requirement.requirement_id} — {requirement.title}",
-            f"Category: {requirement.type_name or 'unknown'}",
+            *render_target_metadata(requirement),
             "",
             "# Current Requirement document",
             root_content or "(empty)",
@@ -91,7 +99,7 @@ def build_analysis_prompt(
             "",
             _section("Originating RAW requirement source", raw_ancestry),
             "",
-            _existing_section(existing_standards),
+            render_comparison_section(comparison),
             "",
             f"# Allowed finding kinds\n{', '.join(k.value for k in FindingKind)}",
             f"# Allowed relation kinds\n{', '.join(k.value for k in RelationKind)}",
@@ -102,18 +110,3 @@ def build_analysis_prompt(
 
 def _section(heading: str, body: str) -> str:
     return f"# {heading}\n{body}" if body.strip() else f"# {heading}\n(none)"
-
-
-def _existing_section(existing: tuple[RequirementRecord, ...]) -> str:
-    """A concise index of the Project's other Standard Requirements."""
-    header = "# Other Standard Requirements in this Project"
-    lines = [
-        f"- {record.requirement_id}: {record.title}"
-        for record in existing[:EXISTING_STANDARD_LIMIT]
-        if record.requirement_id
-    ]
-    if not lines:
-        return f"{header}\n(none)"
-    if len(existing) > EXISTING_STANDARD_LIMIT:
-        lines.append(f"- ... and {len(existing) - EXISTING_STANDARD_LIMIT} more")
-    return "\n".join([header, *lines])

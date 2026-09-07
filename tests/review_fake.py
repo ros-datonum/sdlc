@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from processor_fake import reserialize_like_fibery
-from sdlc.fibery_workspace import DocumentNode
+from sdlc.fibery_workspace import DocumentNode, RequirementRecord
 from sdlc.process_result import (
     build_process_result,
     document_fingerprint,
@@ -41,6 +41,26 @@ def build_review_workspace(
     which is the normal state a review starts from. `normalized_changes`
     alters that content in both places at once.
     """
+    others = list(others)
+    known = {r.requirement_id for r in others} | {REQUIREMENT_ID}
+    for number, target in enumerate(
+        sorted({r.requirement_id for r in relations} - known), start=1
+    ):
+        # A proposal must point at a same-Project Standard with a Root, or
+        # Review refuses to run without evidence; give it a plain one.
+        others.append(
+            RequirementRecord(
+                id=f"std-target-{number}",
+                public_id=str(300 + number),
+                requirement_id=target,
+                title=f"Target {target}",
+                type_name="Standard",
+                state="Applied",
+                revision=1,
+                project_id="p-1",
+                source_fingerprint=None,
+            )
+        )
     ws, requirement, root = build_standard_workspace(
         state=state, type_name=type_name, others=others
     )

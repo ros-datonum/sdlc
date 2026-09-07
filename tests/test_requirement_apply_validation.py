@@ -288,35 +288,32 @@ def test_the_mirror_check_happens_before_any_target_lookup():
 
 
 def test_a_missing_target_is_refused():
+    """The target existed when Review verified the proposal and is gone at Apply."""
     ws, requirement, _, before = build_apply_workspace(
-        proposals=(proposal(DEPENDS, "SDLC-FR-0404"),), others=()
+        proposals=(proposal(DEPENDS, "SDLC-FR-0404"),),
+        others=(standard("SDLC-FR-0404", "std-uuid-404"),),
     )
+    del ws.requirements["std-uuid-404"]
     refused(ws, requirement, before, Code.RELATION_TARGET_NOT_FOUND)
 
 
 def test_an_ambiguous_target_is_refused_not_adopted():
-    others = (standard(), standard(TARGET_ID, "std-uuid-dup"))
-    ws, requirement, _, before = build_apply_workspace(
-        proposals=(proposal(DEPENDS),), others=others
-    )
+    ws, requirement, _, before = build_apply_workspace(proposals=(proposal(DEPENDS),))
+    ws.requirements["std-uuid-dup"] = standard(TARGET_ID, "std-uuid-dup")
     result = refused(ws, requirement, before, Code.INVALID_RELATION_TARGET)
     assert "more than one" in result.message
     assert set(result.details) == {TARGET_ENTITY, "std-uuid-dup"}
 
 
 def test_a_raw_target_is_refused():
-    others = (standard(type_name="Raw"),)
-    ws, requirement, _, before = build_apply_workspace(
-        proposals=(proposal(DEPENDS),), others=others
-    )
+    ws, requirement, _, before = build_apply_workspace(proposals=(proposal(DEPENDS),))
+    ws.requirements[TARGET_ENTITY] = standard(type_name="Raw")
     refused(ws, requirement, before, Code.INVALID_RELATION_TARGET)
 
 
 def test_a_target_in_another_project_is_refused():
-    others = (standard(project_id="p-2"),)
-    ws, requirement, _, before = build_apply_workspace(
-        proposals=(proposal(DEPENDS),), others=others
-    )
+    ws, requirement, _, before = build_apply_workspace(proposals=(proposal(DEPENDS),))
+    ws.requirements[TARGET_ENTITY] = standard(project_id="p-2")
     refused(ws, requirement, before, Code.INVALID_RELATION_TARGET)
 
 
@@ -330,7 +327,11 @@ def test_a_self_relation_is_refused():
 
 def test_one_bad_target_among_good_ones_writes_nothing():
     """The whole preflight completes before the first edge is written."""
-    others = (standard(), standard(OTHER_ID, OTHER_ENTITY))
+    others = (
+        standard(),
+        standard(OTHER_ID, OTHER_ENTITY),
+        standard("SDLC-FR-0404", "std-uuid-404"),
+    )
     proposals = (
         proposal(DEPENDS, TARGET_ID),
         proposal(AFFECTS, OTHER_ID),
@@ -339,6 +340,7 @@ def test_one_bad_target_among_good_ones_writes_nothing():
     ws, requirement, _, before = build_apply_workspace(
         proposals=proposals, others=others
     )
+    del ws.requirements["std-uuid-404"]
     refused(ws, requirement, before, Code.RELATION_TARGET_NOT_FOUND)
     assert ws.depends_on_ids.get(requirement.id, []) == []
     assert ws.affects_ids.get(requirement.id, []) == []
@@ -352,10 +354,11 @@ def test_a_target_lookup_failure_mutates_nothing():
 
 def test_the_ambiguous_target_entity_is_never_the_one_written():
     """Even a lookup returning the right row first is not adopted."""
-    others = (standard(TARGET_ID, "std-uuid-dup"), standard())
-    ws, requirement, _, before = build_apply_workspace(
-        proposals=(proposal(DEPENDS),), others=others
-    )
+    ws, requirement, _, before = build_apply_workspace(proposals=(proposal(DEPENDS),))
+    ws.requirements = {
+        "std-uuid-dup": standard(TARGET_ID, "std-uuid-dup"),
+        **ws.requirements,
+    }
     refused(ws, requirement, before, Code.INVALID_RELATION_TARGET)
     assert OTHER_ENTITY not in json.dumps(ws.depends_on_ids)
 

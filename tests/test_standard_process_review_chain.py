@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from processor_fake import FakeModelRuntime
 from review_fake import review_output, review_results, stored_review
+from sdlc.fibery_workspace import RequirementRecord
 from sdlc.process_result import parse_process_result
 from sdlc.results import StandardProcessResultCode, StandardReviewResultCode
 from sdlc.standard_processor import process_standard_requirement
@@ -29,7 +30,18 @@ RELATION = {
 
 
 def test_process_then_review_leaves_one_of_each_artifact():
-    ws, requirement, _ = build_standard_workspace()
+    target = RequirementRecord(
+        id="std-uuid-2",
+        public_id="2",
+        requirement_id=RELATION["requirement_id"],
+        title="Authentication check",
+        type_name="Standard",
+        state="Applied",
+        revision=1,
+        project_id="p-1",
+        source_fingerprint=None,
+    )
+    ws, requirement, _ = build_standard_workspace(others=[target])
 
     processed = process_standard_requirement(
         ws,
