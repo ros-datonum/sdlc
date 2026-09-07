@@ -150,8 +150,9 @@ Standing items, recorded so they are not mistaken for guarantees:
 - No editing UX or path exists; a human edits the Root Document in Fibery and
   the canonical fingerprints decide whether anything changed.
 - Only the Root Document is bound by Review, Ready and Apply; a normative
-  child edited after Review is not detected (audit finding A5). The proposed
-  contract is `docs/specs/Requirement-Normative-Tree-Binding-v0.1-PROPOSED.md`.
+  child edited after Review is not detected (audit finding A5). The approved,
+  not yet implemented contract is
+  `docs/specs/Requirement-Normative-Tree-Binding-v0.1.md`.
 - Relation removal and replacement semantics are undesigned; Apply is additive
   only.
 - Requirement material revision, update and supersession are undesigned;
