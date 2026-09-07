@@ -30,6 +30,12 @@ Do not expand the implementation scope unless a current approved specification, 
 - `docs/fibery/Fibery-Schema-v0.1.md`
 - `docs/runtime/Local-OAuth-Model-Runtime-Spec-v0.1.md`
 
+Proposed, not yet implemented:
+
+- `docs/specs/Requirement-Normative-Tree-Binding-v0.1-PROPOSED.md` (audit
+  finding A5: normative child Documents reach Process and Review and are
+  bound by Review, Ready and Apply)
+
 ## Running `sdlc project init`
 
 ```bash
