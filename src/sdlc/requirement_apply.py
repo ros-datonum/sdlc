@@ -37,6 +37,12 @@ from sdlc.fibery_workspace import (
     ProjectRecord,
     RequirementRecord,
 )
+from sdlc.normative_tree import (
+    NormativeTree,
+    NormativeTreeError,
+    TreeManifest,
+    read_normative_tree,
+)
 from sdlc.process_result import (
     InvalidProcessResult,
     ProcessResult,
@@ -98,6 +104,7 @@ class _Bindings:
     document_fingerprint: str
     process_iteration: int
     process_output_fingerprint: str
+    tree_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -115,6 +122,7 @@ class _Evidence:
     """The latest artifacts and the current Root content, read fresh."""
 
     root_content: str
+    tree: TreeManifest
     latest_review: ReviewResult
     latest_process: ProcessResult
     confirmed: tuple[Edge, ...]
@@ -125,15 +133,18 @@ class _Evidence:
             document_fingerprint=document_fingerprint(self.root_content),
             process_iteration=self.latest_process.iteration,
             process_output_fingerprint=self.latest_process.output_fingerprint,
+            tree_fingerprint=self.tree.fingerprint,
         )
 
     @property
     def reviewed(self) -> _Bindings:
         review = self.latest_review
+        assert review.reviewed_tree is not None  # _require_tree_evidence
         return _Bindings(
             document_fingerprint=review.reviewed_document_fingerprint,
             process_iteration=review.reviewed_process_iteration,
             process_output_fingerprint=review.reviewed_process_output_fingerprint,
+            tree_fingerprint=review.reviewed_tree.fingerprint,
         )
 
 
@@ -366,13 +377,14 @@ def _read_evidence(
     """
     try:
         children = workspace.child_documents(root.id)
-        root_content = workspace.read_document_content(root.secret or "")
     except FiberyError as error:
         raise _StageFailed(
             ApplyResultCode.FIBERY_READ_FAILED,
             f"Could not read the evidence of {requirement.requirement_id}.",
             (str(error),),
         ) from error
+    tree = _read_tree(workspace, requirement, root)
+    root_content = tree.root.body
     review_node = _latest_artifact(
         children,
         requirement,
@@ -401,12 +413,44 @@ def _read_evidence(
         )
     review, confirmed = _read_review_result(workspace, requirement, *review_node)
     process = _read_process_result(workspace, requirement, *process_node)
-    return _Evidence(
+    evidence = _Evidence(
         root_content=root_content,
+        tree=tree.manifest,
         latest_review=review,
         latest_process=process,
         confirmed=confirmed,
     )
+    _require_tree_evidence(requirement, evidence)
+    return evidence
+
+
+def _read_tree(
+    workspace: ApplyWorkspace, requirement: RequirementRecord, root: DocumentNode
+) -> NormativeTree:
+    try:
+        return read_normative_tree(workspace, requirement, root)
+    except NormativeTreeError as error:
+        raise _StageFailed(
+            ApplyResultCode.FIBERY_READ_FAILED
+            if error.read_failed
+            else ApplyResultCode.NORMATIVE_TREE_INVALID,
+            error.message,
+            error.details,
+        ) from error
+
+
+def _require_tree_evidence(requirement: RequirementRecord, evidence: _Evidence) -> None:
+    """Only tree-bound, coherent evidence may be applied; legacy is history."""
+    process, review = evidence.latest_process, evidence.latest_review
+    if not process.is_tree_bound or not review.is_tree_bound:
+        raise _StageFailed(
+            ApplyResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
+            f"{requirement.requirement_id} has only legacy Root-only evidence "
+            f"(Process Result {process.iteration} tree-bound: {process.is_tree_bound}, "
+            f"Review Result {review.iteration} tree-bound: {review.is_tree_bound}); "
+            "application needs tree-bound Process and Review evidence. Nothing "
+            "was written.",
+        )
 
 
 def _latest_artifact(
@@ -557,15 +601,22 @@ def _read_process_result(
 
 def _check_bindings(requirement: RequirementRecord, evidence: _Evidence) -> None:
     """The application must apply to exactly what the latest review certified."""
-    if evidence.current == evidence.reviewed:
-        return
-    raise _StageFailed(
-        ApplyResultCode.REVIEW_RESULT_STALE,
-        f"{requirement.requirement_id} no longer matches what Review Result "
-        f"{evidence.latest_review.iteration} reviewed; applying it would "
-        "make content nobody reviewed canonical.",
-        _describe_drift(evidence.reviewed, evidence.current),
-    )
+    if evidence.current != evidence.reviewed:
+        raise _StageFailed(
+            ApplyResultCode.REVIEW_RESULT_STALE,
+            f"{requirement.requirement_id} no longer matches what Review Result "
+            f"{evidence.latest_review.iteration} reviewed; applying it would "
+            "make content nobody reviewed canonical.",
+            _describe_drift(evidence.reviewed, evidence.current),
+        )
+    process, review = evidence.latest_process, evidence.latest_review
+    if review.reviewed_tree.fingerprint != process.output_tree.fingerprint:
+        raise _StageFailed(
+            ApplyResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
+            f"Review Result {review.iteration} of {requirement.requirement_id} does "
+            f"not review the intended output tree of Process Result "
+            f"{process.iteration}; the evidence is incoherent. Nothing was written.",
+        )
 
 
 def _recheck_bindings(
@@ -582,13 +633,14 @@ def _recheck_bindings(
     """
     try:
         children = workspace.child_documents(root.id)
-        current_content = workspace.read_document_content(root.secret or "")
     except FiberyError as error:
         raise _StageFailed(
             ApplyResultCode.FIBERY_READ_FAILED,
             "Could not re-read the Requirement before a normative write.",
             (str(error),),
         ) from error
+    tree = _read_tree(workspace, requirement, root)
+    current_content = tree.root.body
     process_node = _latest_artifact(
         children,
         requirement,
@@ -607,6 +659,7 @@ def _recheck_bindings(
         requirement,
         _Evidence(
             root_content=current_content,
+            tree=tree.manifest,
             latest_review=evidence.latest_review,
             latest_process=process,
             confirmed=evidence.confirmed,
@@ -618,6 +671,8 @@ def _describe_drift(reviewed: _Bindings, current: _Bindings) -> tuple[str, ...]:
     drift = []
     if reviewed.document_fingerprint != current.document_fingerprint:
         drift.append("The Root Document was edited after the review.")
+    elif reviewed.tree_fingerprint != current.tree_fingerprint:
+        drift.append("A normative child Document changed after the review.")
     if reviewed.process_iteration != current.process_iteration:
         drift.append(
             f"Process ran again: iteration {current.process_iteration} now "

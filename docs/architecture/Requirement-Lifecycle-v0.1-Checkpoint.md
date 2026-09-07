@@ -149,10 +149,12 @@ Standing items, recorded so they are not mistaken for guarantees:
   structural, not model-diverse.
 - No editing UX or path exists; a human edits the Root Document in Fibery and
   the canonical fingerprints decide whether anything changed.
-- Only the Root Document is bound by Review, Ready and Apply; a normative
-  child edited after Review is not detected (audit finding A5). The approved,
-  not yet implemented contract is
-  `docs/specs/Requirement-Normative-Tree-Binding-v0.1.md`.
+- The normative tree (Root plus normative descendants) is what Process reads,
+  Review certifies and Ready and Apply bind, per
+  `docs/specs/Requirement-Normative-Tree-Binding-v0.1.md` (audit finding A5).
+  Legacy Root-only Process and Review Results stay as history: never replayed,
+  never certified, never applied; Process runs a fresh tree-bound iteration
+  over them.
 - Relation removal and replacement semantics are undesigned; Apply is additive
   only.
 - Requirement material revision, update and supersession are undesigned;

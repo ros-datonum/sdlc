@@ -12,6 +12,7 @@ import json
 import pytest
 
 from review_fake import confirm, finding, new_finding, reject, review_output
+from sdlc.normative_tree import TreeEntry, TreeManifest
 from sdlc.review_result import (
     InvalidReviewResult,
     build_review_result,
@@ -38,6 +39,22 @@ def build(text=None, findings=(), relations=(), iteration=1, **bindings):
         reviewed_process_iteration=bindings.get("process_iteration", 1),
         reviewed_process_output_fingerprint=bindings.get("process_output", "out-fp"),
         review=review,
+        reviewed_tree=root_only_manifest(bindings.get("document", "doc-fp")),
+    )
+
+
+def root_only_manifest(root_fingerprint, root_id="root-doc"):
+    return TreeManifest(
+        requirement_id=REQUIREMENT_ID,
+        root_document_id=root_id,
+        entries=(
+            TreeEntry(
+                document_id=root_id,
+                parent_document_id=None,
+                name="Root",
+                content_fingerprint=root_fingerprint,
+            ),
+        ),
     )
 
 
@@ -199,6 +216,7 @@ def test_no_chain_of_thought_field_exists_in_the_payload():
         "reviewed_document_fingerprint",
         "reviewed_process_iteration",
         "reviewed_process_output_fingerprint",
+        "reviewed_normative_tree",
         "derived_verdict",
         "process_finding_verifications",
         "relation_proposal_verifications",
@@ -223,7 +241,7 @@ def test_invalid_json_is_rejected():
 
 def test_an_unsupported_version_is_rejected():
     result = build()
-    tampered = render_review_result(result).replace('"0.1"', '"0.2"', 1)
+    tampered = render_review_result(result).replace('"0.2"', '"9.9"', 1)
     with pytest.raises(InvalidReviewResult, match="is not supported"):
         parse_review_result(tampered)
 

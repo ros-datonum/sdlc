@@ -100,6 +100,7 @@ def build_review_prompt(
     requirement: RequirementRecord,
     project_name: str,
     root_content: str,
+    child_content: str,
     process_result: ProcessResult,
     relations: RequirementRelations,
     comparison: ComparisonContext,
@@ -117,6 +118,8 @@ def build_review_prompt(
             "# Current Requirement document",
             root_content or "(empty)",
             "",
+            _section("Normative child documents", child_content),
+            "",
             _findings_section(process_result),
             "",
             _relations_section(process_result),
@@ -133,6 +136,10 @@ def build_review_prompt(
         ]
     )
     return INSTRUCTIONS, context
+
+
+def _section(heading: str, body: str) -> str:
+    return f"# {heading}\n{body}" if body.strip() else f"# {heading}\n(none)"
 
 
 def _findings_section(result: ProcessResult) -> str:

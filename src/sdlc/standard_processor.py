@@ -37,6 +37,14 @@ from sdlc.fibery_workspace import (
     RequirementRecord,
 )
 from sdlc.model_runtime import ModelRuntime, ModelRuntimeError
+from sdlc.normative_tree import (
+    NormativeTree,
+    NormativeTreeError,
+    TreeManifest,
+    describe_drift,
+    read_normative_tree,
+    render_descendants,
+)
 from sdlc.process_result import (
     FIRST_ITERATION,
     InvalidProcessResult,
@@ -107,6 +115,7 @@ class _Observed:
     requirement: RequirementRecord | None
     attached: tuple[DocumentNode, ...]
     root_content: str | None
+    tree: TreeManifest | None
 
 
 @dataclass(frozen=True)
@@ -118,7 +127,7 @@ class _Context:
     root_document: DocumentNode
     root_content: str
     input_fingerprint: str
-    child_content: str
+    tree: NormativeTree
     raw_ancestry: str
     existing_standards: tuple[RequirementRecord, ...]
     results: tuple[tuple[DocumentNode, ProcessResult], ...]
@@ -133,6 +142,15 @@ class _Context:
     @property
     def next_iteration(self) -> int:
         return self.latest[1].iteration + 1 if self.latest else FIRST_ITERATION
+
+    @property
+    def input_tree(self) -> TreeManifest:
+        return self.tree.manifest
+
+    @property
+    def upgrades_legacy(self) -> bool:
+        """Whether the latest Process Result binds no tree (a 0.1 artifact)."""
+        return self.latest is not None and not self.latest[1].is_tree_bound
 
 
 def process_standard_requirement(
@@ -177,9 +195,17 @@ def process_standard_requirement(
     except _StageFailed as failure:
         return _failure_result(failure, journal)
 
+    upgrade = (
+        f" Legacy Root-only Process Result {context.latest[1].iteration} was left "
+        "as history; this iteration binds the normative tree."
+        if context.upgrades_legacy
+        else ""
+    )
     return StandardProcessResult(
         code=StandardProcessResultCode.REQUIREMENT_PROCESSED,
-        message=(f"{result.requirement_id} processed, iteration {result.iteration}."),
+        message=(
+            f"{result.requirement_id} processed, iteration {result.iteration}.{upgrade}"
+        ),
         requirement_id=result.requirement_id,
         iteration=result.iteration,
         findings=tuple(
@@ -311,17 +337,9 @@ def _load_context(
         )
 
     root = attached[0]
-    results, child_content, shell = _read_children(
-        workspace, requirement, root, recovering
-    )
-    try:
-        root_content = workspace.read_document_content(root.secret or "")
-    except FiberyError as error:
-        raise _StageFailed(
-            StandardProcessResultCode.FIBERY_READ_FAILED,
-            "Could not read the Root Document.",
-            (str(error),),
-        ) from error
+    tree = _read_tree(workspace, requirement, root, "loading the Requirement")
+    results, shell = _read_children(workspace, requirement, root, recovering)
+    root_content = tree.root.body
 
     return _Context(
         requirement=requirement,
@@ -329,7 +347,7 @@ def _load_context(
         root_document=root,
         root_content=root_content,
         input_fingerprint=document_fingerprint(root_content),
-        child_content=child_content,
+        tree=tree,
         raw_ancestry=_read_raw_ancestry(workspace, requirement),
         existing_standards=tuple(
             record for record in standards if record.id != requirement.id
@@ -339,6 +357,25 @@ def _load_context(
     )
 
 
+def _read_tree(
+    workspace: RawProcessorWorkspace,
+    requirement: RequirementRecord,
+    root: DocumentNode,
+    stage: str,
+) -> NormativeTree:
+    """The complete normative tree, or an explicit refusal; never a partial one."""
+    try:
+        return read_normative_tree(workspace, requirement, root)
+    except NormativeTreeError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.FIBERY_READ_FAILED
+            if error.read_failed
+            else StandardProcessResultCode.NORMATIVE_TREE_INVALID,
+            f"{error.message} ({stage})",
+            error.details,
+        ) from error
+
+
 def _read_children(
     workspace: RawProcessorWorkspace,
     requirement: RequirementRecord,
@@ -346,14 +383,13 @@ def _read_children(
     recovering: str | None = None,
 ) -> tuple[
     tuple[tuple[DocumentNode, ProcessResult], ...],
-    str,
     tuple[DocumentNode, int] | None,
 ]:
-    """Split the Root Document's children into Process Results and source.
+    """Read the Process Result history from the Root's direct children.
 
-    A previous Process Result is this processor's own output and must never be
-    fed back to the model as requirement content. When `recovering` names a
-    child, that child must be an empty Process Result shell of this
+    Normative content is the normative tree's business; this reads only the
+    artifacts this processor and the reviewer wrote. When `recovering` names
+    a child, that child must be an empty Process Result shell of this
     Requirement reserving the next iteration; it is returned separately and is
     not parsed as history.
     """
@@ -368,7 +404,6 @@ def _read_children(
 
     results: list[tuple[DocumentNode, ProcessResult]] = []
     seen_iterations: dict[int, str] = {}
-    sections: list[str] = []
     reviews: list[DocumentNode] = []
     shell: tuple[DocumentNode, int] | None = None
     if recovering is not None:
@@ -379,17 +414,6 @@ def _read_children(
             continue
         parsed_name = parse_process_result_name(child.name)
         if parsed_name is None or parsed_name[0] != requirement.requirement_id:
-            try:
-                sections.append(
-                    f"<!-- document: {child.name} -->\n"
-                    + workspace.read_document_content(child.secret or "")
-                )
-            except FiberyError as error:
-                raise _StageFailed(
-                    StandardProcessResultCode.FIBERY_READ_FAILED,
-                    f"Could not read the child Document {child.name!r}.",
-                    (str(error),),
-                ) from error
             continue
 
         iteration = parsed_name[1]
@@ -413,7 +437,7 @@ def _read_children(
         _check_shell_is_terminal(
             workspace, requirement, recovering, shell, results, reviews
         )
-    return tuple(results), "\n\n".join(sections), shell
+    return tuple(results), shell
 
 
 def _require_named_artifact(
@@ -618,16 +642,24 @@ def _resumable_result(context: _Context) -> ProcessResult | None:
     if latest is None:
         return None
     result = latest[1]
-    if context.input_fingerprint == result.output_fingerprint:
+    if not result.is_tree_bound:
+        # A legacy 0.1 result binds no tree, so its output cannot be replayed
+        # safely: the children it was produced over are unknown. A fresh
+        # iteration over the current tree is required instead.
         return None
-    return result if context.input_fingerprint == result.input_fingerprint else None
+    current = context.input_tree.fingerprint
+    if current == result.output_tree.fingerprint:
+        return None
+    return result if current == result.input_tree.fingerprint else None
 
 
 def _is_unchanged(context: _Context) -> bool:
-    """Whether the Root Document still matches the last applied output."""
+    """Whether the normative tree still matches the last applied output."""
     latest = context.latest
     return (
-        latest is not None and context.input_fingerprint == latest[1].output_fingerprint
+        latest is not None
+        and latest[1].is_tree_bound
+        and context.input_tree.fingerprint == latest[1].output_tree.fingerprint
     )
 
 
@@ -645,11 +677,6 @@ def _observe(
             workspace.documents_attached_to_requirement(requirement.public_id)
         )
         root = next((d for d in attached if d.id == context.root_document.id), None)
-        content = (
-            workspace.read_document_content(root.secret or "")
-            if root is not None
-            else None
-        )
     except FiberyError as error:
         raise _StageFailed(
             StandardProcessResultCode.FIBERY_READ_FAILED,
@@ -657,7 +684,19 @@ def _observe(
             "to write without a fresh read.",
             (str(error),),
         ) from error
-    return _Observed(requirement=current, attached=attached, root_content=content)
+    if root is None:
+        return _Observed(
+            requirement=current, attached=attached, root_content=None, tree=None
+        )
+    # The tree is traversed afresh from the current attachment: added, removed,
+    # re-parented or edited children are visible, not only the captured ones.
+    tree = _read_tree(workspace, requirement, root, stage)
+    return _Observed(
+        requirement=current,
+        attached=attached,
+        root_content=tree.root.body,
+        tree=tree.manifest,
+    )
 
 
 def _require_unchanged(
@@ -665,17 +704,21 @@ def _require_unchanged(
     context: _Context,
     expected_content: str,
     stage: str,
+    expected_tree: TreeManifest,
 ) -> None:
     """Refuse the next write unless the target still matches this invocation.
 
     Protected: the entity itself, its Requirement ID, Title, Project, Revision
     and public id, Type Standard, State Process, exactly one attached Root
-    Document with the same identity, secret and Folder, and Root content
-    canonically equivalent to `expected_content`.
+    Document with the same identity, secret and Folder, Root content
+    canonically equivalent to `expected_content`, and the freshly traversed
+    normative tree equal to `expected_tree`.
     """
     observed = _observe(workspace, context, stage)
-    drift = _identity_drift(context, observed) + _root_drift(
-        context, observed, expected_content
+    drift = (
+        _identity_drift(context, observed)
+        + _root_drift(context, observed, expected_content)
+        + _tree_drift(observed, expected_tree)
     )
     if not drift:
         return
@@ -710,6 +753,12 @@ def _identity_drift(context: _Context, observed: _Observed) -> list[str]:
         if before != after
     )
     return drift
+
+
+def _tree_drift(observed: _Observed, expected_tree: TreeManifest) -> list[str]:
+    if observed.tree is None:
+        return []  # the Root itself drifted; _root_drift already says so
+    return list(describe_drift(expected_tree, observed.tree))
 
 
 def _root_drift(
@@ -751,11 +800,16 @@ def _produce_result(
         iteration=context.next_iteration,
         input_fingerprint=context.input_fingerprint,
         analysis=_analyze(workspace, model, context, journal),
+        input_tree=context.input_tree,
     )
     # The model reasoned over the captured input; persist only if it is still
     # the input. A stale output is dropped, never recorded as an iteration.
     _require_unchanged(
-        workspace, context, context.root_content, "while the model was running"
+        workspace,
+        context,
+        context.root_content,
+        "while the model was running",
+        context.input_tree,
     )
     _persist_result(workspace, context, result, journal)
     return result
@@ -780,9 +834,14 @@ def _recover_result(
         iteration=iteration,
         input_fingerprint=context.input_fingerprint,
         analysis=_analyze(workspace, model, context, journal),
+        input_tree=context.input_tree,
     )
     _require_unchanged(
-        workspace, context, context.root_content, "while the model was running"
+        workspace,
+        context,
+        context.root_content,
+        "while the model was running",
+        context.input_tree,
     )
     current = _current_shell(workspace, context, shell, iteration)
     _store_result(workspace, current, result, journal)
@@ -804,7 +863,7 @@ def _analyze(
         requirement=context.requirement,
         project_name=context.project.name,
         root_content=context.root_content,
-        child_content=context.child_content,
+        child_content=render_descendants(context.tree),
         raw_ancestry=context.raw_ancestry,
         comparison=_comparison_context(workspace, context),
     )
@@ -966,6 +1025,8 @@ def _store_result(
         read_back.iteration != result.iteration
         or read_back.requirement_id != result.requirement_id
         or read_back.input_fingerprint != result.input_fingerprint
+        or read_back.input_tree != result.input_tree
+        or read_back.output_tree != result.output_tree
     ):
         raise _StageFailed(
             StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,
@@ -990,9 +1051,14 @@ def _apply_document(
             f"The Root Document of {result.requirement_id} exposes no secret.",
         )
     # Persisting the result took time too. Re-read immediately before the
-    # rewrite, for a new iteration and for a resumed one alike.
+    # rewrite, for a new iteration and for a resumed one alike; the input
+    # tree the iteration consumed must still be the tree.
     _require_unchanged(
-        workspace, context, context.root_content, "before the Root Document rewrite"
+        workspace,
+        context,
+        context.root_content,
+        "before the Root Document rewrite",
+        result.input_tree or context.input_tree,
     )
     try:
         workspace.write_document_content(document.secret, expected)
@@ -1032,6 +1098,7 @@ def _transition_to_review(
         context,
         result.normalized.document(result.requirement_id),
         "after the Root Document rewrite",
+        result.output_tree or context.input_tree,
     )
     try:
         workspace.set_requirement_state(requirement.id, REVIEW_STATE)

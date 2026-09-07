@@ -1,9 +1,9 @@
 # Requirement Normative Tree Binding v0.1
 
 **Status:** approved design contract for audit finding A5, with the decisions
-recorded in section 13. Not yet implemented: nothing in this document changes
-running code, persisted artifacts or the Fibery schema until implemented under
-its own review.
+recorded in section 13. Implemented in `src/sdlc/normative_tree.py`, Process
+Result 0.2, Review Result 0.2 and the Standard Process, Review, Ready and Apply
+stages; the Fibery schema is unchanged.
 
 ## 1. The defect, as verified in the merged repository
 

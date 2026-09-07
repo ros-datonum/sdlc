@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from processor_fake import FakeModelRuntime
 from review_fake import (
+    add_process_iteration,
     build_review_workspace,
     confirm,
     finding,
@@ -18,11 +19,11 @@ from review_fake import (
     review_results,
     root_fingerprint,
     stored_review,
+    tree_bound_process_result,
     verify_relation,
 )
 from sdlc.fibery_workspace import DocumentNode, FiberyError
 from sdlc.process_result import (
-    build_process_result,
     process_result_name,
     render_process_result,
 )
@@ -38,34 +39,6 @@ REQUIREMENT_ID = "SDLC-FR-0031"
 def run(ws, requirement, responses=None):
     model = FakeModelRuntime(responses=responses or [review_output()])
     return review_standard_requirement(ws, model, requirement.id), model
-
-
-def add_process_iteration(ws, root, iteration, title="Rewritten"):
-    """Append a later Process Result, as a second Process run would."""
-    result = build_process_result(
-        requirement_id=REQUIREMENT_ID,
-        iteration=iteration,
-        input_fingerprint=f"input-{iteration}",
-        analysis=AnalysisResult(
-            normalized=NormalizedRequirement(**normalized(title=title)),
-            analysis={},
-            findings=(),
-            proposed_relations=(),
-        ),
-    )
-    secret = f"process-secret-{iteration}"
-    ws.documents.append(
-        DocumentNode(
-            id=f"process-doc-{iteration}",
-            name=process_result_name(REQUIREMENT_ID, iteration),
-            folder_id=None,
-            entity_public_id=None,
-            secret=secret,
-            parent_document_id=root.id,
-        )
-    )
-    ws.content[secret] = render_process_result(result)
-    return result
 
 
 # -- identical re-entry -----------------------------------------------------
@@ -125,11 +98,30 @@ def test_no_changes_still_reports_the_standing_verdict():
 # -- new iterations ---------------------------------------------------------
 
 
-def test_an_edited_document_starts_a_new_review_iteration():
+def test_an_edited_document_requires_process_before_another_review():
+    """A Root edited after Process is a tree Process never produced; Review
+    certifies Process evidence, so it refuses until Process runs again."""
     ws, requirement, root, _ = build_review_workspace()
     run(ws, requirement)
     set_state(ws, requirement, "Review")
     ws.content[root.secret] += "\n## Extra\n\nAdded by a human.\n"
+
+    result, model = run(ws, requirement)
+    assert result.code is Code.NORMATIVE_TREE_EVIDENCE_REQUIRED
+    assert "run Process again" in result.message
+    assert not model.was_invoked
+    assert [d.name for d in review_results(ws)] == [
+        review_result_name(REQUIREMENT_ID, 1),
+    ]
+    assert ws.requirements[requirement.id].state == "Review"
+
+
+def test_a_second_process_run_starts_a_new_review_iteration():
+    ws, requirement, root, _ = build_review_workspace()
+    run(ws, requirement)
+    set_state(ws, requirement, "Review")
+    ws.content[root.secret] += "\n## Extra\n\nAdded by a human.\n"
+    add_process_iteration(ws, root, 2)
 
     result, model = run(ws, requirement)
     assert result.code is Code.REQUIREMENT_REVIEWED
@@ -160,7 +152,7 @@ def test_earlier_review_results_are_never_modified():
     before = ws.content[first.secret]
 
     set_state(ws, requirement, "Review")
-    ws.content[root.secret] += "\nEdited.\n"
+    add_process_iteration(ws, root, 2)
     run(ws, requirement)
     assert ws.content[first.secret] == before
     assert len(review_results(ws)) == 2
@@ -171,7 +163,7 @@ def test_revision_is_unchanged_across_a_second_iteration():
     before = ws.requirements[requirement.id].revision
     run(ws, requirement)
     set_state(ws, requirement, "Review")
-    ws.content[root.secret] += "\nEdited.\n"
+    add_process_iteration(ws, root, 2)
     run(ws, requirement)
     assert ws.requirements[requirement.id].revision == before
 
@@ -246,17 +238,18 @@ def test_a_new_process_iteration_during_review_is_stale():
 class RewritesProcessOutputDuringReview:
     """The same iteration number, a different output fingerprint."""
 
-    def __init__(self, ws, response):
+    def __init__(self, ws, root, response):
         self.ws = ws
+        self.root = root
         self.response = response
         self.calls = []
 
     def run(self, prompt, context=""):
         self.calls.append({"prompt": prompt, "context": context})
-        result = build_process_result(
-            requirement_id=REQUIREMENT_ID,
+        result = tree_bound_process_result(
+            self.ws,
+            self.root,
             iteration=1,
-            input_fingerprint="input-1",
             analysis=AnalysisResult(
                 normalized=NormalizedRequirement(**normalized(title="Different")),
                 analysis={},
@@ -275,8 +268,8 @@ class RewritesProcessOutputDuringReview:
 
 
 def test_a_changed_process_output_fingerprint_is_stale():
-    ws, requirement, _, _ = build_review_workspace()
-    model = RewritesProcessOutputDuringReview(ws, review_output())
+    ws, requirement, root, _ = build_review_workspace()
+    model = RewritesProcessOutputDuringReview(ws, root, review_output())
     result = review_standard_requirement(ws, model, requirement.id)
 
     assert result.code is Code.REVIEW_RESULT_STALE
@@ -322,11 +315,15 @@ def test_a_stale_result_does_not_call_the_model_again():
 
 
 def test_the_next_run_reviews_the_new_state_as_a_fresh_iteration():
-    """Recovery from staleness is a normal new iteration, not a repair."""
+    """Recovery from staleness is Process over the new state and then a
+    normal new review iteration, not a repair of the stale one."""
     ws, requirement, root, _ = build_review_workspace()
     review_standard_requirement(
         ws, EditsDocumentAfterReview(ws, root, review_output()), requirement.id
     )
+    refused, _ = run(ws, requirement)
+    assert refused.code is Code.NORMATIVE_TREE_EVIDENCE_REQUIRED
+    add_process_iteration(ws, root, 2)
     result, _ = run(ws, requirement)
     assert result.code is Code.REQUIREMENT_REVIEWED
     assert result.iteration == 2

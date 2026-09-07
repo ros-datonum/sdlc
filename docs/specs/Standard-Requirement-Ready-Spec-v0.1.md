@@ -86,6 +86,7 @@ the latest valid Review Result
   + its reviewed_document_fingerprint
   + its reviewed_process_iteration
   + its reviewed_process_output_fingerprint
+  + its reviewed_normative_tree (Requirement-Normative-Tree-Binding-v0.1)
 ```
 
 Ready Decision validates those bindings immediately before `Ready -> Apply`
@@ -149,13 +150,20 @@ passed**.
       == Review Result.reviewed_process_iteration
 9.  that Process Result's output_fingerprint
       == Review Result.reviewed_process_output_fingerprint
+9a. the Process Result and the Review Result are tree-bound (0.2) and the
+      Review Result's reviewed_normative_tree is the Process Result's
+      normative_output_tree; otherwise NORMATIVE_TREE_EVIDENCE_REQUIRED
+9b. the current normative tree, traversed afresh, has the fingerprint of
+      Review Result.reviewed_normative_tree
 10. the verdict acknowledgement policy is satisfied         (section 9)
 ```
 
-Checks 7-9 are the same three bindings the frozen Reviewer re-checks before its
-own transition, applied here at approval time. Reusing them exactly is
+Checks 7-9b are the same four bindings the frozen Reviewer re-checks before
+its own transition, applied here at approval time. Reusing them exactly is
 deliberate: approval and review must mean the same thing by "the reviewed state",
-or one of them is certifying something the other did not.
+or one of them is certifying something the other did not. Legacy Root-only
+evidence proves nothing about the children, whether or not the Requirement has
+any today, so it is refused rather than approved; REWORK stays available.
 
 Fingerprints use the frozen `canonical_markdown` representation, so Fibery's
 Markdown re-serialization never registers as a change.
@@ -291,6 +299,8 @@ Any mismatch in:
 
 ```text
 current Root Document canonical fingerprint
+current normative tree fingerprint (a child edited, added, removed, renamed
+  or re-parented after the review)
 current latest Process Result iteration
 current latest Process Result output fingerprint
 ```
@@ -486,6 +496,9 @@ Before any normative mutation it must revalidate the reviewed bindings:
     == ...reviewed_process_iteration
   that Process Result's output_fingerprint
     == ...reviewed_process_output_fingerprint
+  current normative tree fingerprint
+    == ...reviewed_normative_tree fingerprint
+  both artifacts tree-bound and coherent, else NORMATIVE_TREE_EVIDENCE_REQUIRED
 ```
 
 This invariant is what makes the state-only approval model sound (section 5) and
@@ -668,8 +681,11 @@ the same for the REWORK transition
 
 ```text
 Root Document fingerprint changed after review  -> REVIEW_RESULT_STALE
+normative child changed after review            -> REVIEW_RESULT_STALE
 latest Process iteration changed                -> REVIEW_RESULT_STALE
 Process output fingerprint changed              -> REVIEW_RESULT_STALE
+legacy 0.1 Process or Review Result             -> NORMATIVE_TREE_EVIDENCE_REQUIRED
+foreign or misplaced artifact under the Root    -> NORMATIVE_TREE_INVALID
 malformed latest Review Result                  -> INVALID_REVIEW_RESULT
 unsupported Review Result version               -> INVALID_REVIEW_RESULT
 duplicate Review Result iteration               -> REVIEW_STATE_CONFLICT

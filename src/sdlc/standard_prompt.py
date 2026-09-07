@@ -95,7 +95,7 @@ def build_analysis_prompt(
             "# Current Requirement document",
             root_content or "(empty)",
             "",
-            _section("Additional child documents", child_content),
+            _section("Normative child documents", child_content),
             "",
             _section("Originating RAW requirement source", raw_ancestry),
             "",

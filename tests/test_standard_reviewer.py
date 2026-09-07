@@ -11,6 +11,7 @@ import pytest
 
 from processor_fake import FakeModelRuntime
 from review_fake import (
+    add_process_iteration,
     build_review_workspace,
     confirm,
     finding,
@@ -259,9 +260,11 @@ def test_a_previous_review_is_never_shown_to_the_reviewer():
     """A reviewer must not anchor on its own earlier verdict."""
     ws, requirement, root, _ = build_review_workspace()
     run(ws, requirement, [review_output()])
-    # A human returns it and edits the document, so a second iteration runs.
+    # A human returns it, edits the document and Process runs again, so a
+    # second review iteration runs.
     set_state(ws, requirement, "Review")
     ws.content[root.secret] = ws.content[root.secret] + "\nEdited.\n"
+    add_process_iteration(ws, root, 2)
     _, model = run(ws, requirement, [review_output()])
     assert "Review Result" not in model.calls[0]["context"]
     assert "PASS" not in model.calls[0]["context"]

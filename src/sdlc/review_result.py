@@ -21,6 +21,7 @@ import json
 import re
 from dataclasses import dataclass
 
+from sdlc.normative_tree import InvalidTreeManifest, TreeManifest
 from sdlc.standard_analysis import FindingKind, RelationKind
 from sdlc.standard_review import (
     FindingVerification,
@@ -33,7 +34,13 @@ from sdlc.standard_review import (
     derive_verdict,
 )
 
-REVIEW_RESULT_VERSION = "0.1"
+# 0.2 binds the normative tree (Requirement-Normative-Tree-Binding-v0.1); 0.1
+# is the legacy Root-only binding, still readable as history, never written.
+REVIEW_RESULT_VERSION = "0.2"
+LEGACY_REVIEW_RESULT_VERSION = "0.1"
+SUPPORTED_REVIEW_RESULT_VERSIONS = frozenset(
+    {REVIEW_RESULT_VERSION, LEGACY_REVIEW_RESULT_VERSION}
+)
 REVIEW_RESULT_SUFFIX = "Review Result"
 ITERATION_WIDTH = 4
 FIRST_ITERATION = 1
@@ -50,6 +57,7 @@ REQUIREMENT_ID_KEY = "requirement_id"
 DOCUMENT_FINGERPRINT_KEY = "reviewed_document_fingerprint"
 PROCESS_ITERATION_KEY = "reviewed_process_iteration"
 PROCESS_FINGERPRINT_KEY = "reviewed_process_output_fingerprint"
+REVIEWED_TREE_KEY = "reviewed_normative_tree"
 VERDICT_KEY = "derived_verdict"
 FINDING_VERIFICATIONS_KEY = "process_finding_verifications"
 RELATION_VERIFICATIONS_KEY = "relation_proposal_verifications"
@@ -90,10 +98,22 @@ class ReviewResult:
     new_findings: tuple[NewFinding, ...]
     assessment: dict[str, str]
     version: str = REVIEW_RESULT_VERSION
+    # The normative tree this review actually saw. None on a legacy 0.1 result.
+    reviewed_tree: TreeManifest | None = None
 
     @property
     def name(self) -> str:
         return review_result_name(self.requirement_id, self.iteration)
+
+    @property
+    def is_tree_bound(self) -> bool:
+        return self.reviewed_tree is not None
+
+    def reviews_tree(self, tree_fingerprint: str) -> bool:
+        return (
+            self.reviewed_tree is not None
+            and self.reviewed_tree.fingerprint == tree_fingerprint
+        )
 
     @property
     def confirmed_relations(self) -> tuple[RelationVerification, ...]:
@@ -124,8 +144,14 @@ def build_review_result(
     reviewed_process_iteration: int,
     reviewed_process_output_fingerprint: str,
     review: ReviewOutput,
+    reviewed_tree: TreeManifest,
 ) -> ReviewResult:
     """Assemble the artifact, deriving the verdict rather than accepting one."""
+    if reviewed_tree.root_entry.content_fingerprint != reviewed_document_fingerprint:
+        raise InvalidReviewResult(
+            "The reviewed tree's Root fingerprint disagrees with the reviewed "
+            "document fingerprint."
+        )
     return ReviewResult(
         requirement_id=requirement_id,
         iteration=iteration,
@@ -137,6 +163,7 @@ def build_review_result(
         relation_verifications=review.relation_verifications,
         new_findings=review.new_findings,
         assessment=dict(review.assessment),
+        reviewed_tree=reviewed_tree,
     )
 
 
@@ -149,6 +176,12 @@ def render_review_result(result: ReviewResult) -> str:
         DOCUMENT_FINGERPRINT_KEY: result.reviewed_document_fingerprint,
         PROCESS_ITERATION_KEY: result.reviewed_process_iteration,
         PROCESS_FINGERPRINT_KEY: result.reviewed_process_output_fingerprint,
+        **(
+            {REVIEWED_TREE_KEY: result.reviewed_tree.to_payload()}
+            if result.version != LEGACY_REVIEW_RESULT_VERSION
+            and result.reviewed_tree is not None
+            else {}
+        ),
         VERDICT_KEY: result.verdict.value,
         FINDING_VERIFICATIONS_KEY: [
             {
@@ -207,10 +240,10 @@ def parse_review_result(text: str) -> ReviewResult:
     """Read a persisted review back, or refuse to trust it."""
     payload = _read_payload(text)
     version = payload.get(VERSION_KEY)
-    if version != REVIEW_RESULT_VERSION:
+    if version not in SUPPORTED_REVIEW_RESULT_VERSIONS:
         raise InvalidReviewResult(
             f"Review Result version {version!r} is not supported; this reviewer "
-            f"reads {REVIEW_RESULT_VERSION!r}."
+            f"reads {sorted(SUPPORTED_REVIEW_RESULT_VERSIONS)!r}."
         )
     iteration = _require_iteration(payload.get(ITERATION_KEY), "iteration")
     verifications = tuple(
@@ -231,12 +264,17 @@ def parse_review_result(text: str) -> ReviewResult:
             f"which derive {recalculated.value}."
         )
 
+    requirement_id = _require_text(payload.get(REQUIREMENT_ID_KEY), "requirement_id")
+    reviewed_document = _require_text(
+        payload.get(DOCUMENT_FINGERPRINT_KEY), DOCUMENT_FINGERPRINT_KEY
+    )
+    reviewed_tree = _read_reviewed_tree(
+        payload, version, requirement_id, reviewed_document
+    )
     return ReviewResult(
-        requirement_id=_require_text(payload.get(REQUIREMENT_ID_KEY), "requirement_id"),
+        requirement_id=requirement_id,
         iteration=iteration,
-        reviewed_document_fingerprint=_require_text(
-            payload.get(DOCUMENT_FINGERPRINT_KEY), DOCUMENT_FINGERPRINT_KEY
-        ),
+        reviewed_document_fingerprint=reviewed_document,
         reviewed_process_iteration=_require_iteration(
             payload.get(PROCESS_ITERATION_KEY), PROCESS_ITERATION_KEY
         ),
@@ -252,7 +290,38 @@ def parse_review_result(text: str) -> ReviewResult:
         new_findings=new_findings,
         assessment=dict(payload.get(ASSESSMENT_KEY) or {}),
         version=version,
+        reviewed_tree=reviewed_tree,
     )
+
+
+def _read_reviewed_tree(
+    payload: dict[str, object],
+    version: str,
+    requirement_id: str,
+    reviewed_document: str,
+) -> TreeManifest | None:
+    """The 0.2 tree binding; none for 0.1, and none ever synthesized."""
+    if version == LEGACY_REVIEW_RESULT_VERSION:
+        if REVIEWED_TREE_KEY in payload:
+            raise InvalidReviewResult(
+                "A 0.1 Review Result cannot carry a normative tree binding."
+            )
+        return None
+    try:
+        tree = TreeManifest.from_payload(payload.get(REVIEWED_TREE_KEY))
+    except InvalidTreeManifest as error:
+        raise InvalidReviewResult(f"Invalid normative tree binding: {error}") from error
+    if tree.requirement_id != requirement_id:
+        raise InvalidReviewResult(
+            f"{REVIEWED_TREE_KEY} belongs to {tree.requirement_id!r}, not "
+            f"{requirement_id!r}."
+        )
+    if tree.root_entry.content_fingerprint != reviewed_document:
+        raise InvalidReviewResult(
+            f"{REVIEWED_TREE_KEY}'s Root entry disagrees with "
+            f"{DOCUMENT_FINGERPRINT_KEY}."
+        )
+    return tree
 
 
 def read_confirmed_relation_mirror(text: str) -> tuple[tuple[RelationKind, str], ...]:

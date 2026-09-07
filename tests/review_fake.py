@@ -6,6 +6,7 @@ import json
 
 from processor_fake import reserialize_like_fibery
 from sdlc.fibery_workspace import DocumentNode, RequirementRecord
+from sdlc.normative_tree import TreeManifest, read_normative_tree
 from sdlc.process_result import (
     build_process_result,
     document_fingerprint,
@@ -24,6 +25,35 @@ from sdlc.standard_analysis import (
 from standard_fake import REQUIREMENT_ID, build_standard_workspace, normalized
 
 PROCESS_SECRET = "process-secret"
+
+
+def tree_manifest(ws, root, requirement_id=REQUIREMENT_ID):
+    """The current normative-tree manifest of the fixture Requirement."""
+    requirement = next(
+        r for r in ws.requirements.values() if r.requirement_id == requirement_id
+    )
+    return read_normative_tree(ws, requirement, root).manifest
+
+
+def tree_bound_process_result(
+    ws, root, iteration, analysis, input_fingerprint=None, requirement_id=None
+):
+    """A Process Result 0.2 over the fixture's current tree.
+
+    Its input tree is the current tree with the Root at the placeholder input
+    fingerprint; its intended output tree is therefore the current tree only
+    when the Root already holds what `analysis` normalizes to.
+    """
+    requirement_id = requirement_id or REQUIREMENT_ID
+    manifest = tree_manifest(ws, root, requirement_id)
+    input_fingerprint = input_fingerprint or f"input-{iteration}"
+    return build_process_result(
+        requirement_id=requirement_id,
+        iteration=iteration,
+        input_fingerprint=input_fingerprint,
+        analysis=analysis,
+        input_tree=manifest.with_root_fingerprint(input_fingerprint),
+    )
 
 
 def build_review_workspace(
@@ -70,10 +100,10 @@ def build_review_workspace(
 
     results = []
     for iteration in range(1, process_iterations + 1):
-        result = build_process_result(
-            requirement_id=REQUIREMENT_ID,
+        result = tree_bound_process_result(
+            ws,
+            root,
             iteration=iteration,
-            input_fingerprint=f"input-{iteration}",
             analysis=AnalysisResult(
                 normalized=NormalizedRequirement(**content),
                 analysis={"clarity": "adequate"},
@@ -95,6 +125,63 @@ def build_review_workspace(
         ws.content[secret] = render_process_result(result)
         results.append(result)
     return ws, requirement, root, results[-1] if results else None
+
+
+def add_process_iteration(
+    ws, root, iteration, title="Rewritten", relations=(), **changes
+):
+    """Append a later Process Result and apply its output to the Root, as a
+    second Process run would; the Root and the tree evidence stay coherent."""
+    analysis = AnalysisResult(
+        normalized=NormalizedRequirement(**normalized(title=title, **changes)),
+        analysis={},
+        findings=(),
+        proposed_relations=tuple(relations),
+    )
+    result = tree_bound_process_result(ws, root, iteration=iteration, analysis=analysis)
+    secret = f"process-secret-{iteration}"
+    ws.documents.append(
+        DocumentNode(
+            id=f"process-doc-{iteration}",
+            name=process_result_name(REQUIREMENT_ID, iteration),
+            folder_id=None,
+            entity_public_id=None,
+            secret=secret,
+            parent_document_id=root.id,
+        )
+    )
+    ws.content[secret] = render_process_result(result)
+    ws.content[root.secret] = result.normalized.document(REQUIREMENT_ID)
+    return result
+
+
+def payload_of(ws, node):
+    """The JSON payload of a persisted artifact and where it sits in the text."""
+    text = ws.content[node.secret]
+    start = text.index("```json\n") + len("```json\n")
+    end = text.index("\n```", start)
+    return json.loads(text[start:end]), start, end
+
+
+def rewrite_payload(ws, node, **changes):
+    """Edit the JSON payload of a persisted artifact in place."""
+    payload, start, end = payload_of(ws, node)
+    payload.update(changes)
+    text = ws.content[node.secret]
+    ws.content[node.secret] = text[:start] + json.dumps(payload, indent=2) + text[end:]
+
+
+def move_process_output(ws, node, fingerprint="moved"):
+    """Rewrite a Process Result so it claims another output, consistently:
+    the output fingerprint and the output tree's Root entry move together."""
+    payload, _, _ = payload_of(ws, node)
+    tree = TreeManifest.from_payload(payload["normative_output_tree"])
+    rewrite_payload(
+        ws,
+        node,
+        output_fingerprint=fingerprint,
+        normative_output_tree=tree.with_root_fingerprint(fingerprint).to_payload(),
+    )
 
 
 def finding(kind=FindingKind.AMBIGUOUS, detail="Unclear scope.", requirement_id=None):

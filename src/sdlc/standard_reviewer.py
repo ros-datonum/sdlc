@@ -39,6 +39,14 @@ from sdlc.fibery_workspace import (
     RequirementRelations,
 )
 from sdlc.model_runtime import ModelRuntime, ModelRuntimeError
+from sdlc.normative_tree import (
+    NormativeTree,
+    NormativeTreeError,
+    TreeManifest,
+    describe_drift,
+    read_normative_tree,
+    render_descendants,
+)
 from sdlc.process_result import (
     InvalidProcessResult,
     ProcessResult,
@@ -111,6 +119,7 @@ class _Bindings:
     document_fingerprint: str
     process_iteration: int
     process_output_fingerprint: str
+    tree_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -121,6 +130,7 @@ class _Context:
     project: ProjectRecord
     root_document: DocumentNode
     root_content: str
+    tree: NormativeTree
     process_result: ProcessResult
     relations: RequirementRelations
     existing_standards: tuple[RequirementRecord, ...]
@@ -135,6 +145,7 @@ class _Context:
             document_fingerprint=document_fingerprint(self.root_content),
             process_iteration=self.process_result.iteration,
             process_output_fingerprint=self.process_result.output_fingerprint,
+            tree_fingerprint=self.tree.manifest.fingerprint,
         )
 
     @property
@@ -179,10 +190,15 @@ def review_standard_requirement(
 def _already_reviewed(context: _Context, bindings: _Bindings) -> bool:
     """Whether the latest review already certifies exactly this input."""
     latest = context.latest_review
-    return latest is not None and latest.reviews(
-        bindings.document_fingerprint,
-        bindings.process_iteration,
-        bindings.process_output_fingerprint,
+    return (
+        latest is not None
+        and latest.is_tree_bound
+        and latest.reviews(
+            bindings.document_fingerprint,
+            bindings.process_iteration,
+            bindings.process_output_fingerprint,
+        )
+        and latest.reviews_tree(bindings.tree_fingerprint)
     )
 
 
@@ -351,20 +367,15 @@ def _load_context(
             f"{requirement.requirement_id} has no Process Result; there is "
             "nothing to review against.",
         )
-    try:
-        root_content = workspace.read_document_content(root.secret or "")
-    except FiberyError as error:
-        raise _StageFailed(
-            StandardReviewResultCode.FIBERY_READ_FAILED,
-            "Could not read the Root Document.",
-            (str(error),),
-        ) from error
+    tree = _read_tree(workspace, requirement, root, "loading the Requirement")
+    _require_tree_evidence(requirement, process_results[-1], tree.manifest)
 
     return _Context(
         requirement=requirement,
         project=project,
         root_document=root,
-        root_content=root_content,
+        root_content=tree.root.body,
+        tree=tree,
         process_result=process_results[-1],
         relations=relations,
         existing_standards=tuple(
@@ -405,6 +416,51 @@ def _load_requirement(
             f"this reviewer handles only {REVIEW_STATE!r}.",
         )
     return requirement
+
+
+def _read_tree(
+    workspace: RawProcessorWorkspace,
+    requirement: RequirementRecord,
+    root: DocumentNode,
+    stage: str,
+) -> NormativeTree:
+    """The complete normative tree, or an explicit refusal; never a partial one."""
+    try:
+        return read_normative_tree(workspace, requirement, root)
+    except NormativeTreeError as error:
+        raise _StageFailed(
+            StandardReviewResultCode.FIBERY_READ_FAILED
+            if error.read_failed
+            else StandardReviewResultCode.NORMATIVE_TREE_INVALID,
+            f"{error.message} ({stage})",
+            error.details,
+        ) from error
+
+
+def _require_tree_evidence(
+    requirement: RequirementRecord, process: ProcessResult, current: TreeManifest
+) -> None:
+    """A review certifies a tree only against a Process Result that produced it.
+
+    A legacy 0.1 Process Result binds no tree, and a 0.2 result whose intended
+    output is not the current tree describes an input that no longer exists:
+    both need Process to run again before anything can be reviewed.
+    """
+    if not process.is_tree_bound:
+        raise _StageFailed(
+            StandardReviewResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
+            f"Process Result {process.iteration} of {requirement.requirement_id} "
+            "binds no normative tree (a legacy Root-only artifact); run Process "
+            "to produce tree-bound evidence before reviewing. Nothing was written.",
+        )
+    if process.output_tree.fingerprint != current.fingerprint:
+        raise _StageFailed(
+            StandardReviewResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
+            f"The current normative tree of {requirement.requirement_id} is not "
+            f"the intended output of Process Result {process.iteration}; run "
+            "Process again before reviewing. Nothing was written.",
+            describe_drift(process.output_tree, current),
+        )
 
 
 def _read_children(
@@ -732,6 +788,7 @@ def _verify(
         requirement=context.requirement,
         project_name=context.project.name,
         root_content=context.root_content,
+        child_content=render_descendants(context.tree),
         process_result=context.process_result,
         relations=context.relations,
         comparison=_comparison_context(workspace, context),
@@ -775,6 +832,7 @@ def _build_result(
         reviewed_process_iteration=bindings.process_iteration,
         reviewed_process_output_fingerprint=bindings.process_output_fingerprint,
         review=review,
+        reviewed_tree=context.tree.manifest,
     )
 
 
@@ -935,6 +993,12 @@ def _store_result(
             f"{read_back.requirement_id!r}, not {result.requirement_id!r}; it "
             "was left as found and the Requirement was not moved.",
         )
+    if read_back.reviewed_tree != result.reviewed_tree:
+        raise _StageFailed(
+            StandardReviewResultCode.REVIEW_RESULT_WRITE_FAILED,
+            f"Review Result Document {document_label(node)} reads back bound to a "
+            "different normative tree.",
+        )
     if read_back.iteration != result.iteration or not read_back.reviews(
         result.reviewed_document_fingerprint,
         result.reviewed_process_iteration,
@@ -979,19 +1043,26 @@ def _recheck_bindings(
             "reviewed against is gone.",
         )
     latest = process_results[-1]
+    tree = _read_tree(
+        workspace, context.requirement, context.root_document, "before Ready"
+    ).manifest
     current = _Bindings(
         document_fingerprint=document_fingerprint(current_content),
         process_iteration=latest.iteration,
         process_output_fingerprint=latest.output_fingerprint,
+        tree_fingerprint=tree.fingerprint,
     )
-    if current == bindings:
+    if current == bindings and (
+        latest.is_tree_bound and latest.output_tree.fingerprint == tree.fingerprint
+    ):
         return
 
     raise _StageFailed(
         StandardReviewResultCode.REVIEW_RESULT_STALE,
         f"{context.requirement.requirement_id} changed while it was being "
         "reviewed; the Review Result certifies a state that no longer exists.",
-        _describe_drift(bindings, current),
+        _describe_drift(bindings, current)
+        + tuple(describe_drift(context.tree.manifest, tree)),
     )
 
 
@@ -1000,6 +1071,8 @@ def _describe_drift(reviewed: _Bindings, current: _Bindings) -> tuple[str, ...]:
     drift = []
     if reviewed.document_fingerprint != current.document_fingerprint:
         drift.append("The Root Document was edited after the review.")
+    elif reviewed.tree_fingerprint != current.tree_fingerprint:
+        drift.append("A normative child Document changed after the review.")
     if reviewed.process_iteration != current.process_iteration:
         drift.append(
             f"Process ran again: iteration {current.process_iteration} now "

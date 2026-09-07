@@ -58,14 +58,20 @@ Anything else is refused with zero model calls and zero Fibery mutations.
 
 ```text
 the Requirement entity (Requirement ID, Title, Category, Revision, Project)
-its current Root Document
+its current normative tree: the Root Document and every normative
+  descendant, read by the same shared reader Process uses
+  (Requirement-Normative-Tree-Binding-v0.1)
 the latest Process Result: findings, proposed relations, analysis
 other Standard Requirements in the Project, as comparison material: for
 each, Requirement ID, Title, Type, State, Category and its complete current
-Root Document (child Documents are not included; see the comparison scope
-below)
+normative tree (see the comparison scope below)
 the Requirement's existing real Depends On / Affects relations
 ```
+
+The latest Process Result must be tree-bound (0.2) and its intended output
+tree must be the current tree; otherwise the run refuses with
+`NORMATIVE_TREE_EVIDENCE_REQUIRED` before the reviewer runs, because a review
+certifies Process evidence about the tree it sees, and there is none.
 
 The comparison corpus follows the same scope, labelling, limits and refusal
 rules as the Standard Requirement Process specification, including the
@@ -195,12 +201,15 @@ Results:
 Contents:
 
 ```text
-review_result_version
+review_result_version              0.2
 iteration                          review iteration
 requirement_id
 reviewed_document_fingerprint      canonical fingerprint of what was reviewed
 reviewed_process_iteration         which Process Result was evaluated
 reviewed_process_output_fingerprint
+reviewed_normative_tree            manifest v1 of the tree actually reviewed;
+                                   its Root entry equals
+                                   reviewed_document_fingerprint
 derived_verdict                    derived by code, never authored
 process_finding_verifications
 relation_proposal_verifications
@@ -211,7 +220,8 @@ assessment
 
 No chain-of-thought. JSON inside the child Document, as with Process Results.
 Previous Review Results are immutable history: never overwritten, never reused,
-never deleted.
+never deleted. A 0.1 Review Result is parsed as legacy Root-only evidence and
+is never given a synthesized tree; it is never reused as "already reviewed".
 
 This is enough to re-apply deterministically without a second model call and to
 audit exactly what was reviewed.
@@ -314,13 +324,16 @@ Existing-Requirement comparison is analysis only.
 
 A Review Result certifies one exact input. It is bound at the start of the run
 to the current canonical Root Document fingerprint, the latest Process Result
-iteration, and that Process Result's output fingerprint. Before any final state
-transition all of that identity is re-read and recomputed, and all of:
+iteration, that Process Result's output fingerprint, and the current normative
+tree manifest. Before any final state transition all of that identity is
+re-read, the tree is traversed afresh, and all of:
 
 ```text
 current Root Document canonical fingerprint == reviewed_document_fingerprint
 latest Process Result iteration             == reviewed_process_iteration
 that Process Result's output_fingerprint    == reviewed_process_output_fingerprint
+current normative tree fingerprint          == reviewed_normative_tree fingerprint
+that Process Result is tree-bound and its normative_output_tree is the current tree
 ```
 
 must hold. If any differ the Review Result is **stale**:
@@ -412,13 +425,16 @@ least one of:
 
 ```text
 current document fingerprint changed
+current normative tree fingerprint changed (a child edited, added, removed,
+  renamed or re-parented); Process must run again first, section 5
 latest Process Result iteration changed
 latest Process Result output fingerprint changed
+the latest Review Result is a legacy 0.1 artifact
 ```
 
-If `Requirement.State = Review` and the current document fingerprint, Process
-iteration and Process output fingerprint all exactly match the latest
-successfully reviewed input:
+If `Requirement.State = Review` and the current document fingerprint, the
+normative tree fingerprint, Process iteration and Process output fingerprint
+all exactly match the latest successfully reviewed, tree-bound input:
 
 ```text
 NO_CHANGES_TO_REVIEW
@@ -576,8 +592,11 @@ previous iterations immutable
 
 ```text
 Root Document changed after persistence     -> REVIEW_RESULT_STALE
+normative child changed after persistence   -> REVIEW_RESULT_STALE
 Process iteration changed                   -> REVIEW_RESULT_STALE
 Process output fingerprint mismatch         -> REVIEW_RESULT_STALE
+latest Process Result is legacy 0.1         -> NORMATIVE_TREE_EVIDENCE_REQUIRED
+current tree is not the Process output tree -> NORMATIVE_TREE_EVIDENCE_REQUIRED
 a stale result can never transition to Ready
 ```
 
@@ -604,6 +623,7 @@ retry resumes without drift
 ```text
 identical reviewed input -> NO_CHANGES_TO_REVIEW, zero mutations, State = Review
 changed reviewed input   -> next Review Result iteration
+legacy 0.1 latest review -> next Review Result iteration, legacy left intact
 iteration numbering monotonic; earlier results never modified
 ```
 
