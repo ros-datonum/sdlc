@@ -1,33 +1,54 @@
 #!/usr/bin/env bash
+# Local model authentication diagnostic.
+#
+# Reports, for every runtime in config/sdlc.toml, whether its local CLI login
+# satisfies the SDLC authentication policy, and whether that runtime is
+# permitted for SDLC reasoning execution. Being authenticated is not the same
+# as being eligible.
+#
+# The check goes through the runtime's own validator (LocalCliModelRuntime
+# .preflight), so there is one authentication policy. It runs the CLI's
+# status command only: no model call, no login, no logout, no configuration
+# or credential change. CLI output is captured and validated, never printed;
+# only SDLC-authored summaries appear here.
 set -u
 
-status=0
+cd "$(dirname "$0")/.." || exit 1
 
-echo "== Claude Code =="
-if command -v claude >/dev/null 2>&1; then
-  if ! claude auth status --text; then
-    echo "Claude Code is installed but not authenticated."
-    status=1
-  fi
-else
-  echo "claude executable not found."
-  status=1
-fi
+uv run --locked --quiet python - <<'PYTHON'
+import sys
 
-echo
-echo "== Codex =="
-if command -v codex >/dev/null 2>&1; then
-  if ! codex login status; then
-    echo "Codex is installed but not authenticated."
-    status=1
-  fi
-else
-  echo "codex executable not found."
-  status=1
-fi
+from sdlc.model_runtime import LocalCliModelRuntime, ModelRuntimeError
+from sdlc.model_runtime_config import (
+    ModelRuntimeConfigError,
+    RuntimeSelection,
+    load_model_runtime_config,
+    runtime_definition,
+)
 
-echo
-echo "Note: SDLC runtime requires subscription/OAuth CLI authentication."
-echo "It must not fall back to API keys or OpenRouter."
+try:
+    config = load_model_runtime_config()
+    names = sorted(config.get("runtimes") or {})
+except ModelRuntimeConfigError as error:
+    print(f"FAIL configuration: {error}")
+    sys.exit(1)
 
-exit "$status"
+status = 0
+for name in names:
+    selection = RuntimeSelection(
+        role="auth-check", definition=runtime_definition(config, name), model=None
+    )
+    try:
+        print(f"OK   {LocalCliModelRuntime(selection).preflight()}")
+    except ModelRuntimeError as error:
+        print(f"FAIL {name}: authentication could not be verified: {error}")
+        status = 1
+
+print()
+print("Note: SDLC runtime requires subscription/OAuth CLI authentication.")
+print("It must not fall back to API keys or OpenRouter.")
+print("Authenticated is not the same as eligible: a runtime reported as not")
+print("eligible for SDLC reasoning execution (RUNTIME_ISOLATION_UNAVAILABLE) is")
+print("logged in but blocked for model calls.")
+sys.exit(status)
+PYTHON
