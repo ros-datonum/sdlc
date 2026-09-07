@@ -39,6 +39,10 @@ class RequirementRecord:
     revision: int | None
     project_id: str | None
     source_fingerprint: str | None
+    # The Requirement's Category (FUNCTIONAL, NON_FUNCTIONAL, CONSTRAINT), read
+    # from the existing Fibery Field. None means the Field is unset or absent
+    # from the schema; it is never inferred from Type, ID or Title.
+    category: str | None = None
 
 
 @dataclass(frozen=True)

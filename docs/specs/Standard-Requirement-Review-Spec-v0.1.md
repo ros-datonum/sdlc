@@ -60,9 +60,22 @@ Anything else is refused with zero model calls and zero Fibery mutations.
 the Requirement entity (Requirement ID, Title, Category, Revision, Project)
 its current Root Document
 the latest Process Result: findings, proposed relations, analysis
-existing Standard Requirements in the Project: ID, Title, requirement text
+other Standard Requirements in the Project, as comparison material: for
+each, Requirement ID, Title, Type, State, Category and its complete current
+Root Document (child Documents are not included; see the comparison scope
+below)
 the Requirement's existing real Depends On / Affects relations
 ```
+
+The comparison corpus follows the same scope, labelling, limits and refusal
+rules as the Standard Requirement Process specification, including the
+400,000-character bound on the complete assembled reviewer input, which here
+includes the persisted Process claims. In addition, every
+Requirement named by a Process comparison finding or proposed relation must
+resolve unambiguously to an included same-Project Standard with actual Root
+content; a Requirement ID that merely looks valid is not evidence, and an
+unresolved target refuses the review with `COMPARISON_CONTEXT_INCOMPLETE`
+before the reviewer runs.
 
 Earlier Process Result iterations are history and are not sent. Previous Review
 Results are not sent either: a reviewer must not anchor on its own prior verdict.

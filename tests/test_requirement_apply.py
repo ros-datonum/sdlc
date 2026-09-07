@@ -430,12 +430,8 @@ def test_the_fake_moves_the_same_document_and_leaves_children_alone():
 
 
 def test_the_fake_lookup_reports_ambiguity_with_at_most_two_rows():
-    ws, _, _, _ = build_apply_workspace(
-        others=(
-            standard(),
-            standard(TARGET_ID, "std-uuid-dup"),
-            standard(TARGET_ID, "std-uuid-dup2"),
-        )
-    )
+    ws, _, _, _ = build_apply_workspace(others=(standard(),))
+    ws.requirements["std-uuid-dup"] = standard(TARGET_ID, "std-uuid-dup")
+    ws.requirements["std-uuid-dup2"] = standard(TARGET_ID, "std-uuid-dup2")
     assert len(ws.find_requirements_by_requirement_id(TARGET_ID)) == 2
     assert ws.find_requirements_by_requirement_id("SDLC-FR-9999") == []

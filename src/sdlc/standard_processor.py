@@ -23,6 +23,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sdlc.comparison_context import (
+    ComparisonContext,
+    ComparisonContextError,
+    assemble_comparison_context,
+    require_input_within_budget,
+)
 from sdlc.fibery_workspace import (
     DocumentNode,
     FiberyError,
@@ -326,9 +332,7 @@ def _load_context(
         child_content=child_content,
         raw_ancestry=_read_raw_ancestry(workspace, requirement),
         existing_standards=tuple(
-            record
-            for record in standards
-            if record.id != requirement.id and record.requirement_id
+            record for record in standards if record.id != requirement.id
         ),
         results=results,
         shell=shell,
@@ -746,7 +750,7 @@ def _produce_result(
         requirement_id=context.requirement.requirement_id or "",
         iteration=context.next_iteration,
         input_fingerprint=context.input_fingerprint,
-        analysis=_analyze(model, context, journal),
+        analysis=_analyze(workspace, model, context, journal),
     )
     # The model reasoned over the captured input; persist only if it is still
     # the input. A stale output is dropped, never recorded as an iteration.
@@ -775,7 +779,7 @@ def _recover_result(
         requirement_id=context.requirement.requirement_id or "",
         iteration=iteration,
         input_fingerprint=context.input_fingerprint,
-        analysis=_analyze(model, context, journal),
+        analysis=_analyze(workspace, model, context, journal),
     )
     _require_unchanged(
         workspace, context, context.root_content, "while the model was running"
@@ -786,17 +790,30 @@ def _recover_result(
 
 
 def _analyze(
-    model: ModelRuntime, context: _Context, journal: _Journal
+    workspace: RawProcessorWorkspace,
+    model: ModelRuntime,
+    context: _Context,
+    journal: _Journal,
 ) -> AnalysisResult:
-    """One model invocation, validated against the analysis contract."""
+    """One model invocation, validated against the analysis contract.
+
+    The comparison corpus is read here, once a new invocation is certain:
+    a resume, a no-change result or a refused recovery never loads it.
+    """
     prompt, model_context = build_analysis_prompt(
         requirement=context.requirement,
         project_name=context.project.name,
         root_content=context.root_content,
         child_content=context.child_content,
         raw_ancestry=context.raw_ancestry,
-        existing_standards=context.existing_standards,
+        comparison=_comparison_context(workspace, context),
     )
+    try:
+        require_input_within_budget("Standard Process", prompt, model_context)
+    except ComparisonContextError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.COMPARISON_CONTEXT_INCOMPLETE, error.message
+        ) from error
     journal.model_invoked = True
     try:
         response = model.run(prompt, model_context)
@@ -813,6 +830,24 @@ def _analyze(
             StandardProcessResultCode.INVALID_MODEL_OUTPUT,
             "The model's response does not satisfy the analysis contract.",
             (str(error),),
+        ) from error
+
+
+def _comparison_context(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> ComparisonContext:
+    try:
+        return assemble_comparison_context(
+            workspace,
+            context.project.id,
+            context.requirement.id,
+            context.existing_standards,
+        )
+    except ComparisonContextError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.COMPARISON_CONTEXT_INCOMPLETE,
+            error.message,
+            error.details,
         ) from error
 
 

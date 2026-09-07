@@ -1,7 +1,8 @@
 """The bounded prompt for RAW Requirement decomposition.
 
 Context is deliberately narrow: the RAW Requirement and its document tree, the
-Project name, and a concise index of existing Standard Requirements. No
+Project name, and the Project's other Standard Requirements as comparison
+material (entity metadata plus each one's complete current Root Document). No
 Milestones, Epics, Stories, Tasks or unrelated project state.
 
 The model is asked for structured data only. It is never asked to explain its
@@ -11,12 +12,8 @@ the document itself.
 
 from __future__ import annotations
 
-from sdlc.fibery_workspace import RequirementRecord
+from sdlc.comparison_context import ComparisonContext, render_comparison_section
 from sdlc.raw_processing import Category, FindingKind
-
-# Enough to spot an obvious duplicate or conflict without loading every
-# Standard document tree (v0 keeps context staged and small).
-EXISTING_STANDARD_LIMIT = 100
 
 INSTRUCTIONS = """\
 You are decomposing one RAW requirement artifact into Standard Requirement
@@ -62,6 +59,10 @@ Rules:
   Deterministic code fills those in; inventing content is worse than omitting it.
 - Findings are observations about existing Standard Requirements. They never
   modify them. Report a finding instead of proposing a change.
+- The other Standard Requirements are supplied with their full Root Documents
+  so you can see duplication, conflict, change or supersession. They never
+  replace what this source states, and one that is not Applied is a
+  candidate under review, not approved authority.
 - If the source warrants no Standard Requirement, return an empty candidates
   list and explain why in no_candidate_reason.
 - Emit no field that is not listed above. Unknown fields are rejected.
@@ -73,7 +74,7 @@ def build_prompt(
     raw_title: str,
     project_name: str,
     raw_body: str,
-    existing_standards: tuple[RequirementRecord, ...],
+    comparison: ComparisonContext,
 ) -> tuple[str, str]:
     """Return the instruction prompt and the context sent on stdin."""
     context = "\n".join(
@@ -87,31 +88,10 @@ def build_prompt(
             "# RAW Requirement documents",
             raw_body or "(empty)",
             "",
-            _existing_section(existing_standards),
+            render_comparison_section(comparison),
             "",
             f"# Allowed categories\n{', '.join(c.value for c in Category)}",
             f"# Allowed finding kinds\n{', '.join(k.value for k in FindingKind)}",
         ]
     )
     return INSTRUCTIONS, context
-
-
-def _existing_section(existing: tuple[RequirementRecord, ...]) -> str:
-    """A concise index of existing Standard Requirements.
-
-    IDs and titles only: enough to notice overlap, small enough to stay bounded.
-    Deeper content is not loaded in v0.
-    """
-    header = "# Existing Standard Requirements in this Project"
-    if not existing:
-        return f"{header}\n(none)"
-    lines = [
-        f"- {record.requirement_id}: {record.title}"
-        for record in existing[:EXISTING_STANDARD_LIMIT]
-        if record.requirement_id
-    ]
-    if not lines:
-        return f"{header}\n(none)"
-    if len(existing) > EXISTING_STANDARD_LIMIT:
-        lines.append(f"- ... and {len(existing) - EXISTING_STANDARD_LIMIT} more")
-    return "\n".join([header, *lines])

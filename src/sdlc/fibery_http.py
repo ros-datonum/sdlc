@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from sdlc.comparison_context import COMPARISON_RECORD_LIMIT
 from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_workspace import (
     DocumentNode,
@@ -58,6 +59,10 @@ ADD_COLLECTION_ITEMS_COMMAND = "fibery.entity/add-collection-items"
 # Two rows distinguish "exactly one" from "more than one" without listing.
 AMBIGUITY_QUERY_LIMIT = 2
 REQUIREMENT_QUERY_LIMIT = 1000
+# Two more than the comparison corpus admits: the rows may include the target
+# itself, and the extra row past that makes overflow visible instead of
+# letting a cut list pass as the whole Project.
+COMPARISON_QUERY_LIMIT = COMPARISON_RECORD_LIMIT + 2
 
 FIELD_LABEL_NAME = "name"
 FIELD_LABEL_CODE = "code"
@@ -639,6 +644,11 @@ class FiberyRequirementWorkspace:
                             {schema.type_field: [ENUM_NAME_FIELD]},
                             {WORKFLOW_STATE_FIELD: [ENUM_NAME_FIELD]},
                             {schema.project_field: [ID_FIELD]},
+                            *(
+                                [{schema.category_field: [ENUM_NAME_FIELD]}]
+                                if schema.category_field
+                                else []
+                            ),
                         ],
                         "q/where": where,
                         "q/limit": limit,
@@ -662,6 +672,11 @@ class FiberyRequirementWorkspace:
             revision=row.get(schema.revision_field),
             project_id=(row.get(schema.project_field) or {}).get(ID_FIELD),
             source_fingerprint=row.get(schema.fingerprint_field),
+            category=(
+                (row.get(schema.category_field) or {}).get(ENUM_NAME_FIELD)
+                if schema.category_field
+                else None
+            ),
         )
 
     def _requirement_schema(self) -> _RequirementSchema:
@@ -772,12 +787,23 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
     def standard_requirements_in_project(
         self, project_id: str
     ) -> list[RequirementRecord]:
+        """The Project's Standard Requirements, bounded for comparison.
+
+        Filters on Type at the query so the bound counts Standard rows, and
+        asks for two rows more than the comparison corpus admits (the target
+        may be one of them): a result with more peers than the limit is a
+        lower bound, never a complete Project.
+        """
         schema = self._requirement_schema()
         rows = self._query_requirements(
             schema,
-            ["=", [schema.project_field, ID_FIELD], "$project"],
-            {"$project": project_id},
-            REQUIREMENT_QUERY_LIMIT,
+            [
+                "and",
+                ["=", [schema.project_field, ID_FIELD], "$project"],
+                ["=", [schema.type_field, ENUM_NAME_FIELD], "$type"],
+            ],
+            {"$project": project_id, "$type": STANDARD_TYPE_NAME},
+            COMPARISON_QUERY_LIMIT,
         )
         records = [self._to_requirement(schema, row) for row in rows]
         return [r for r in records if r.type_name == STANDARD_TYPE_NAME]

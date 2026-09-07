@@ -16,6 +16,7 @@ from review_fake import (
     review_output,
     verify_relation,
 )
+from sdlc.fibery_workspace import RequirementRecord
 from sdlc.standard_reviewer import review_standard_requirement
 from standard_fake import REQUIREMENT_ID
 
@@ -33,9 +34,29 @@ def build_ready_workspace(
     """
     findings = () if verdict == "PASS" else (finding(),)
     relations = (relation(),) if with_relation else ()
+    # A proposed relation must point at a real same-Project Standard with a
+    # Root Document, or Review refuses to run without evidence.
+    others = (
+        (
+            RequirementRecord(
+                id="std-uuid-2",
+                public_id="2",
+                requirement_id=relation().requirement_id,
+                title="Relation target",
+                type_name="Standard",
+                state="Applied",
+                revision=1,
+                project_id="p-1",
+                source_fingerprint=None,
+            ),
+        )
+        if with_relation
+        else ()
+    )
     ws, requirement, root, _ = build_review_workspace(
         findings=findings,
         relations=relations,
+        others=others,
         process_iterations=process_iterations,
         normalized_changes=normalized_changes,
     )

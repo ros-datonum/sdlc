@@ -544,3 +544,106 @@ def test_a_rejected_folder_update_becomes_a_fibery_error():
     )
     with pytest.raises(FiberyError):
         workspace.set_document_folder("doc-1", "folder-approved")
+
+
+# -- Category read and the bounded Standard-only comparison query --------------
+
+CATEGORY_SCHEMA = {
+    "fibery/types": [
+        {
+            **REQUIREMENT_SCHEMA["fibery/types"][0],
+            "fibery/fields": [
+                *REQUIREMENT_SCHEMA["fibery/types"][0]["fibery/fields"],
+                {
+                    "fibery/name": "SDLC/Category",
+                    "fibery/type": "SDLC/Category_Agentic SDLC/Requirement",
+                },
+            ],
+        }
+    ]
+}
+
+
+def standard_row(number, category=None, type_name="Standard"):
+    row = {
+        "fibery/id": f"uuid-{number}",
+        "fibery/public-id": str(number),
+        "SDLC/Requirement ID": f"SDLC-FR-{number:04d}",
+        "SDLC/Title": f"Title {number}",
+        "SDLC/Revision": 1,
+        "SDLC/Source Fingerprint": None,
+        "SDLC/Type": {"enum/name": type_name},
+        "workflow/state": {"enum/name": "Applied"},
+        "SDLC/Project": {"fibery/id": "project-1"},
+    }
+    if category is not None:
+        row["SDLC/Category"] = {"enum/name": category}
+    return row
+
+
+def build_with_category(payloads):
+    from sdlc.fibery_http import FiberyRawProcessorWorkspace
+
+    opener = StubOpener([ok(CATEGORY_SCHEMA), *payloads])
+    workspace = FiberyRawProcessorWorkspace(
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+    )
+    return workspace, opener
+
+
+def test_the_category_field_is_read_into_the_record_when_present():
+    workspace, _ = build_with_category(
+        [ok([standard_row(1, "CONSTRAINT"), standard_row(2)])]
+    )
+
+    records = workspace.standard_requirements_in_project("project-1")
+
+    assert [(r.requirement_id, r.category) for r in records] == [
+        ("SDLC-FR-0001", "CONSTRAINT"),
+        ("SDLC-FR-0002", None),
+    ]
+    assert all(r.type_name == "Standard" for r in records), "Type stays separate"
+
+
+def test_an_absent_category_field_leaves_category_unspecified():
+    from sdlc.fibery_http import FiberyRawProcessorWorkspace
+
+    opener = StubOpener([ok(REQUIREMENT_SCHEMA), ok([standard_row(1)])])
+    workspace = FiberyRawProcessorWorkspace(
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+    )
+
+    [record] = workspace.standard_requirements_in_project("project-1")
+
+    assert record.category is None
+    select = opener.requests[1]["body"][0]["args"]["query"]["q/select"]
+    assert not any("Category" in str(item) for item in select)
+
+
+def test_the_comparison_query_is_standard_only_and_bounded_past_the_limit():
+    from sdlc.comparison_context import COMPARISON_RECORD_LIMIT
+
+    workspace, opener = build_with_category([ok([])])
+
+    workspace.standard_requirements_in_project("project-1")
+
+    query = opener.requests[1]["body"][0]["args"]["query"]
+    params = opener.requests[1]["body"][0]["args"]["params"]
+    assert query["q/limit"] == COMPARISON_RECORD_LIMIT + 2
+    assert query["q/where"] == [
+        "and",
+        ["=", ["SDLC/Project", "fibery/id"], "$project"],
+        ["=", ["SDLC/Type", "enum/name"], "$type"],
+    ]
+    assert params == {"$project": "project-1", "$type": "Standard"}
+    assert {"SDLC/Category": ["enum/name"]} in query["q/select"]
+
+
+def test_a_non_standard_row_is_still_filtered_out_defensively():
+    workspace, _ = build_with_category(
+        [ok([standard_row(1), standard_row(2, type_name="Raw")])]
+    )
+
+    records = workspace.standard_requirements_in_project("project-1")
+
+    assert [r.requirement_id for r in records] == ["SDLC-FR-0001"]

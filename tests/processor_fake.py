@@ -13,6 +13,7 @@ import itertools
 import json
 import re
 
+from sdlc.comparison_context import COMPARISON_RECORD_LIMIT
 from sdlc.fibery_workspace import (
     DocumentNode,
     FiberyError,
@@ -213,12 +214,13 @@ class FakeProcessorWorkspace:
         )
 
     def standard_requirements_in_project(self, project_id):
+        """Bounded exactly as the live query is: two rows past the corpus limit."""
         self._record("standard_requirements_in_project")
         return [
             r
             for r in self.requirements.values()
             if r.project_id == project_id and r.type_name == "Standard"
-        ]
+        ][: COMPARISON_RECORD_LIMIT + 2]
 
     def resolve_document(self, document_id):
         self._record("resolve_document")
@@ -274,6 +276,7 @@ class FakeProcessorWorkspace:
             revision=revision,
             project_id=project_id,
             source_fingerprint=None,
+            category=category,
         )
         self.requirements[entity_id] = record
         self.categories = getattr(self, "categories", {})
@@ -399,6 +402,7 @@ class FakeProcessorWorkspace:
             revision=current.revision,
             project_id=current.project_id,
             source_fingerprint=current.source_fingerprint,
+            category=current.category,
         )
 
 
@@ -429,6 +433,7 @@ def build_workspace(raw_state="Process", raw_type="Raw", standards=()):
         source_fingerprint="fp",
     )
     ws = FakeProcessorWorkspace(project, [root, reqs, *stages], [raw, *standards])
+    attach_peer_roots(ws, standards)
     doc = DocumentNode(
         id="raw-doc-1",
         name="SDLC-RAW-0007 — Initial SDLC Requirements",
@@ -439,6 +444,34 @@ def build_workspace(raw_state="Process", raw_type="Raw", standards=()):
     ws.documents.append(doc)
     ws.content["raw-secret"] = "# Initial SDLC Requirements\n\nThe CLI must be fast.\n"
     return ws, raw, doc
+
+
+def attach_peer_roots(ws, records):
+    """Give every peer Standard fixture the Root Document a real one has.
+
+    Comparison context refuses a Standard without exactly one readable,
+    non-empty Root, so a fixture that wants that failure removes the Document
+    or empties its content explicitly.
+    """
+    for record in records:
+        if record.type_name != "Standard" or any(
+            d.entity_public_id == record.public_id for d in ws.documents
+        ):
+            continue
+        secret = f"peer-secret-{record.public_id}"
+        ws.documents.append(
+            DocumentNode(
+                id=f"peer-doc-{record.public_id}",
+                name=f"{record.requirement_id} — {record.title}",
+                folder_id="f-draft",
+                entity_public_id=record.public_id,
+                secret=secret,
+            )
+        )
+        ws.content[secret] = (
+            f"# {record.requirement_id} — {record.title}\n\n## Requirement\n\n"
+            f"{record.title}.\n"
+        )
 
 
 def model_output(candidates, findings=(), reason=None):

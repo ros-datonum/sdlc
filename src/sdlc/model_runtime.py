@@ -210,6 +210,16 @@ class ModelResponse:
         return self.model is None
 
 
+def assemble_model_input(prompt: str, context: str) -> str:
+    """The exact text a runtime hands to its CLI on stdin.
+
+    Every runtime and every input-size check measure this same string, so a
+    bound on it is a bound on what SDLC actually sends. Hidden CLI or system
+    instructions are outside it.
+    """
+    return f"{context}\n\n{prompt}" if context else prompt
+
+
 class ModelRuntime(Protocol):
     """Executes one prompt and returns the model's text.
 
@@ -312,9 +322,7 @@ class LocalCliModelRuntime:
         self._require_execution_supported()
         with self._session() as session:
             self._check_authentication(session)
-            return self._invoke(
-                session, f"{context}\n\n{prompt}" if context else prompt
-            )
+            return self._invoke(session, assemble_model_input(prompt, context))
 
     def _require_execution_supported(self) -> None:
         definition = self._selection.definition

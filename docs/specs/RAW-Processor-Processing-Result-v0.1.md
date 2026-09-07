@@ -132,3 +132,15 @@ the check and the write is outside any atomic guarantee. Recovery refuses any
 non-empty body, any Document that is not this Requirement's terminal
 unfinished Result, and any evidence that the iteration was already consumed
 downstream. Explicit selection is not multi-writer safety.
+
+### Comparison context
+
+The decomposition prompt carries the Project's other Standard Requirements
+as comparison material: Requirement ID, Title, Type, State, Category and the
+complete current Root Document of each, with the same scope, labelling,
+limits and refusal rules as the Standard Requirement Process specification,
+including the 400,000-character bound on the complete assembled model input
+(the RAW document tree, peers and instructions together).
+A refusal (`COMPARISON_CONTEXT_INCOMPLETE`) precedes any model call and any
+mutation. The corpus is read only when a new decomposition is certain; a
+resume from a persisted Processing Result never loads it.

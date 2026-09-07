@@ -186,10 +186,10 @@ def test_a_conflict_in_a_later_candidate_is_found_before_an_earlier_one_is_writt
     ws, raw, _ = build_workspace()
     partial_run(ws, raw, THREE, fail_on_candidate=3)
     first, second = sorted(standards(ws), key=lambda r: r.public_id)
-    # The first candidate's content was lost: a genuine incomplete Draft.
-    ws.content[root_of(ws, first).secret] = ""
     # The second candidate moved on without the RAW.
     complete_standard_chain(ws, second)
+    # Then the first candidate's content was lost: a genuine incomplete Draft.
+    ws.content[root_of(ws, first).secret] = ""
     mutations_before = len(ws.mutations)
 
     result = process_raw_requirement(ws, FakeModelRuntime([THREE]), raw.id)
