@@ -97,6 +97,13 @@ Pacing is per process. Simultaneous SDLC commands and unrelated clients share
 the workspace limits without coordination: run one SDLC command at a time per
 workspace. Pacing adds waits; it does not make read-then-write checks atomic.
 
+Transport diagnostics name the endpoint family, HTTP status, operation
+category and attempt count, or a JSON-RPC integer code. Response bodies,
+vendor error names and messages, request paths, headers and exception text
+are never relayed, because they can echo requirement prose or a document
+secret. Result codes, created object ids and the confirmed-versus-uncertain
+distinction that the recovery paths rely on are unaffected.
+
 ## Model runtime
 
 The RAW Requirement Processor is the first capability allowed to invoke a model.

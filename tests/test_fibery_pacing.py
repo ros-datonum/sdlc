@@ -388,7 +388,7 @@ def test_a_failed_command_inside_a_200_batch_is_not_replayed():
     failed = [{"success": False, "result": {"name": "entity.error/x", "message": "m"}}]
     client, opener, _ = build([failed])
 
-    with pytest.raises(FiberyError, match="entity.error/x"):
+    with pytest.raises(FiberyError, match="error envelope"):
         client.command(*QUERY)
 
     assert len(opener.requests) == 1
@@ -484,3 +484,180 @@ def test_adapter_traffic_is_paced_across_endpoint_families():
     workspace.write_document_content("secret-1", "# body")
 
     assert all(gap >= INTERVAL for gap in opener.gaps)
+
+
+# -- diagnostics carry no server text -----------------------------------------
+
+REQ_MARKER = "REQ-PRIVATE-TEXT-7f21c"
+TOKEN_MARKER = "tok-synthetic-3b9c4d5e"
+SECRET_MARKER = "docsecret-ab12cd34"
+SHORT_MARKER = "zq7private"
+PRIVATE = (REQ_MARKER, TOKEN_MARKER, SECRET_MARKER, SHORT_MARKER)
+BODY = f'{{"message": "bad value {REQ_MARKER}", "token": "{TOKEN_MARKER}", "secret": "{SECRET_MARKER}"}}'
+
+
+def assert_withheld(error, *also):
+    text = str(error) + repr(error) + "".join(also)
+    for marker in PRIVATE:
+        assert marker not in text, marker
+    assert "/api/" not in text and "test-token" not in text
+
+
+@pytest.mark.parametrize(
+    ("code", "call", "family"),
+    [
+        (400, lambda c: c.command(*QUERY), "commands"),
+        (403, lambda c: c.command("fibery.entity/create", {"entity": {}}), "commands"),
+        (400, lambda c: c.put_document(SECRET_MARKER, REQ_MARKER), "documents"),
+        (500, lambda c: c.views_rpc("create-views", {"views": []}), "views"),
+    ],
+    ids=["read-400", "create-403", "put-400", "views-500"],
+)
+def test_non_429_http_failures_name_status_and_family_only(code, call, family):
+    client, opener, _ = build([http_error(code, body=BODY.encode())])
+
+    with pytest.raises(FiberyError, match=f"HTTP {code}") as info:
+        call(client)
+
+    assert family in str(info.value) and "attempt 1" in str(info.value)
+    assert_withheld(info.value)
+    assert len(opener.requests) == 1
+
+
+def test_a_document_404_never_names_the_secret():
+    body = f"Document {SECRET_MARKER} not found".encode()
+    client, opener, _ = build([http_error(404, body=body)])
+
+    with pytest.raises(FiberyError, match="HTTP 404") as info:
+        client.get_document(SECRET_MARKER)
+
+    assert "documents" in str(info.value) and "GET" in str(info.value)
+    assert_withheld(info.value)
+    assert SECRET_MARKER in opener.requests[0]["url"], "the request itself was real"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"code": -32602, "message": REQ_MARKER, "data": {"secret": SECRET_MARKER}},
+        {"code": SHORT_MARKER, "message": REQ_MARKER},
+        {"name": SHORT_MARKER, "message": REQ_MARKER, "data": [TOKEN_MARKER]},
+        REQ_MARKER,
+    ],
+    ids=["int-code", "short-string-code", "short-name", "bare-string"],
+)
+def test_a_views_rpc_error_relays_no_message_data_or_unknown_code(error):
+    client, opener, _ = build([{"jsonrpc": "2.0", "id": 1, "error": error}])
+
+    with pytest.raises(FiberyError, match="JSON-RPC error") as info:
+        client.views_rpc("update-views", {"updates": []})
+
+    assert_withheld(info.value)
+    assert len(opener.requests) == 1
+
+
+def test_a_recognized_integer_rpc_code_is_still_reported():
+    error = {"code": -32602, "message": REQ_MARKER}
+    client, _, _ = build([{"jsonrpc": "2.0", "id": 1, "error": error}])
+
+    with pytest.raises(FiberyError, match=r"code -32602") as info:
+        client.views_rpc("query-views", {})
+
+    assert_withheld(info.value)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {
+            "name": SHORT_MARKER,
+            "message": REQ_MARKER,
+            "data": {"secret": SECRET_MARKER},
+        },
+        {"name": "entity.error/validation", "message": f"{TOKEN_MARKER} {REQ_MARKER}"},
+        REQ_MARKER,
+        None,
+    ],
+    ids=["short-name", "known-looking-name", "string", "none"],
+)
+def test_a_failed_command_envelope_relays_no_message_and_is_not_retried(result):
+    client, opener, _ = build([[{"success": False, "result": result}]])
+
+    with pytest.raises(FiberyError, match="error envelope") as info:
+        client.command("fibery.entity/create", {"entity": {"x": REQ_MARKER}})
+
+    assert_withheld(info.value)
+    assert len(opener.requests) == 1
+
+
+def test_a_mixed_batch_keeps_its_successful_envelopes_and_is_not_replayed():
+    envelopes = [
+        {"success": True, "result": {"fibery/id": "created-1"}},
+        {"success": False, "result": {"name": SHORT_MARKER, "message": REQ_MARKER}},
+    ]
+    client, opener, _ = build([envelopes])
+
+    returned = client.commands(
+        [{"command": "fibery.entity/create"}, {"command": "fibery.entity/update"}]
+    )
+
+    assert returned[0]["result"]["fibery/id"] == "created-1", "durable id visible"
+    assert returned[1]["success"] is False
+    assert len(opener.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("failure", "kind"),
+    [
+        (TimeoutError("timed out " + REQ_MARKER), "timed out"),
+        (urllib.error.URLError(TimeoutError(REQ_MARKER)), "timed out"),
+        (ConnectionResetError(54, REQ_MARKER), "connection failed"),
+        (urllib.error.URLError(f"[Errno 61] {REQ_MARKER}"), "connection failed"),
+    ],
+    ids=["timeout", "url-timeout", "reset", "url-error"],
+)
+def test_transport_failures_are_classified_without_exception_text(failure, kind):
+    client, opener, _ = build([failure])
+
+    with pytest.raises(FiberyError, match=kind) as info:
+        client.put_document(SECRET_MARKER, REQ_MARKER)
+
+    assert "attempted once" in str(info.value)
+    assert_withheld(info.value)
+    assert len(opener.requests) == 1
+
+
+def test_transport_errors_stay_withheld_through_processor_and_cli(caplog):
+    import io
+    import logging
+
+    from processor_fake import (
+        FakeModelRuntime,
+        build_workspace,
+        candidate,
+        model_output,
+    )
+    from sdlc import cli
+    from sdlc.raw_processor import process_raw_requirement
+
+    caplog.set_level(logging.DEBUG)
+    client, _, _ = build([http_error(400, body=BODY.encode())])
+    with pytest.raises(FiberyError) as info:
+        client.put_document(SECRET_MARKER, REQ_MARKER)
+    ws, raw, _ = build_workspace()
+    ws.failures["write_document_content"] = info.value
+
+    result = process_raw_requirement(
+        ws, FakeModelRuntime([model_output([candidate()])]), raw.id
+    )
+    rendered = io.StringIO()
+    cli.render_process_result(result, rendered)
+
+    assert result.code.value == "PARTIAL_PROCESSING"
+    created = " ".join(result.created)
+    assert "Processing Result Document" in created and "(doc-" in created, (
+        "the created Document id stays reported for recovery"
+    )
+    assert_withheld(info.value, " ".join(result.details), result.message, created)
+    assert_withheld(info.value, rendered.getvalue(), caplog.text)
+    assert "HTTP 400" in rendered.getvalue()

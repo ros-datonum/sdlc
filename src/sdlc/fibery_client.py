@@ -53,7 +53,20 @@ CONTENT_TYPE = "application/json"
 DOCUMENT_FORMAT = "md"
 JSON_RPC_VERSION = "2.0"
 JSON_RPC_REQUEST_ID = 1
-ERROR_BODY_LIMIT = 500
+
+# Diagnostics are authored here from a fixed vocabulary: endpoint family,
+# HTTP status, operation category, attempt count and a JSON-RPC integer code.
+# Response bodies, vendor error names and messages, request paths and
+# exception text are never relayed: a body can echo requirement prose or a
+# document secret, and an unknown vendor name is not safe just because it is
+# short.
+FAMILY_COMMANDS = "commands"
+FAMILY_VIEWS = "views"
+FAMILY_DOCUMENTS = "documents"
+FAMILY_UNKNOWN = "unknown endpoint"
+FAILURE_TIMED_OUT = "the connection timed out"
+FAILURE_UNREACHABLE = "the connection failed"
+WITHHELD = "the server's response is not reported"
 
 # Fibery documents 3 requests/second per token and 7 per workspace. Half a
 # second between starts stays under the per-token limit with margin for the
@@ -133,7 +146,10 @@ class FiberyClient:
             payload["args"] = args
         envelope = self.commands([payload])[0]
         if not envelope.get("success"):
-            raise FiberyError(f"Command {name!r} failed: {_describe(envelope)}")
+            raise FiberyError(
+                f"Command {name!r} failed: Fibery returned an error envelope; "
+                f"{WITHHELD}."
+            )
         return envelope.get("result")
 
     def commands(self, batch: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -170,7 +186,10 @@ class FiberyClient:
                 f"Views method {method!r} returned an unexpected response."
             )
         if "error" in response:
-            raise FiberyError(f"Views method {method!r} failed: {response['error']}")
+            raise FiberyError(
+                f"Views method {method!r} failed: Fibery returned a JSON-RPC error"
+                f"{_rpc_code(response['error'])}; {WITHHELD}."
+            )
         return response.get("result")
 
     def put_document(self, secret: str, content: str) -> None:
@@ -203,8 +222,8 @@ class FiberyClient:
             except urllib.error.HTTPError as error:
                 if error.code != RATE_LIMIT_STATUS:
                     raise FiberyError(
-                        f"Fibery returned HTTP {error.code} for {method} {family}: "
-                        f"{_read_error_body(error)}"
+                        f"Fibery {category} {method} {family} request failed "
+                        f"(HTTP {error.code}) on attempt {attempt}; {WITHHELD}."
                     ) from error
                 if not replayable:
                     raise FiberyError(
@@ -251,7 +270,8 @@ class FiberyClient:
             raise
         except OSError as error:
             raise FiberyError(
-                f"Could not reach Fibery ({method} {_family(path)}): {error}"
+                f"Could not reach Fibery ({method} {_family(path)}): "
+                f"{_failure_kind(error)}; the request was attempted once."
             ) from error
 
         if not body:
@@ -287,21 +307,25 @@ class FiberyClient:
 def _family(path: str) -> str:
     """Name the endpoint family; never the path, which can carry a secret."""
     if path.startswith(DOCUMENTS_PATH):
-        return "documents"
+        return FAMILY_DOCUMENTS
     if path == VIEWS_RPC_PATH:
-        return "views"
+        return FAMILY_VIEWS
     if path == COMMANDS_PATH:
-        return "commands"
-    return "unknown endpoint"
+        return FAMILY_COMMANDS
+    return FAMILY_UNKNOWN
 
 
-def _describe(envelope: dict[str, Any]) -> str:
-    result = envelope.get("result")
-    if isinstance(result, dict):
-        name = result.get("name", "unknown error")
-        return f"{name}: {result.get('message', '')}".strip().rstrip(":")
-    return str(result)
+def _failure_kind(error: OSError) -> str:
+    """Classify a transport failure without quoting the exception."""
+    reason = getattr(error, "reason", None)
+    if isinstance(error, TimeoutError) or isinstance(reason, TimeoutError):
+        return FAILURE_TIMED_OUT
+    return FAILURE_UNREACHABLE
 
 
-def _read_error_body(error: urllib.error.HTTPError) -> str:
-    return error.read().decode("utf-8", errors="replace")[:ERROR_BODY_LIMIT]
+def _rpc_code(error: Any) -> str:
+    """Only an integer JSON-RPC code is a machine category worth naming."""
+    code = error.get("code") if isinstance(error, dict) else None
+    if isinstance(code, int) and not isinstance(code, bool):
+        return f" (code {code})"
+    return ""

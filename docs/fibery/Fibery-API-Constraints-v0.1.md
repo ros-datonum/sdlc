@@ -523,3 +523,9 @@ delay ends the request instead of retrying early. Everything else, including
 `PUT /api/documents`, `create-views`, `update-views`, `create-folders`,
 `fibery.entity/create`, `update` and `add-collection-items`, is attempted
 once. Pacing is per process; concurrent processes are not coordinated.
+
+Error bodies and vendor error objects can echo the request, including
+requirement prose and the document secret in a `/api/documents/<secret>`
+path. Transport diagnostics therefore report only the endpoint family, HTTP
+status, category and attempt count, or an integer JSON-RPC code; the body,
+the vendor name and message, the path and exception text are withheld.

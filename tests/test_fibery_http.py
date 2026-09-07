@@ -131,8 +131,9 @@ def test_unsuccessful_envelope_becomes_a_fibery_error():
     )
     client = FiberyClient(SETTINGS, url_opener=opener, **unpaced())
 
-    with pytest.raises(FiberyError, match="entity.error/x"):
+    with pytest.raises(FiberyError, match="error envelope") as info:
         client.command("fibery.schema/query")
+    assert "entity.error/x" not in str(info.value) and "nope" not in str(info.value)
 
 
 def test_http_error_becomes_a_fibery_error():
@@ -151,8 +152,9 @@ def test_json_rpc_error_becomes_a_fibery_error():
     opener = StubOpener([{"jsonrpc": "2.0", "id": 1, "error": {"message": "bad"}}])
     client = FiberyClient(SETTINGS, url_opener=opener, **unpaced())
 
-    with pytest.raises(FiberyError, match="bad"):
+    with pytest.raises(FiberyError, match="JSON-RPC error") as info:
         client.views_rpc("query-views", {})
+    assert "bad" not in str(info.value), "vendor error text is not relayed"
 
 
 # -- schema resolution -----------------------------------------------------
