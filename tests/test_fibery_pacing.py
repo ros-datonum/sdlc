@@ -244,12 +244,14 @@ def test_a_rate_limited_read_only_view_query_recovers():
 
 
 def test_repeated_rate_limiting_exhausts_the_attempt_budget():
-    client, opener, clock = build([http_error(429)] * MAX_ATTEMPTS)
+    """Three attempts in total is the contract, not whatever the constant says."""
+    client, opener, clock = build([http_error(429)] * 10)
 
-    with pytest.raises(FiberyError, match=f"all {MAX_ATTEMPTS} attempts") as info:
+    with pytest.raises(FiberyError, match="all 3 attempts") as info:
         client.command(*QUERY)
 
-    assert len(opener.requests) == MAX_ATTEMPTS
+    assert len(opener.requests) == 3
+    assert MAX_ATTEMPTS == 3
     assert sum(clock.sleeps) <= MAX_RETRY_WAIT_SECONDS + MAX_ATTEMPTS * INTERVAL
     assert "rate limited" not in str(info.value), "no response body"
     assert "test-token" not in str(info.value)
