@@ -21,10 +21,12 @@ from review_fake import build_review_workspace, finding, relation, review_output
 from sdlc.comparison_context import (
     COMPARISON_INPUT_LIMIT_CHARACTERS,
     COMPARISON_RECORD_LIMIT,
+    MAX_ASSEMBLED_INPUT_CHARS,
     STANDING_APPROVED,
     STANDING_CANDIDATE,
 )
 from sdlc.fibery_workspace import DocumentNode, FiberyError, RequirementRecord
+from sdlc.model_runtime import assemble_model_input
 from sdlc.raw_processor import process_raw_requirement
 from sdlc.results import ProcessResultCode as RawCode
 from sdlc.results import StandardProcessResultCode as ProcessCode
@@ -642,8 +644,6 @@ def test_a_refused_recovery_reads_no_peers(stage):
 
 # -- the complete assembled input is bounded, not only the peer section -------
 
-from sdlc.comparison_context import MAX_ASSEMBLED_INPUT_CHARS  # noqa: E402
-from sdlc.model_runtime import assemble_model_input  # noqa: E402
 
 PRIVATE_LINE = "PRIVATE-SOURCE-LINE-4c1d"
 PADDING_SECTION = "\n\n## Padding\n\n"
@@ -751,11 +751,7 @@ def test_exactly_the_limit_is_admitted_and_one_more_is_refused(stage, unit):
         assert len(text.encode("utf-8")) > MAX_ASSEMBLED_INPUT_CHARS, (
             "bytes are not the unit"
         )
-    assert (
-        text.startswith("# Project")
-        and text.rstrip().endswith("}")
-        or "Allowed" in text
-    )
+    assert text.startswith("# Project") and unit * (probe + delta) in text
 
     ws, model, result, before = run_padded(
         stage, unit * (probe + delta + 1), peers=[peer(41)]
