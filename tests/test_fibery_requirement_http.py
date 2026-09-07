@@ -5,7 +5,7 @@ import pytest
 from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_http import FiberyRawProcessorWorkspace, FiberyRequirementWorkspace
 from sdlc.fibery_workspace import FiberyError
-from test_fibery_http import SETTINGS, StubOpener, ok, rpc
+from test_fibery_http import SETTINGS, StubOpener, ok, rpc, unpaced
 
 REQUIREMENT_TYPE_ID = "0cbb35c1-b71f-4429-b45e-4a9fd5ada7c2"
 
@@ -40,7 +40,7 @@ REQUIREMENT_SCHEMA = {
 def build(payloads):
     opener = StubOpener([ok(REQUIREMENT_SCHEMA), *payloads])
     workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
     return workspace, opener
 
@@ -49,7 +49,7 @@ def build_views(payloads):
     """For view operations that never resolve the Requirement schema."""
     opener = StubOpener(list(payloads))
     workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
     return workspace, opener
 
@@ -90,7 +90,7 @@ def test_missing_source_fingerprint_field_is_reported():
     }
     opener = StubOpener([ok(schema)])
     workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
 
     with pytest.raises(FiberyError, match="source fingerprint"):
@@ -204,7 +204,7 @@ def test_document_is_created_in_the_folder_and_attached_by_public_id():
         return StubResponse(_json.dumps(payload).encode("utf-8"))
 
     workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=echoing), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=echoing, **unpaced()), "SDLC", "space-uuid"
     )
 
     node = workspace.create_requirement_document("SDLC-RAW-0001 — T", "folder-raw", "7")
@@ -334,7 +334,7 @@ def test_document_is_created_with_a_client_supplied_secret():
         return StubResponse(_json.dumps(rpc([dict(seen["view"])])).encode())
 
     workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
 
     first = workspace.create_requirement_document("A", "folder-raw", "7")
@@ -363,7 +363,7 @@ RELATION_SCHEMA = {
 def build_with_relations(payloads):
     opener = StubOpener([ok(RELATION_SCHEMA), *payloads])
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
     return workspace, opener
 
@@ -429,7 +429,7 @@ def test_a_database_without_the_relation_fields_reads_no_relations():
     """Requirement add must keep working against a Database lacking them."""
     opener = StubOpener([ok(REQUIREMENT_SCHEMA)])
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
     relations = workspace.requirement_relations("std-1")
 
@@ -505,7 +505,7 @@ def test_affects_is_added_with_add_collection_items():
 def test_a_database_without_the_relation_field_cannot_add_an_edge():
     opener = StubOpener([ok(REQUIREMENT_SCHEMA)])
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
     with pytest.raises(FiberyError):
         workspace.add_depends_on("std-1", "dep-1")
@@ -516,7 +516,7 @@ def build_apply_views(payloads):
     """View operations of the processor workspace that never touch the schema."""
     opener = StubOpener(list(payloads))
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
     return workspace, opener
 

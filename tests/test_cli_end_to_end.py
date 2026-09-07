@@ -98,7 +98,9 @@ def fibery(monkeypatch):
     monkeypatch.setattr(
         cli,
         "FiberyClient",
-        lambda settings: FiberyClient(settings, url_opener=stand_in),
+        lambda settings: FiberyClient(
+            settings, url_opener=stand_in, clock=lambda: 0.0, sleeper=lambda s: None
+        ),
     )
     return stand_in
 

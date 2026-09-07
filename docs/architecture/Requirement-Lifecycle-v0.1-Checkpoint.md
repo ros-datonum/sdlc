@@ -134,9 +134,11 @@ repository stores no requirement mirror; Fibery remains the only source.
 
 Standing items, recorded so they are not mistaken for guarantees:
 
-- Fibery rate-limits at about three requests per second; a burst of CLI runs
-  returns HTTP 429, which every capability reports explicitly and resumes from
-  on retry. No retry or throttling infrastructure exists.
+- Fibery rate-limits at three requests per second per token; the client paces
+  every request at least 0.5 s apart and retries only known read-only requests
+  after HTTP 429, at most three attempts. A rate-limited mutation is reported
+  once and resumed from durable state on rerun; nothing coordinates
+  simultaneous SDLC processes, so one command runs at a time per workspace.
 - A failed final transition can be indistinguishable from a deliberate manual
   return to the previous State; the frozen capabilities preserve the observed
   State rather than guess, and recovery is manual.

@@ -502,3 +502,30 @@ also unchanged by the second.
 Consequence: re-adding a confirmed relation cannot duplicate an edge or fail.
 Apply still reads existing edges before writing, so that its report of what it
 wrote is exact, but a retry that repeats an add is harmless.
+
+## Constraint 27 — rate limiting: pace everything, replay only known reads
+
+Fibery documents 3 requests per second per token and 7 per workspace, and
+answers HTTP 429 above that. `Retry-After` is not guaranteed, and a 429 on a
+mutation does not prove the mutation was not applied. Commands batches are
+not transactional (constraint 16), so a 200 carrying a failed envelope is a
+result, not a transport failure.
+
+The client therefore spaces all request starts at least 0.5 s apart on a
+monotonic clock, for every endpoint family, from the first request of the
+process on, without credit for idle time. It replays after a 429 only when
+the request is explicitly known to be read-only: `fibery.schema/query`,
+`fibery.entity/query`, `query-folders`, `query-views` and `GET
+/api/documents`. A batch replays only when every command in it is on that
+list. Replay is bounded to 3 attempts in total, backoff 1 s then 2 s or a
+valid `Retry-After` if longer, within a 10 s wait budget; a longer server
+delay ends the request instead of retrying early. Everything else, including
+`PUT /api/documents`, `create-views`, `update-views`, `create-folders`,
+`fibery.entity/create`, `update` and `add-collection-items`, is attempted
+once. Pacing is per process; concurrent processes are not coordinated.
+
+Error bodies and vendor error objects can echo the request, including
+requirement prose and the document secret in a `/api/documents/<secret>`
+path. Transport diagnostics therefore report only the endpoint family, HTTP
+status, category and attempt count, or an integer JSON-RPC code; the body,
+the vendor name and message, the path and exception text are withheld.
