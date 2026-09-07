@@ -303,7 +303,10 @@ def _no_changes_result(context: _Context) -> StandardProcessResult:
 
 
 def _failure_result(failure: _StageFailed, journal: _Journal) -> StandardProcessResult:
-    """Durable state means PARTIAL_PROCESSING; a retry resumes it.
+    """Durable state means PARTIAL_PROCESSING; an explicit resume completes it.
+
+    An ordinary retry over the persisted Result refuses as ambiguous (section
+    9); the details name the Result so the operator can pass --resume-result.
 
     A processing-state conflict is reported as itself even when this run
     already made something durable: the durable steps are listed and left in

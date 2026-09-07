@@ -456,10 +456,13 @@ the Root Document was rewritten  =>  a valid Process Result already exists
 ```
 
 Failure **after** the Process Result is persisted: the Requirement stays in
-`Process`, the Process Result and any partial writes remain, and a retry resumes
-deterministically without invoking the model — except where the only remaining
-step was the transition, which section 11 leaves to an operator. A run that
-fails to reach `Review` reports that explicitly and never claims success.
+`Process`, the Process Result and any partial writes remain, and the next
+ordinary run finds the ambiguous snapshot of section 9 (tree equal to that
+Result's input, not its output) and refuses; the operator completes it with
+`--resume-result`, which applies the persisted output without invoking the
+model — except where the only remaining step was the transition, which
+section 11 leaves to an operator. A run that fails to reach `Review` reports
+that explicitly and never claims success.
 
 Failure **before** it is persisted: no durable normalized output exists, so a
 retry may invoke the model again.
