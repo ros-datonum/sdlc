@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -61,7 +60,6 @@ CHILD_DIRECTORY_PREFIX = "sdlc-model-"
 
 STAGE_AUTHENTICATION = "authentication"
 STAGE_INFERENCE = "inference"
-SAFE_TOKEN = re.compile(r"[A-Za-z0-9._-]{1,32}")
 
 # -- execution support -------------------------------------------------------
 #
@@ -87,14 +85,15 @@ EXECUTION_UNAVAILABLE_FAMILIES = {
 # -- positive authentication evidence ----------------------------------------
 #
 # Claude Code: `claude auth status --json` (verified on 2.1.260) reports
-# loggedIn, authMethod, apiProvider and subscriptionType. A subscription login
-# is authMethod "claude.ai" routed through the first-party API. Anything else
-# (console/API-key auth, Bedrock/Vertex/Foundry routing, unknown values) fails.
+# loggedIn, authMethod and apiProvider among other fields. A subscription
+# login is authMethod "claude.ai" routed through the first-party API. Anything
+# else (console/API-key auth, Bedrock/Vertex/Foundry routing, unknown values)
+# fails, and the received value is never reported: only these allowlisted
+# labels ever appear in a summary.
 CLAUDE_AUTH_STATUS_ARGS = ("auth", "status", "--json")
 CLAUDE_LOGGED_IN_KEY = "loggedIn"
 CLAUDE_AUTH_METHOD_KEY = "authMethod"
 CLAUDE_API_PROVIDER_KEY = "apiProvider"
-CLAUDE_SUBSCRIPTION_KEY = "subscriptionType"
 CLAUDE_ALLOWED_AUTH_METHODS = frozenset({"claude.ai"})
 CLAUDE_ALLOWED_API_PROVIDERS = frozenset({"firstParty"})
 
@@ -520,22 +519,22 @@ def _claude_login_summary(
             f"{definition.executable} reports it is logged out. Log in with the "
             "local CLI; SDLC will not fall back to an API key."
         )
+    # Received values are never quoted, transformed or partially shown: only
+    # the fixed rejection category and the allowlisted labels appear.
     method = status.get(CLAUDE_AUTH_METHOD_KEY)
     if method not in CLAUDE_ALLOWED_AUTH_METHODS:
         raise refuse(
-            f"{definition.executable} is authenticated through {_label(method)}, "
-            "which is not a subscription login. SDLC requires the claude.ai account "
-            "login and never uses API-key or Console billing authentication."
+            f"{definition.executable}: authentication rejected: unsupported or "
+            "unrecognized login method. SDLC requires the claude.ai account login "
+            "and never uses API-key or Console billing authentication."
         )
     provider = status.get(CLAUDE_API_PROVIDER_KEY)
     if provider not in CLAUDE_ALLOWED_API_PROVIDERS:
         raise refuse(
-            f"{definition.executable} routes requests through {_label(provider)}, "
-            "not the first-party API. SDLC does not use third-party provider routes."
+            f"{definition.executable}: authentication rejected: unsupported or "
+            "unrecognized provider route. SDLC uses only the first-party API."
         )
-    subscription = status.get(CLAUDE_SUBSCRIPTION_KEY)
-    tier = f", subscription {subscription}" if isinstance(subscription, str) else ""
-    return f"{definition.executable}: logged in via {method} ({provider}{tier})"
+    return f"{definition.executable}: logged in via {method} ({provider})"
 
 
 def _codex_login_summary(
@@ -555,14 +554,3 @@ def _codex_login_summary(
             stage=STAGE_AUTHENTICATION,
         )
     return f"{definition.executable}: {CODEX_CHATGPT_LOGIN_LINE}"
-
-
-def _label(value: object) -> str:
-    """Name a status value only when it is a short plain token.
-
-    Anything else is described, not quoted: the status document may carry
-    account details, and they never belong in an exception.
-    """
-    if isinstance(value, str) and SAFE_TOKEN.fullmatch(value):
-        return repr(value)
-    return "an unrecognized value"

@@ -301,7 +301,8 @@ def test_the_working_directory_is_a_fresh_temporary_directory_outside_the_repo()
 def test_a_claude_subscription_login_on_the_first_party_api_is_accepted():
     summary = build(CLAUDE, results=[ok(CLAUDE)])[0].preflight()
 
-    assert summary == "claude: logged in via claude.ai (firstParty, subscription max)"
+    assert summary == "claude: logged in via claude.ai (firstParty)"
+    assert "max" not in summary, "account fields are not reported"
     assert "someone@example.com" not in summary and "org-1" not in summary
 
 
@@ -369,7 +370,7 @@ def test_claude_non_subscription_login_methods_are_rejected(method):
     )
     runtime, _ = build(CLAUDE, results=[(0, status, "")])
 
-    with pytest.raises(ModelAuthenticationError, match="not a subscription login"):
+    with pytest.raises(ModelAuthenticationError, match="unrecognized login method"):
         runtime.preflight()
 
 
@@ -386,7 +387,7 @@ def test_claude_non_first_party_routing_is_rejected(provider):
     )
     runtime, _ = build(CLAUDE, results=[(0, status, "")])
 
-    with pytest.raises(ModelAuthenticationError, match="first-party"):
+    with pytest.raises(ModelAuthenticationError, match="unrecognized provider route"):
         runtime.preflight()
 
 
@@ -698,11 +699,10 @@ def test_a_rejected_status_document_is_never_quoted(caplog):
     )
     runtime, _ = build(CLAUDE, results=[(0, status, NOISE)])
 
-    with pytest.raises(ModelAuthenticationError, match="not a subscription") as info:
+    with pytest.raises(ModelAuthenticationError, match="unrecognized login") as info:
         runtime.run(PROMPT_MARKER)
 
     assert_private(info.value, caplog)
-    assert "unrecognized value" in str(info.value)
 
 
 @pytest.mark.parametrize("stage", ["authentication", "inference"])
@@ -733,3 +733,61 @@ def test_an_os_error_reports_only_its_type(caplog, stage):
 
     assert_private(info.value, caplog)
     assert info.value.stage == stage
+
+
+# -- short, plain unknown status values are never echoed -----------------------
+
+SHORT_MARKER = "zq7private"
+
+
+def _refusing_status(field):
+    status = {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty"}
+    status[field] = SHORT_MARKER
+    return json.dumps(status)
+
+
+@pytest.mark.parametrize(
+    ("field", "category"),
+    [("authMethod", "login method"), ("apiProvider", "provider route")],
+)
+def test_a_short_unknown_status_value_is_rejected_without_being_echoed(
+    caplog, field, category
+):
+    caplog.set_level(logging.DEBUG)
+    runtime, runner = build(CLAUDE, results=[(0, _refusing_status(field), "")])
+
+    with pytest.raises(ModelAuthenticationError) as info:
+        runtime.run("p")
+
+    assert f"unsupported or unrecognized {category}" in str(info.value)
+    assert SHORT_MARKER not in str(info.value) + repr(info.value) + caplog.text
+    assert len(runner.calls) == 1, "rejected before inference"
+
+
+@pytest.mark.parametrize("field", ["authMethod", "apiProvider"])
+def test_a_short_unknown_status_value_stays_out_of_results_and_cli_output(
+    caplog, field
+):
+    import io
+
+    from sdlc import cli
+
+    caplog.set_level(logging.DEBUG)
+    ws, raw, _ = build_workspace()
+    runtime, _ = build(CLAUDE, results=[(0, _refusing_status(field), "")])
+
+    result = process_raw_requirement(ws, runtime, raw.id)
+    rendered = io.StringIO()
+    cli.render_process_result(result, rendered)
+
+    assert result.code is ProcessResultCode.MODEL_RUNTIME_FAILED
+    surfaces = " ".join((*result.details, result.message, rendered.getvalue()))
+    assert SHORT_MARKER not in surfaces + caplog.text
+    assert "unsupported or unrecognized" in surfaces
+
+
+def test_the_known_valid_status_is_still_accepted_as_a_control():
+    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), (0, "answer", "")])
+
+    assert runtime.run("p").text == "answer"
+    assert len(runner.calls) == 2

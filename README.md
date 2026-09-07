@@ -96,6 +96,11 @@ Check local authentication with:
 bash scripts/check-local-model-auth.sh
 ```
 
+The script runs each runtime's status command through the runtime's own
+validator and prints SDLC-authored summaries only, never the account, email,
+organization or raw CLI output. It marks Codex as authenticated but not
+eligible for SDLC reasoning execution and launches no model.
+
 Before every model call the runtime proves the login positively: Claude must
 report a `claude.ai` login on the first-party API from `claude auth status
 --json`; Codex must print its own `Logged in using ChatGPT` line from
