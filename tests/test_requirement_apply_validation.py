@@ -26,9 +26,9 @@ from apply_fake import (
     rewrite_payload,
     standard,
 )
+from review_fake import move_process_output, tree_bound_process_result
 from sdlc.fibery_workspace import DocumentNode, FiberyError
 from sdlc.process_result import (
-    build_process_result,
     process_result_name,
     render_process_result,
 )
@@ -91,10 +91,10 @@ def test_an_edited_root_document_is_stale():
 
 def test_a_new_process_iteration_is_stale():
     ws, requirement, root, before = build_apply_workspace(proposals=(proposal(),))
-    result = build_process_result(
-        requirement_id=REQUIREMENT_ID,
+    result = tree_bound_process_result(
+        ws,
+        root,
         iteration=2,
-        input_fingerprint="input-2",
         analysis=AnalysisResult(
             normalized=NormalizedRequirement(**normalized(title="Rewritten")),
             analysis={},
@@ -110,7 +110,7 @@ def test_a_new_process_iteration_is_stale():
 
 def test_a_changed_process_output_fingerprint_is_stale():
     ws, requirement, _, before = build_apply_workspace(proposals=(proposal(),))
-    rewrite_payload(ws, process_result_nodes(ws)[-1], output_fingerprint="moved")
+    move_process_output(ws, process_result_nodes(ws)[-1])
     result = refused(ws, requirement, before, Code.REVIEW_RESULT_STALE)
     assert "no longer produces" in " ".join(result.details)
 
@@ -376,10 +376,10 @@ def test_a_new_process_iteration_with_the_same_output_is_stale():
     ws, requirement, root, before = build_apply_workspace(proposals=(proposal(),))
     reviewed = process_result_nodes(ws)[-1]
     reviewed_payload, _, _ = payload_of(ws, reviewed)
-    later = build_process_result(
-        requirement_id=REQUIREMENT_ID,
+    later = tree_bound_process_result(
+        ws,
+        root,
         iteration=2,
-        input_fingerprint="input-2",
         analysis=AnalysisResult(
             normalized=NormalizedRequirement(**normalized()),
             analysis={},

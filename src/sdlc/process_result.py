@@ -16,6 +16,7 @@ import json
 import re
 from dataclasses import dataclass
 
+from sdlc.normative_tree import InvalidTreeManifest, TreeManifest
 from sdlc.raw_source import canonical_markdown, fingerprint_of
 from sdlc.standard_analysis import (
     SECTION_KEYS,
@@ -28,7 +29,13 @@ from sdlc.standard_analysis import (
     RelationKind,
 )
 
-PROCESS_RESULT_VERSION = "0.1"
+# 0.2 binds the normative tree (Requirement-Normative-Tree-Binding-v0.1); 0.1
+# is the legacy Root-only binding, still readable as history, never written.
+PROCESS_RESULT_VERSION = "0.2"
+LEGACY_PROCESS_RESULT_VERSION = "0.1"
+SUPPORTED_PROCESS_RESULT_VERSIONS = frozenset(
+    {PROCESS_RESULT_VERSION, LEGACY_PROCESS_RESULT_VERSION}
+)
 PROCESS_RESULT_SUFFIX = "Process Result"
 ITERATION_WIDTH = 4
 FIRST_ITERATION = 1
@@ -43,6 +50,8 @@ ITERATION_KEY = "iteration"
 REQUIREMENT_ID_KEY = "requirement_id"
 INPUT_FINGERPRINT_KEY = "input_fingerprint"
 OUTPUT_FINGERPRINT_KEY = "output_fingerprint"
+INPUT_TREE_KEY = "normative_input_tree"
+OUTPUT_TREE_KEY = "normative_output_tree"
 NORMALIZED_KEY = "normalized_requirement"
 ANALYSIS_KEY = "analysis"
 FINDINGS_KEY = "findings"
@@ -93,10 +102,19 @@ class ProcessResult:
     findings: tuple[Finding, ...]
     proposed_relations: tuple[ProposedRelation, ...]
     version: str = PROCESS_RESULT_VERSION
+    # The tree this iteration consumed and the tree it intends to produce:
+    # the same Documents, parents and names, with only the Root's content
+    # fingerprint replaced. None on a legacy 0.1 result.
+    input_tree: TreeManifest | None = None
+    output_tree: TreeManifest | None = None
 
     @property
     def name(self) -> str:
         return process_result_name(self.requirement_id, self.iteration)
+
+    @property
+    def is_tree_bound(self) -> bool:
+        return self.input_tree is not None and self.output_tree is not None
 
 
 def build_process_result(
@@ -104,18 +122,30 @@ def build_process_result(
     iteration: int,
     input_fingerprint: str,
     analysis: AnalysisResult,
+    input_tree: TreeManifest,
 ) -> ProcessResult:
-    """Assemble the artifact, fingerprinting the document it will produce."""
+    """Assemble the artifact, fingerprinting the document it will produce.
+
+    The intended output tree is derived here from the deterministic rendering
+    of the normalized document, never from anything the model supplied.
+    """
     document = analysis.normalized.document(requirement_id)
+    output_fingerprint = document_fingerprint(document)
+    if input_tree.root_entry.content_fingerprint != input_fingerprint:
+        raise InvalidProcessResult(
+            "The captured tree's Root fingerprint disagrees with input_fingerprint."
+        )
     return ProcessResult(
         requirement_id=requirement_id,
         iteration=iteration,
         input_fingerprint=input_fingerprint,
-        output_fingerprint=document_fingerprint(document),
+        output_fingerprint=output_fingerprint,
         normalized=analysis.normalized,
         analysis=dict(analysis.analysis),
         findings=tuple(analysis.findings),
         proposed_relations=tuple(analysis.proposed_relations),
+        input_tree=input_tree,
+        output_tree=input_tree.with_root_fingerprint(output_fingerprint),
     )
 
 
@@ -127,6 +157,16 @@ def render_process_result(result: ProcessResult) -> str:
         REQUIREMENT_ID_KEY: result.requirement_id,
         INPUT_FINGERPRINT_KEY: result.input_fingerprint,
         OUTPUT_FINGERPRINT_KEY: result.output_fingerprint,
+        **(
+            {
+                INPUT_TREE_KEY: result.input_tree.to_payload(),
+                OUTPUT_TREE_KEY: result.output_tree.to_payload(),
+            }
+            if result.version != LEGACY_PROCESS_RESULT_VERSION
+            and result.input_tree is not None
+            and result.output_tree is not None
+            else {}
+        ),
         NORMALIZED_KEY: {
             "title": result.normalized.title,
             **{key: getattr(result.normalized, key) for key in SECTION_KEYS},
@@ -180,10 +220,10 @@ def parse_process_result(text: str) -> ProcessResult:
         raise InvalidProcessResult("The Process Result payload must be an object.")
 
     version = payload.get(VERSION_KEY)
-    if version != PROCESS_RESULT_VERSION:
+    if version not in SUPPORTED_PROCESS_RESULT_VERSIONS:
         raise InvalidProcessResult(
             f"Process Result version {version!r} is not supported; this "
-            f"processor reads {PROCESS_RESULT_VERSION!r}."
+            f"processor reads {sorted(SUPPORTED_PROCESS_RESULT_VERSIONS)!r}."
         )
     iteration = payload.get(ITERATION_KEY)
     if not isinstance(iteration, int) or iteration < FIRST_ITERATION:
@@ -203,15 +243,20 @@ def parse_process_result(text: str) -> ProcessResult:
             f"The persisted normalized requirement is incomplete: {error}"
         ) from error
 
+    input_fingerprint = _require_text(
+        payload.get(INPUT_FINGERPRINT_KEY), "input_fingerprint"
+    )
+    output_fingerprint = _require_text(
+        payload.get(OUTPUT_FINGERPRINT_KEY), "output_fingerprint"
+    )
+    input_tree, output_tree = _read_trees(
+        payload, version, requirement_id, input_fingerprint, output_fingerprint
+    )
     return ProcessResult(
         requirement_id=requirement_id,
         iteration=iteration,
-        input_fingerprint=_require_text(
-            payload.get(INPUT_FINGERPRINT_KEY), "input_fingerprint"
-        ),
-        output_fingerprint=_require_text(
-            payload.get(OUTPUT_FINGERPRINT_KEY), "output_fingerprint"
-        ),
+        input_fingerprint=input_fingerprint,
+        output_fingerprint=output_fingerprint,
         normalized=normalized,
         analysis=dict(payload.get(ANALYSIS_KEY) or {}),
         findings=tuple(
@@ -221,7 +266,57 @@ def parse_process_result(text: str) -> ProcessResult:
             _read_relation(entry) for entry in (payload.get(RELATIONS_KEY) or [])
         ),
         version=version,
+        input_tree=input_tree,
+        output_tree=output_tree,
     )
+
+
+def _read_trees(
+    payload: dict[str, object],
+    version: str,
+    requirement_id: str,
+    input_fingerprint: str,
+    output_fingerprint: str,
+) -> tuple[TreeManifest | None, TreeManifest | None]:
+    """The 0.2 tree bindings, validated for internal consistency.
+
+    A legacy 0.1 payload has none, and none is ever synthesized for it. A 0.2
+    payload must carry both, owned by this Requirement, with Root entries
+    agreeing with the retained Root fingerprints, and an output tree that
+    preserves every child, parent and name of the input tree.
+    """
+    if version == LEGACY_PROCESS_RESULT_VERSION:
+        if INPUT_TREE_KEY in payload or OUTPUT_TREE_KEY in payload:
+            raise InvalidProcessResult(
+                "A 0.1 Process Result cannot carry normative tree bindings."
+            )
+        return None, None
+    try:
+        input_tree = TreeManifest.from_payload(payload.get(INPUT_TREE_KEY))
+        output_tree = TreeManifest.from_payload(payload.get(OUTPUT_TREE_KEY))
+    except InvalidTreeManifest as error:
+        raise InvalidProcessResult(
+            f"Invalid normative tree binding: {error}"
+        ) from error
+    for label, tree in ((INPUT_TREE_KEY, input_tree), (OUTPUT_TREE_KEY, output_tree)):
+        if tree.requirement_id != requirement_id:
+            raise InvalidProcessResult(
+                f"{label} belongs to {tree.requirement_id!r}, not {requirement_id!r}."
+            )
+    if input_tree.root_entry.content_fingerprint != input_fingerprint:
+        raise InvalidProcessResult(
+            "normative_input_tree's Root entry disagrees with input_fingerprint."
+        )
+    if output_tree.root_entry.content_fingerprint != output_fingerprint:
+        raise InvalidProcessResult(
+            "normative_output_tree's Root entry disagrees with output_fingerprint."
+        )
+    if output_tree != input_tree.with_root_fingerprint(output_fingerprint):
+        raise InvalidProcessResult(
+            "normative_output_tree changes more than the Root content: a Process "
+            "Result may not add, remove, rename, re-parent or alter children."
+        )
+    return input_tree, output_tree
 
 
 def _require_text(value: object, field: str) -> str:

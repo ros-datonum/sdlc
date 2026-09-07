@@ -178,13 +178,19 @@ current latest Process Result iteration
     == Review Result.reviewed_process_iteration
 that Process Result's output_fingerprint
     == Review Result.reviewed_process_output_fingerprint
+current normative tree fingerprint (traversed afresh)
+    == Review Result.reviewed_normative_tree fingerprint
+both artifacts tree-bound (0.2) and coherent
+    else NORMATIVE_TREE_EVIDENCE_REQUIRED, zero writes
 ```
 
-These are the same three bindings the frozen Reviewer checks before certifying
-and the frozen Ready Decision checks before approving. The Process bindings are
-re-read from Fibery, never trusted from the Review Result's copies, so the check
+These are the same four bindings the frozen Reviewer checks before certifying
+and the frozen Ready Decision checks before approving
+(Requirement-Normative-Tree-Binding-v0.1). The Process bindings are re-read
+from Fibery, never trusted from the Review Result's copies, so the check
 cannot be circular. Fingerprints use the frozen `canonical_markdown`
-representation, which keeps fenced content literal.
+representation, which keeps fenced content literal. Legacy Root-only evidence
+is never applied; an already `Applied` Requirement is untouched by this rule.
 
 If any binding disagrees before the first write:
 
@@ -391,7 +397,8 @@ finished to a human browsing Fibery, while missing edges under `Draft` do not.
 
 ## 12. Revalidation before Applied
 
-Step 12 repeats the section 6 check. If the Root Document or the Process
+Step 12 repeats the section 6 check, including a fresh traversal of the
+normative tree. If the Root Document, a normative child or the Process
 history moved during the application:
 
 ```text
@@ -666,8 +673,10 @@ Applied -> REQUIREMENT_ALREADY_APPLIED, zero mutations, no repair
 
 ```text
 Root fingerprint changed                  -> REVIEW_RESULT_STALE
+normative child changed after review      -> REVIEW_RESULT_STALE
 Process iteration changed                 -> REVIEW_RESULT_STALE
 Process output fingerprint changed        -> REVIEW_RESULT_STALE
+legacy 0.1 Process or Review Result       -> NORMATIVE_TREE_EVIDENCE_REQUIRED
 missing / malformed / duplicate Review Result
 missing / malformed / duplicate Process Result
 older artifact never used as fallback
@@ -730,6 +739,7 @@ each: retry completes with no duplicate edge, no second Root, one Applied
 binding moves before the first write      -> REVIEW_RESULT_STALE, zero writes
 binding moves after edges were written    -> edges kept, Root move as reached,
                                              no Applied, PARTIAL_APPLY (stale)
+a child edited between the checkpoints    -> the same, named in the details
 ```
 
 ### Final invariant and hard immutability

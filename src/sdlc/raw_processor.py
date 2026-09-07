@@ -35,6 +35,7 @@ from sdlc.fibery_workspace import (
     RequirementRecord,
 )
 from sdlc.model_runtime import ModelRuntime, ModelRuntimeError
+from sdlc.normative_tree import classify_artifact_name
 from sdlc.processing_result import (
     InvalidProcessingResult,
     KeyedCandidate,
@@ -238,7 +239,7 @@ def _load_context(workspace: RawProcessorWorkspace, raw_entity_id: str) -> _Cont
         )
 
     root = documents[0]
-    body = _read_document_tree(workspace, root)
+    body = _read_document_tree(workspace, raw, root)
     draft_folder = _draft_folder_id(workspace, project)
     return _Context(
         raw=raw,
@@ -250,24 +251,43 @@ def _load_context(workspace: RawProcessorWorkspace, raw_entity_id: str) -> _Cont
     )
 
 
-def _read_document_tree(workspace: RawProcessorWorkspace, root: DocumentNode) -> str:
+def _read_document_tree(
+    workspace: RawProcessorWorkspace, raw: RequirementRecord, root: DocumentNode
+) -> str:
     """Read the Root Document and every nested child, depth first.
 
-    The Processing Result child is skipped: it is this processor's own output,
-    not requirement source material.
+    This RAW's own Processing Result is skipped by the shared artifact
+    classifier (name, owning Requirement ID, direct child of the Root), not
+    by a name suffix; any other artifact name in the tree is refused rather
+    than read as source. RAW binds no tree manifest; that contract belongs to
+    Standard Requirements.
     """
     sections: list[str] = []
 
-    def visit(node: DocumentNode, depth: int) -> None:
-        if node.name.endswith(processing_result_name("").strip()):
-            return
+    def admit(child: DocumentNode, parent: DocumentNode) -> bool:
+        classified = classify_artifact_name(child.name)
+        if classified is None:
+            return True
+        owner, kind = classified
+        if owner == raw.requirement_id and parent.id == root.id:
+            return False
+        raise _StageFailed(
+            ProcessResultCode.NORMATIVE_TREE_INVALID,
+            f"Document {child.name!r} ({child.id}) carries the {kind} artifact "
+            f"name of {owner!r} under {parent.name!r} in the tree of "
+            f"{raw.requirement_id}; unsupported placement.",
+            (child.id,),
+        )
+
+    def visit(node: DocumentNode) -> None:
         content = workspace.read_document_content(node.secret or "")
         sections.append(f"<!-- document: {node.name} -->\n{content}")
         for child in workspace.child_documents(node.id):
-            visit(child, depth + 1)
+            if admit(child, node):
+                visit(child)
 
     try:
-        visit(root, 0)
+        visit(root)
     except FiberyError as error:
         raise _StageFailed(
             ProcessResultCode.FIBERY_READ_FAILED,

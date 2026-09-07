@@ -36,6 +36,7 @@ from sdlc.fibery_workspace import (
     ReadyDecisionWorkspace,
     RequirementRecord,
 )
+from sdlc.normative_tree import NormativeTreeError, TreeManifest, read_normative_tree
 from sdlc.process_result import (
     InvalidProcessResult,
     ProcessResult,
@@ -83,6 +84,7 @@ class _Bindings:
     document_fingerprint: str
     process_iteration: int
     process_output_fingerprint: str
+    tree_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,7 @@ class _History:
     """The Requirement's current evidence, read fresh from Fibery."""
 
     root_content: str
+    tree: TreeManifest
     latest_process: ProcessResult
     latest_review: ReviewResult
 
@@ -99,15 +102,18 @@ class _History:
             document_fingerprint=document_fingerprint(self.root_content),
             process_iteration=self.latest_process.iteration,
             process_output_fingerprint=self.latest_process.output_fingerprint,
+            tree_fingerprint=self.tree.fingerprint,
         )
 
     @property
     def reviewed(self) -> _Bindings:
         review = self.latest_review
+        assert review.reviewed_tree is not None  # _require_tree_evidence
         return _Bindings(
             document_fingerprint=review.reviewed_document_fingerprint,
             process_iteration=review.reviewed_process_iteration,
             process_output_fingerprint=review.reviewed_process_output_fingerprint,
+            tree_fingerprint=review.reviewed_tree.fingerprint,
         )
 
 
@@ -289,13 +295,23 @@ def _read_history(
     root = _root_document(workspace, requirement)
     try:
         children = workspace.child_documents(root.id)
-        root_content = workspace.read_document_content(root.secret or "")
     except FiberyError as error:
         raise _Refused(
             ReadyDecisionResultCode.FIBERY_READ_FAILED,
             f"Could not read the evidence of {requirement.requirement_id}.",
             (str(error),),
         ) from error
+    try:
+        tree = read_normative_tree(workspace, requirement, root)
+    except NormativeTreeError as error:
+        raise _Refused(
+            ReadyDecisionResultCode.FIBERY_READ_FAILED
+            if error.read_failed
+            else ReadyDecisionResultCode.NORMATIVE_TREE_INVALID,
+            error.message,
+            error.details,
+        ) from error
+    root_content = tree.root.body
 
     process_nodes = _artifacts_by_iteration(
         children,
@@ -325,8 +341,9 @@ def _read_history(
         )
     latest_review_iteration = max(review_nodes)
     latest_process_iteration = max(process_nodes)
-    return _History(
+    history = _History(
         root_content=root_content,
+        tree=tree.manifest,
         latest_review=_read_review_result(
             workspace,
             review_nodes[latest_review_iteration],
@@ -340,6 +357,26 @@ def _read_history(
             latest_process_iteration,
         ),
     )
+    _require_tree_evidence(requirement, history)
+    return history
+
+
+def _require_tree_evidence(requirement: RequirementRecord, history: _History) -> None:
+    """Approval certifies a tree, so only tree-bound, coherent evidence counts.
+
+    Legacy Root-only artifacts stay readable history but prove nothing about
+    the children, whether or not the Requirement has any today.
+    """
+    process, review = history.latest_process, history.latest_review
+    if not process.is_tree_bound or not review.is_tree_bound:
+        raise _Refused(
+            ReadyDecisionResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
+            f"{requirement.requirement_id} has only legacy Root-only evidence "
+            f"(Process Result {process.iteration} tree-bound: {process.is_tree_bound}, "
+            f"Review Result {review.iteration} tree-bound: {review.is_tree_bound}); "
+            "approval needs tree-bound Process and Review evidence. Send it for "
+            "rework, then run Process and Review. Nothing was written.",
+        )
 
 
 def _root_document(
@@ -467,15 +504,22 @@ def _read_process_result(
 
 def _check_bindings(requirement: RequirementRecord, history: _History) -> None:
     """The approval must apply to exactly what the latest review certified."""
-    if history.current == history.reviewed:
-        return
-    raise _Refused(
-        ReadyDecisionResultCode.REVIEW_RESULT_STALE,
-        f"{requirement.requirement_id} no longer matches what Review Result "
-        f"{history.latest_review.iteration} reviewed; approving it would "
-        "certify content nobody reviewed. Send it for rework instead.",
-        _describe_drift(history.reviewed, history.current),
-    )
+    if history.current != history.reviewed:
+        raise _Refused(
+            ReadyDecisionResultCode.REVIEW_RESULT_STALE,
+            f"{requirement.requirement_id} no longer matches what Review Result "
+            f"{history.latest_review.iteration} reviewed; approving it would "
+            "certify content nobody reviewed. Send it for rework instead.",
+            _describe_drift(history.reviewed, history.current),
+        )
+    process, review = history.latest_process, history.latest_review
+    if review.reviewed_tree.fingerprint != process.output_tree.fingerprint:
+        raise _Refused(
+            ReadyDecisionResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
+            f"Review Result {review.iteration} of {requirement.requirement_id} does "
+            f"not review the intended output tree of Process Result "
+            f"{process.iteration}; the evidence is incoherent. Nothing was written.",
+        )
 
 
 def _describe_drift(reviewed: _Bindings, current: _Bindings) -> tuple[str, ...]:
@@ -483,6 +527,8 @@ def _describe_drift(reviewed: _Bindings, current: _Bindings) -> tuple[str, ...]:
     drift = []
     if reviewed.document_fingerprint != current.document_fingerprint:
         drift.append("The Root Document was edited after the review.")
+    elif reviewed.tree_fingerprint != current.tree_fingerprint:
+        drift.append("A normative child Document changed after the review.")
     if reviewed.process_iteration != current.process_iteration:
         drift.append(
             f"Process ran again: iteration {current.process_iteration} now "

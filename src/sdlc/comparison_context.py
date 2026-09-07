@@ -5,11 +5,12 @@ obligations it is comparing against, not an index of their titles. This
 module reads, validates and renders that small corpus in one place, so RAW
 Process, Standard Process and Standard Review supply the same evidence.
 
-Scope is deliberately explicit: each entry is the peer's entity metadata and
-its complete current Root Document. Child Documents are not included, so a
-detail that lives only in a normative child is outside what this context can
-verify (audit finding A5, tracked separately). Process and Review Result
-children are never comparison material.
+Scope is explicit: each entry is the peer's entity metadata and its complete
+current normative tree (Requirement-Normative-Tree-Binding-v0.1): the Root
+and every normative descendant, each behind an identity marker, read by the
+same reader the target stages use. Process and Review Result children are
+never comparison material. A peer change never invalidates an existing
+Result of the target.
 
 The corpus is bounded, not truncated. More records than the supported limit,
 or a rendered section larger than the input budget, refuses the invocation
@@ -23,6 +24,11 @@ from dataclasses import dataclass
 
 from sdlc.fibery_workspace import FiberyError, RequirementRecord
 from sdlc.model_runtime import assemble_model_input
+from sdlc.normative_tree import (
+    NormativeTreeError,
+    read_normative_tree,
+    render_normative_tree,
+)
 
 STANDARD_TYPE = "Standard"
 APPLIED_STATE = "Applied"
@@ -47,8 +53,9 @@ STANDING_CANDIDATE = "candidate, not approved authority"
 
 SECTION_HEADER = "# Other Standard Requirements in this Project"
 SECTION_SCOPE = (
-    "Each entry is that Requirement's complete current Root Document with its "
-    "entity metadata. Child Documents are not included. Use these to detect "
+    "Each entry is that Requirement's complete current normative Document tree "
+    "(Root and nested Documents, each behind an identity marker) with its "
+    "entity metadata. Use these to detect "
     "duplication, conflict, change, supersession or dependency. They never "
     "authorize replacing this Requirement's intent, and a peer that is not "
     "Applied is a candidate under review, not approved authority."
@@ -214,20 +221,15 @@ def _read_entry(
             "Root Document is required for comparison, so the model was not invoked.",
         )
     root = attached[0]
-    if not root.secret:
-        raise ComparisonContextError(
-            f"The Root Document of {requirement_id} exposes no content; the model "
-            "was not invoked.",
-        )
     try:
-        content = workspace.read_document_content(root.secret)
-    except FiberyError as error:
+        tree = read_normative_tree(workspace, record, root)
+    except NormativeTreeError as error:
         raise ComparisonContextError(
-            f"Could not read the Root Document of {requirement_id}; the model was "
-            "not invoked.",
-            (f"{requirement_id}: {type(error).__name__}",),
+            f"The normative tree of {requirement_id} could not be established "
+            f"({error.message}); the model was not invoked.",
+            error.details,
         ) from error
-    if not content.strip():
+    if not tree.root.body.strip():
         raise ComparisonContextError(
             f"The Root Document of {requirement_id} is empty; a title is not "
             "comparison evidence, so the model was not invoked.",
@@ -240,7 +242,7 @@ def _read_entry(
         state=record.state,
         category=record.category,
         root_document_id=root.id,
-        root_content=content,
+        root_content=render_normative_tree(tree),
     )
 
 

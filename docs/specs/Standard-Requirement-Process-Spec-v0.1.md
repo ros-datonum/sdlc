@@ -80,14 +80,16 @@ Bounded:
 
 ```text
 the Requirement entity (Requirement ID, Title, Category, Revision, Project)
-its Root Document
-its child Documents, recursively, excluding this capability's own artifacts
+its normative tree: the Root Document and every normative descendant, read
+  by the shared reader of Requirement-Normative-Tree-Binding-v0.1 (this
+  capability's and Review's own artifacts are excluded by contract; any
+  other artifact name, misplaced artifact, unreadable node or exceeded limit
+  refuses the run with NORMATIVE_TREE_INVALID / FIBERY_READ_FAILED)
 the Project
 the RAW Requirement it derives from, and that RAW's Root Document
 other Standard Requirements in the Project, as comparison material: for
 each, Requirement ID, Title, Type, State, Category and its complete current
-Root Document (child Documents are not included; see the comparison scope
-below)
+normative tree, read by the same reader (see the comparison scope below)
 ```
 
 The originating RAW is included so Process can distinguish "the source never
@@ -125,8 +127,11 @@ The corpus is read and the input measured only when a new model invocation
 is certain, so a resume, a no-change result or a refused recovery is never
 affected.
 
-This is Root-Document comparison. It does not verify details that live only
-in a peer's normative child Documents, which remains an open finding.
+Each peer entry is that peer's complete normative tree, each Document behind
+an identity marker, so a detail that lives only in a peer's normative child is
+comparison material. A peer's tree failure is `COMPARISON_CONTEXT_INCOMPLETE`
+for this run; a peer change never invalidates an existing Result of the
+target (Requirement-Normative-Tree-Binding-v0.1 section 10).
 
 No Milestones, Epics, Stories, Tasks, or unrelated project state.
 
@@ -215,10 +220,13 @@ overwritten during normal operation.
 Each contains at minimum:
 
 ```text
-process_result_version
+process_result_version    0.2
 iteration
-input_fingerprint      the Root Document content this iteration consumed
-output_fingerprint     the Root Document content this iteration produced
+input_fingerprint         the Root Document content this iteration consumed
+output_fingerprint        the Root Document content this iteration produced
+normative_input_tree      manifest v1 of the tree this iteration consumed
+normative_output_tree     the same manifest with only the Root entry replaced
+                          by output_fingerprint: the intended output tree
 analysis / findings
 normalized Requirement content
 proposed relations
@@ -226,6 +234,13 @@ proposed relations
 
 No chain-of-thought. Serialization is JSON inside the child Document, as with
 the RAW Processing Result.
+
+A 0.2 result is valid only when both manifests belong to this Requirement,
+their Root entries agree with the retained fingerprints and the output tree
+differs from the input tree in nothing but the Root content. A 0.1 result is
+parsed as legacy Root-only evidence, never rejected for lacking trees and
+never given synthesized ones; a 0.1 payload carrying tree keys is invalid
+(Requirement-Normative-Tree-Binding-v0.1 section 4).
 
 The persisted result must be sufficient to reproduce the normalized Root
 Document **without another model call**.
@@ -235,22 +250,30 @@ Fibery's Markdown re-serialization does not register as a change.
 
 ## 9. Same-iteration retry
 
-The Root Document fingerprint decides what a run does. Three cases, and the
-input fingerprint is what separates the second from the third:
+The normative tree manifest decides what a run does. Three cases, and the
+input tree is what separates the second from the third:
 
 ```text
-current == latest.input_fingerprint
+current tree == latest.normative_input_tree
   the normalized rewrite never landed
   -> resume that iteration, without the model
 
-current == latest.output_fingerprint
+current tree == latest.normative_output_tree
   the normalized output is already applied
   -> NO_CHANGES_TO_PROCESS, zero mutations, State stays Process
 
-current differs from both
-  the content genuinely changed
+current tree differs from both
+  the Root or a normative child genuinely changed
   -> a new iteration
+
+latest is a legacy 0.1 result
+  it binds no tree, so its output is never replayed
+  -> a new iteration over the current tree, always; the legacy artifact
+     stays as history and the success message says so
 ```
+
+Comparison is by manifest fingerprint, so an edited, added, removed, renamed
+or re-parented child is a change exactly like a Root edit.
 
 Resuming an unfinished application invokes no model: the persisted result is
 read, the Root Document rewritten, validated, and the transition performed.
@@ -286,7 +309,8 @@ model is undesigned and out of scope.
 If the Requirement is in `Process` but
 
 ```text
-current Root Document fingerprint == latest Process Result.output_fingerprint
+current normative tree fingerprint
+  == latest (tree-bound) Process Result.normative_output_tree fingerprint
 ```
 
 the result is:
@@ -426,10 +450,12 @@ immediately before Process -> Review             (Root must hold the applied out
 
 Protected by the comparison: the entity itself, its Requirement ID, Title,
 Project, Revision and public id; Type `Standard`; State `Process`; exactly one
-attached Root Document with the same identity, content secret and Folder; and
+attached Root Document with the same identity, content secret and Folder;
 Root content canonically equivalent to the captured input (or, before the
-transition, to the output just applied). A Folder change is a conflict, never
-adopted as permission to write elsewhere.
+transition, to the output just applied); and the normative tree, traversed
+afresh from the current attachment, equal by manifest to the captured input
+tree (or, before the transition, to the result's intended output tree). A
+Folder change is a conflict, never adopted as permission to write elsewhere.
 
 Any drift is `PROCESSING_STATE_CONFLICT`: the stale model output is not
 persisted, no Root is rewritten, no State is written, nothing already durable
@@ -518,7 +544,10 @@ Deterministic, with a fake model runtime:
 
 ```text
 entry: only Standard + Process; anything else refused with no model call
-context: RAW ancestry and child Documents assembled; own artifacts excluded
+context: RAW ancestry and the normative tree assembled with identity
+  markers; own artifacts excluded by contract; foreign or misplaced
+  artifacts, nested content under an artifact, unreadable nodes and
+  exceeded limits refuse before the model
 model output: unknown fields, bad relation kinds, bad finding kinds rejected
 Process Result written before any document mutation
   none exists                  -> model runs
@@ -526,9 +555,13 @@ Process Result written before any document mutation
   duplicate for one iteration  -> PROCESSING_STATE_CONFLICT
   malformed / wrong version    -> explicit failure, no model call
 iteration numbering is monotonic; earlier results are never modified
-unchanged Root Document on re-entry -> NO_CHANGES_TO_PROCESS, no new result
-changed Root Document on re-entry   -> new iteration, one model call
+unchanged tree on re-entry          -> NO_CHANGES_TO_PROCESS, no new result
+changed Root or child on re-entry   -> new iteration, one model call
+  (child edited, added, removed, renamed or re-parented alike)
+legacy 0.1 latest result            -> new tree-bound iteration, never replayed
 input_fingerprint / output_fingerprint recorded and used as specified
+normative_input_tree / normative_output_tree recorded and read back
+tree changed during the model call  -> PROCESSING_STATE_CONFLICT, nothing written
 document rewritten from the persisted result, verified canonically
 proposed relations are NOT written to Fibery
 findings do not mutate the referenced Requirement

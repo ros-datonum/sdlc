@@ -27,6 +27,7 @@ from sdlc.comparison_context import (
 )
 from sdlc.fibery_workspace import DocumentNode, FiberyError, RequirementRecord
 from sdlc.model_runtime import assemble_model_input
+from sdlc.normative_tree import NORMATIVE_TREE_MAX_TEXT_CHARS
 from sdlc.raw_processor import process_raw_requirement
 from sdlc.results import ProcessResultCode as RawCode
 from sdlc.results import StandardProcessResultCode as ProcessCode
@@ -101,20 +102,31 @@ class Stage:
         return self.name
 
 
-def _raw_build(peers):
+def _raw_build(peers, pad=None):
     ws, raw, _ = build_workspace(standards=list(peers))
+    if pad is not None:
+        pad_target(ws, raw, RAW, pad)
     return ws, raw
 
 
-def _process_build(peers):
+def _process_build(peers, pad=None):
     ws, std, _ = build_standard_workspace(others=list(peers))
+    if pad is not None:
+        pad_target(ws, std, PROCESS, pad)
     return ws, std
 
 
-def _review_build(peers, findings=(), relations=()):
+def _review_build(peers, findings=(), relations=(), pad=None):
+    # A review target is padded through its Process evidence: the Root and
+    # the Process Result must agree on the tree, or Review refuses to run.
+    changes = {"open_questions": "None." + PADDING_SECTION + pad} if pad else None
     ws, req, _, _ = build_review_workspace(
-        others=list(peers), findings=findings, relations=relations
+        others=list(peers),
+        findings=findings,
+        relations=relations,
+        normalized_changes=changes,
     )
+    ws.reserializes = False
     return ws, req
 
 
@@ -348,11 +360,11 @@ def test_a_query_level_cut_cannot_pass_as_a_complete_corpus(stage):
 
 @pytest.mark.parametrize("stage", STAGES, ids=repr)
 def test_an_oversized_corpus_refuses_without_truncation(stage):
-    huge = "# SDLC-FR-0041 — Fast responses\n\n## Requirement\n\n" + (
-        "x" * COMPARISON_INPUT_LIMIT_CHARACTERS
-    )
+    # Two peers, each within the tree limit, together above the input budget.
+    half = COMPARISON_INPUT_LIMIT_CHARACTERS // 2 + 10_000
+    huge = "# SDLC-FR-0041 — Fast responses\n\n## Requirement\n\n" + "x" * half
     ws, _, model, result, before = run_with_peers(
-        stage, [peer(41)], {"std-peer-41": huge}
+        stage, [peer(41), peer(42)], {"std-peer-41": huge, "std-peer-42": huge}
     )
 
     assert result.code is stage.codes["context"], result
@@ -647,6 +659,10 @@ def test_a_refused_recovery_reads_no_peers(stage):
 
 PRIVATE_LINE = "PRIVATE-SOURCE-LINE-4c1d"
 PADDING_SECTION = "\n\n## Padding\n\n"
+# Keeps one Document under the normative tree's own text limit while the
+# assembled input (that Document plus the prompt and context framing, which
+# are longer than the margin) exceeds the input budget.
+OVERSIZE_FILLER = NORMATIVE_TREE_MAX_TEXT_CHARS - 2_000
 
 
 def _target_root(ws, target, stage):
@@ -672,10 +688,9 @@ def assembled_of(model):
 
 
 def run_padded(stage, filler, peers=(), bodies=None):
-    ws, target = stage.build(list(peers))
+    ws, target = stage.build(list(peers), pad=filler)
     for record in peers:
         with_root(ws, record, (bodies or {}).get(record.id))
-    pad_target(ws, target, stage, filler)
     model = FakeModelRuntime([stage.ok_output])
     before = len(ws.mutations)
     result = stage.run(ws, ws.requirements[target.id], model)
@@ -702,7 +717,7 @@ def assert_refused_whole(stage, ws, model, result, before, label):
 
 @pytest.mark.parametrize("stage", STAGES, ids=repr)
 def test_an_oversized_target_with_a_small_peer_section_is_refused_whole(stage):
-    filler = PRIVATE_LINE + "x" * (MAX_ASSEMBLED_INPUT_CHARS + 1)
+    filler = PRIVATE_LINE + "x" * OVERSIZE_FILLER
     ws, model, result, before = run_padded(stage, filler, peers=[peer(41)])
 
     assert_refused_whole(stage, ws, model, result, before, "oversized target")
@@ -786,7 +801,13 @@ def test_an_oversized_regeneration_input_refuses_and_leaves_the_shell_untouched(
     }[stage.name]
     [shell] = [d for d in ws.documents if d.name.endswith(suffix)]
     assert ws.content[shell.secret] == ""
-    pad_target(ws, target, stage, "x" * (MAX_ASSEMBLED_INPUT_CHARS + 1))
+    # Grow the input through a peer: the target's own tree must keep matching
+    # the evidence the shell was reserved against.
+    with_root(
+        ws,
+        peer(41),
+        "# SDLC-FR-0041 — T\n\n## Requirement\n\n" + "p" * OVERSIZE_FILLER + "\n",
+    )
     model = FakeModelRuntime([stage.ok_output])
     before = len(ws.mutations)
     documents_before = [(d.id, d.name, d.parent_document_id) for d in ws.documents]

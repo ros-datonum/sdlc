@@ -18,11 +18,10 @@ from ready_fake import (
     process_result_nodes,
     review_result_nodes,
 )
+from review_fake import add_process_iteration, move_process_output
 from sdlc.fibery_workspace import DocumentNode, FiberyError
 from sdlc.process_result import (
-    build_process_result,
     process_result_name,
-    render_process_result,
 )
 from sdlc.ready_decision import (
     approve_standard_requirement,
@@ -30,9 +29,7 @@ from sdlc.ready_decision import (
 )
 from sdlc.results import ReadyDecisionResultCode as Code
 from sdlc.review_result import review_result_name
-from sdlc.standard_analysis import AnalysisResult, NormalizedRequirement
 from sdlc.standard_review import ReviewVerdict
-from standard_fake import normalized
 
 
 def approve(ws, requirement, acknowledged=None):
@@ -41,34 +38,6 @@ def approve(ws, requirement, acknowledged=None):
 
 def state_of(ws, requirement):
     return ws.requirements[requirement.id].state
-
-
-def add_process_iteration(ws, root, iteration, title="Rewritten"):
-    """Append a later Process Result, as a second Process run would."""
-    result = build_process_result(
-        requirement_id=REQUIREMENT_ID,
-        iteration=iteration,
-        input_fingerprint=f"input-{iteration}",
-        analysis=AnalysisResult(
-            normalized=NormalizedRequirement(**normalized(title=title)),
-            analysis={},
-            findings=(),
-            proposed_relations=(),
-        ),
-    )
-    secret = f"process-secret-{iteration}"
-    ws.documents.append(
-        DocumentNode(
-            id=f"process-doc-{iteration}",
-            name=process_result_name(REQUIREMENT_ID, iteration),
-            folder_id=None,
-            entity_public_id=None,
-            secret=secret,
-            parent_document_id=root.id,
-        )
-    )
-    ws.content[secret] = render_process_result(result)
-    return result
 
 
 def add_document(ws, root, name, content, secret=None):
@@ -122,7 +91,7 @@ def test_a_new_process_iteration_is_stale():
 def test_a_changed_process_output_fingerprint_is_stale():
     """The Process binding is re-read from Fibery, not trusted from the review."""
     ws, requirement, _, before = build_ready_workspace()
-    rewrite_payload(ws, process_result_nodes(ws)[-1], output_fingerprint="moved")
+    move_process_output(ws, process_result_nodes(ws)[-1])
     result = approve(ws, requirement)
     assert result.code is Code.REVIEW_RESULT_STALE
     assert "no longer produces the output" in " ".join(result.details)
@@ -311,11 +280,16 @@ def test_only_the_latest_process_result_is_compared():
     assert approve(ws, requirement).code is Code.REQUIREMENT_APPROVED
 
 
-def test_artifacts_of_other_requirements_under_the_root_are_ignored():
-    ws, requirement, root, _ = build_ready_workspace()
+def test_artifacts_of_other_requirements_under_the_root_are_refused():
+    """A foreign artifact name under the Root is neither content nor history;
+    the normative tree cannot be established around it (A5 §5)."""
+    ws, requirement, root, before = build_ready_workspace()
     add_document(ws, root, review_result_name("SDLC-FR-0099", 5), "# other\n")
     add_document(ws, root, process_result_name("SDLC-FR-0099", 5), "# other\n")
-    assert approve(ws, requirement).code is Code.REQUIREMENT_APPROVED
+    result = approve(ws, requirement)
+    assert result.code is Code.NORMATIVE_TREE_INVALID
+    assert "SDLC-FR-0099" in " ".join((result.message, *result.details))
+    assert mutations_since(ws, before) == []
 
 
 # -- structure and reads ----------------------------------------------------
