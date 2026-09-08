@@ -133,7 +133,10 @@ relation_verifications:
 new_findings:
   - kind: <the frozen Process finding vocabulary>
     severity: INFO | WARNING | BLOCKING
-    requirement_id   (only for comparison kinds)
+    requirement_id   required for the comparison kinds (POSSIBLE_*), naming
+                     the other Requirement; omitted or null for every other
+                     kind, with a peer cited as evidence named in detail
+                     instead. Breaking the rule rejects the whole output.
     detail
 
 assessment:

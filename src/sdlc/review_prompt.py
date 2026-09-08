@@ -60,7 +60,7 @@ Shape:
     { "kind": "<finding kind>",
       "severity": "INFO" | "WARNING" | "BLOCKING",
       "detail": "what you observed",
-      "requirement_id": "only for findings about another Requirement" }
+      "requirement_id": "see the new-finding rule below" }
   ],
   "assessment": {
     "clarity": "...", "completeness": "...", "atomicity": "...",
@@ -82,7 +82,25 @@ Rules:
 - Give a severity only when you CONFIRM a finding, and always when you do.
   REJECTED and UNRESOLVED assert no defect, so they must carry no severity.
 - Report anything the earlier analysis missed as a new finding, with its own
-  severity.
+  severity. Two classes of new finding exist, and `requirement_id` separates
+  them:
+  * A finding ABOUT THIS Requirement (INCOMPLETE, AMBIGUOUS, NON_ATOMIC,
+    INCONSISTENT, NOT_TESTABLE, MISSING_CONSTRAINT, MISSING_EDGE_CASE) carries
+    no `requirement_id`: omit the key or set it to null. When another
+    Requirement is only evidence or context for the point, name it inside
+    `detail`, never in `requirement_id`. A finding of one of these kinds that
+    carries a `requirement_id` is rejected as a whole, together with the rest
+    of this output.
+  * A finding ABOUT ANOTHER Requirement (POSSIBLE_DUPLICATE, POSSIBLE_CONFLICT,
+    POSSIBLE_CHANGE, POSSIBLE_SUPERSESSION) must name that Requirement in
+    `requirement_id`, by its Requirement ID.
+  Examples:
+    { "kind": "MISSING_CONSTRAINT", "severity": "WARNING", "requirement_id": null,
+      "detail": "This Requirement does not govern the child process
+                 environment. Peer SDLC-FR-0002 does not establish it either." }
+    { "kind": "POSSIBLE_CONFLICT", "severity": "WARNING",
+      "requirement_id": "SDLC-FR-0002",
+      "detail": "SDLC-FR-0002 enumerates a status set that omits INVALID_REQUEST." }
 - Do not state an overall verdict, score or recommendation. There is no field
   for one: it is derived from the severities you assign.
 - Do not propose changes, rewrites, updates, retirement or supersession of any
