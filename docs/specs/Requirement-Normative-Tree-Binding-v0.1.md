@@ -308,8 +308,13 @@ immediately before Process -> Review                          == T_out
 Iteration selection on entry, when the latest usable Process Result is 0.2:
 
 ```text
-current tree == latest.normative_input_tree    resume the rewrite, no model
 current tree == latest.normative_output_tree   NO_CHANGES_TO_PROCESS
+current tree == latest.normative_input_tree    ambiguous (audit A11): refused
+  and != its output                            until the operator passes
+                                               --resume-result (apply the
+                                               persisted output, no model) or
+                                               --new-iteration-after (process
+                                               the current tree afresh)
 otherwise                                      new iteration
 ```
 
@@ -388,9 +393,9 @@ No Root edit and no flag is required. The old normalized output is never
 rendered into the Root automatically, and the new snapshot is never
 presented as something the old invocation observed. This also covers a
 legacy result whose earlier rewrite may have been incomplete: automatic
-replay of unbound output is traded for one explicit fresh iteration. The
-separate historical input/resume ambiguity of the Process specification is
-not resolved here for 0.2 iterations.
+replay of unbound output is traded for one explicit fresh iteration. For 0.2
+iterations the input/resume ambiguity is settled by the explicit operator
+options of the Process specification, section 9, never by inference.
 
 ## 7. Legacy Review, Ready, Apply and Applied
 

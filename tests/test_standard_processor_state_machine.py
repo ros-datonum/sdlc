@@ -216,8 +216,17 @@ def test_branch_a_unfinished_rewrite_resumes_the_same_iteration():
     persisted = parse_process_result(ws.content[process_results(ws)[0].secret])
     assert document_fingerprint(ws.content["std-secret"]) == persisted.input_fingerprint
 
+    # A11: the snapshot cannot tell an unfinished rewrite from a deliberate
+    # return to the input, so an ordinary run refuses and names the choices.
     model = FakeModelRuntime([EDITED])
-    result = run(ws, std, model)
+    before = len(ws.mutations)
+    refused = run(ws, std, model)
+    [node] = process_results(ws)
+    assert refused.code is StandardProcessResultCode.PROCESSING_STATE_CONFLICT
+    assert node.id in refused.message and "--resume-result" in refused.message
+    assert not model.was_invoked and ws.mutations[before:] == []
+
+    result = process_standard_requirement(ws, model, std.id, resume_result=node.id)
 
     assert result.code is StandardProcessResultCode.REQUIREMENT_PROCESSED
     assert not model.was_invoked

@@ -5,9 +5,13 @@ requirement and reports what it found; it never certifies it, and it never
 writes a dependency or impact relation. Review does that.
 
 The model runs at most once per iteration. Its validated output is persisted as
-a numbered Process Result before the Root Document is touched, so a retry
-resumes deterministically instead of asking the model again, and re-entering
-Process without editing the document is recognised as nothing to do.
+a numbered Process Result before the Root Document is touched, and re-entering
+Process without editing the document is recognised as nothing to do. A tree
+that matches the latest Result's input but not its output is ambiguous: an
+unfinished rewrite and a deliberate return to that input look the same, so an
+ordinary run refuses and the operator chooses `--resume-result` (apply the
+persisted output, no model) or `--new-iteration-after` (process the current
+tree afresh) explicitly.
 
 A run writes only over the input it captured. The Requirement, its single Root
 Document and that Root's content are re-read from Fibery immediately before
@@ -80,6 +84,10 @@ STANDARD_TYPE = "Standard"
 PROCESS_STATE = "Process"
 REVIEW_STATE = "Review"
 
+# Explicit operator choices for the input-equality ambiguity (audit A11).
+RESUME_OPTION = "--resume-result"
+NEW_ITERATION_OPTION = "--new-iteration-after"
+
 
 class _StageFailed(Exception):
     """A stage of processing could not complete."""
@@ -131,6 +139,8 @@ class _Context:
     raw_ancestry: str
     existing_standards: tuple[RequirementRecord, ...]
     results: tuple[tuple[DocumentNode, ProcessResult], ...]
+    # The Reviewer's own artifacts under the Root: history, never content.
+    reviews: tuple[DocumentNode, ...] = ()
     # An empty Process Result shell the operator named for recovery, with the
     # iteration its name reserves. Never part of `results`.
     shell: tuple[DocumentNode, int] | None = None
@@ -158,6 +168,8 @@ def process_standard_requirement(
     model: ModelRuntime,
     entity_id: str,
     recover_empty_result: str | None = None,
+    resume_result: str | None = None,
+    new_iteration_after: str | None = None,
 ) -> StandardProcessResult:
     """Normalize and analyze one Standard Requirement in Process.
 
@@ -166,27 +178,39 @@ def process_standard_requirement(
     the model again and complete that exact Document in place, keeping its
     reserved iteration; it never creates another artifact and never
     overwrites a non-empty one.
+
+    `resume_result` and `new_iteration_after` each name the latest Process
+    Result when the current tree is its input but not its output. The first
+    applies that Result's persisted output without a model call; the second
+    processes the current tree as the next iteration. Neither is a general
+    bypass: every entry, history and fresh-input check still applies. The
+    three options are mutually exclusive.
     """
     journal = _Journal()
     try:
+        _require_one_option(recover_empty_result, resume_result, new_iteration_after)
         context = _load_context(workspace, entity_id, recover_empty_result)
 
         resumable = _resumable_result(context)
-        if resumable is None and _is_unchanged(context):
+        if resume_result is not None:
+            result = _select_explicit_resume(workspace, context, resume_result)
+        elif new_iteration_after is not None:
+            _require_new_iteration_anchor(context, new_iteration_after)
+            result = _produce_result(workspace, model, context, journal)
+        elif resumable is None and _is_unchanged(context):
             return _no_changes_result(context)
-
-        if context.shell is not None:
+        elif context.shell is not None:
             if resumable is not None:
                 raise _StageFailed(
                     StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
                     f"{context.requirement.requirement_id} still matches the input "
-                    f"of Process Result {resumable.iteration}, whose rewrite never "
-                    "landed; that resume, not the empty shell, is what a run "
-                    f"without {RECOVERY_OPTION} completes.",
+                    f"of Process Result {resumable.iteration}, whose output is not "
+                    "applied; settle that iteration first with "
+                    f"{RESUME_OPTION} or {NEW_ITERATION_OPTION}, not the empty shell.",
                 )
             result = _recover_result(workspace, model, context, journal)
         elif resumable is not None:
-            result = resumable
+            raise _ambiguous_input(context)
         else:
             result = _produce_result(workspace, model, context, journal)
 
@@ -223,6 +247,37 @@ def process_standard_requirement(
     )
 
 
+def _require_one_option(*options: str | None) -> None:
+    """The explicit options select one precise action; two contradict."""
+    if sum(option is not None for option in options) > 1:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"{RECOVERY_OPTION}, {RESUME_OPTION} and {NEW_ITERATION_OPTION} are "
+            "mutually exclusive; nothing was read or written.",
+        )
+
+
+def _ambiguous_input(context: _Context) -> _StageFailed:
+    """Case B of an ordinary run: the tree is the latest input, not its output.
+
+    Two histories produce this snapshot: a rewrite that never landed, and a
+    completed iteration whose input a human deliberately restored. Persisted
+    state cannot tell them apart, and replaying the old output would silently
+    undo the second, so the choice is the operator's.
+    """
+    node, result = context.latest
+    return _StageFailed(
+        StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+        f"{context.requirement.requirement_id} matches the input of Process "
+        f"Result Document {document_label(node)} but not its output. The snapshot "
+        "cannot tell an unfinished rewrite from an intentional return to that "
+        f"input, so nothing was written. Pass {RESUME_OPTION} {node.id} to apply "
+        f"iteration {result.iteration}'s persisted output without a model call, "
+        f"or {NEW_ITERATION_OPTION} {node.id} to process the current tree as a "
+        "new iteration.",
+    )
+
+
 def _no_changes_result(context: _Context) -> StandardProcessResult:
     """Nothing to process, and nothing is mutated - including the State.
 
@@ -248,7 +303,10 @@ def _no_changes_result(context: _Context) -> StandardProcessResult:
 
 
 def _failure_result(failure: _StageFailed, journal: _Journal) -> StandardProcessResult:
-    """Durable state means PARTIAL_PROCESSING; a retry resumes it.
+    """Durable state means PARTIAL_PROCESSING; an explicit resume completes it.
+
+    An ordinary retry over the persisted Result refuses as ambiguous (section
+    9); the details name the Result so the operator can pass --resume-result.
 
     A processing-state conflict is reported as itself even when this run
     already made something durable: the durable steps are listed and left in
@@ -338,7 +396,7 @@ def _load_context(
 
     root = attached[0]
     tree = _read_tree(workspace, requirement, root, "loading the Requirement")
-    results, shell = _read_children(workspace, requirement, root, recovering)
+    results, reviews, shell = _read_children(workspace, requirement, root, recovering)
     root_content = tree.root.body
 
     return _Context(
@@ -353,6 +411,7 @@ def _load_context(
             record for record in standards if record.id != requirement.id
         ),
         results=results,
+        reviews=reviews,
         shell=shell,
     )
 
@@ -383,6 +442,7 @@ def _read_children(
     recovering: str | None = None,
 ) -> tuple[
     tuple[tuple[DocumentNode, ProcessResult], ...],
+    tuple[DocumentNode, ...],
     tuple[DocumentNode, int] | None,
 ]:
     """Read the Process Result history from the Root's direct children.
@@ -437,7 +497,7 @@ def _read_children(
         _check_shell_is_terminal(
             workspace, requirement, recovering, shell, results, reviews
         )
-    return tuple(results), shell
+    return tuple(results), tuple(reviews), shell
 
 
 def _require_named_artifact(
@@ -627,16 +687,17 @@ def _read_raw_ancestry(
 
 
 def _resumable_result(context: _Context) -> ProcessResult | None:
-    """The latest Process Result, when its application never completed.
+    """The latest Process Result, when the tree is its input but not its output.
 
-    Three cases are distinguished by fingerprint, and the input fingerprint is
-    what separates the last two:
+    Three cases are distinguished by manifest fingerprint:
 
-    - the document matches the latest output  -> that iteration was applied
-    - the document matches the latest input   -> the rewrite never landed, so
-                                                 resume it without the model
-    - the document matches neither            -> its content changed, so this is
-                                                 a new iteration
+    - the tree matches the latest output  -> that iteration was applied
+    - the tree matches the latest input   -> ambiguous: the rewrite never
+                                             landed, or the input was restored
+                                             on purpose; only an explicit
+                                             option resolves it
+    - the tree matches neither            -> the content changed, so this is a
+                                             new iteration
     """
     latest = context.latest
     if latest is None:
@@ -661,6 +722,138 @@ def _is_unchanged(context: _Context) -> bool:
         and latest[1].is_tree_bound
         and context.input_tree.fingerprint == latest[1].output_tree.fingerprint
     )
+
+
+def _require_latest_anchor(
+    context: _Context, document_id: str, option: str
+) -> tuple[DocumentNode, ProcessResult]:
+    """The named Document must be this Requirement's latest valid Process Result.
+
+    Everything under the Root was already parsed: an empty, malformed or
+    duplicated artifact refused before this point. What remains is identity
+    (this Requirement, under this Root) and position (the latest iteration,
+    the only one whose output can be unapplied).
+    """
+    latest = context.latest
+    if latest is not None and latest[0].id == document_id:
+        node, result = latest
+        if not result.is_tree_bound:
+            raise _StageFailed(
+                StandardProcessResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
+                f"Process Result Document {document_label(node)} is a legacy "
+                "Root-only artifact and binds no tree; it can be neither resumed "
+                "nor anchored. Run the ordinary operation without "
+                f"{option}: a legacy result always yields a fresh tree-bound "
+                "iteration.",
+            )
+        return latest
+    older = next((pair for pair in context.results if pair[0].id == document_id), None)
+    if older is not None:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Process Result Document {document_label(older[0])} is iteration "
+            f"{older[1].iteration}, not the latest"
+            + (
+                f" ({document_label(latest[0])} is iteration {latest[1].iteration})"
+                if latest is not None
+                else ""
+            )
+            + f"; {option} applies only to the latest Process Result. Nothing "
+            "was written.",
+        )
+    raise _StageFailed(
+        StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+        f"{document_id!r} is not a Process Result Document of "
+        f"{context.requirement.requirement_id} under its Root Document; "
+        f"{option} names exactly the latest one. Nothing was written.",
+    )
+
+
+def _require_input_state(
+    context: _Context, node: DocumentNode, result: ProcessResult, option: str
+) -> None:
+    """Both options exist for one snapshot only: input matched, output not."""
+    current = context.input_tree
+    if current.fingerprint == result.output_tree.fingerprint:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"The output of Process Result Document {document_label(node)} is "
+            f"already applied; there is nothing to settle with {option}. Run the "
+            "ordinary operation, which reports no changes. Nothing was written.",
+        )
+    if current.fingerprint != result.input_tree.fingerprint:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"The current normative tree of {context.requirement.requirement_id} "
+            f"is neither the input nor the output of Process Result Document "
+            f"{document_label(node)}, so {option} does not apply. Run the "
+            "ordinary operation, which starts a new iteration. Nothing was written.",
+            describe_drift(result.input_tree, current),
+        )
+
+
+def _select_explicit_resume(
+    workspace: RawProcessorWorkspace, context: _Context, document_id: str
+) -> ProcessResult:
+    """Explicit permission to apply the latest Result's persisted output.
+
+    Permission, not proof: the operator asserts that the rewrite never
+    landed. What can be checked is checked: the Result is the latest, valid,
+    tree-bound, its input is the current tree, its output is not, and no
+    Review Result has consumed that iteration; a reviewed iteration was
+    applied once already, so replaying it is not recovery.
+    """
+    node, result = _require_latest_anchor(context, document_id, RESUME_OPTION)
+    _require_input_state(context, node, result, RESUME_OPTION)
+    _require_unreviewed(workspace, context, node, result.iteration)
+    return result
+
+
+def _require_new_iteration_anchor(context: _Context, document_id: str) -> None:
+    """Explicit choice to process the current tree as the next iteration.
+
+    The anchor pins the history the operator looked at: if a newer Result
+    exists by the time this runs, the choice was made about another state
+    and is refused before any model call.
+    """
+    node, result = _require_latest_anchor(context, document_id, NEW_ITERATION_OPTION)
+    _require_input_state(context, node, result, NEW_ITERATION_OPTION)
+
+
+def _require_unreviewed(
+    workspace: RawProcessorWorkspace,
+    context: _Context,
+    node: DocumentNode,
+    iteration: int,
+) -> None:
+    for review in context.reviews:
+        try:
+            reviewed = parse_review_result(
+                workspace.read_document_content(review.secret or "")
+            )
+        except FiberyError as error:
+            raise _StageFailed(
+                StandardProcessResultCode.FIBERY_READ_FAILED,
+                f"Could not read Review Result {document_label(review)}.",
+                (str(error),),
+            ) from error
+        except InvalidReviewResult as error:
+            raise _StageFailed(
+                StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+                f"Review Result {document_label(review)} cannot be read, so it is "
+                f"unknown whether iteration {iteration} was already consumed; "
+                "refusing to replay it.",
+                (str(error),),
+            ) from error
+        if reviewed.reviewed_process_iteration == iteration:
+            raise _StageFailed(
+                StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+                f"Review Result {document_label(review)} already reviewed iteration "
+                f"{iteration} of Process Result Document {document_label(node)}: "
+                "its output was applied and consumed once, so replaying it is not "
+                f"recovery. Use {NEW_ITERATION_OPTION} {node.id} to process the "
+                "current tree as a new iteration. Nothing was written.",
+            )
 
 
 # -- write preconditions ----------------------------------------------------

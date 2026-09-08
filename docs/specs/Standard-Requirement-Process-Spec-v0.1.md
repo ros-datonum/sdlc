@@ -248,19 +248,24 @@ Document **without another model call**.
 Fingerprints use the normalization already frozen for content comparison, so
 Fibery's Markdown re-serialization does not register as a change.
 
-## 9. Same-iteration retry
+## 9. Same-iteration retry and the explicit operator choice
 
-The normative tree manifest decides what a run does. Three cases, and the
-input tree is what separates the second from the third:
+The normative tree manifest decides what an ordinary run does. Three cases,
+and the input tree is what separates the second from the third:
 
 ```text
-current tree == latest.normative_input_tree
-  the normalized rewrite never landed
-  -> resume that iteration, without the model
-
 current tree == latest.normative_output_tree
   the normalized output is already applied
   -> NO_CHANGES_TO_PROCESS, zero mutations, State stays Process
+  (this case wins when input and output trees are equal)
+
+current tree == latest.normative_input_tree, != its output
+  either the normalized rewrite never landed, or a human deliberately
+  restored that input after the iteration completed; persisted state
+  cannot tell the two apart (audit finding A11)
+  -> PROCESSING_STATE_CONFLICT, zero model calls, zero mutations; the
+     message names the latest Process Result Document by id and the two
+     explicit options below
 
 current tree differs from both
   the Root or a normative child genuinely changed
@@ -275,10 +280,40 @@ latest is a legacy 0.1 result
 Comparison is by manifest fingerprint, so an edited, added, removed, renamed
 or re-parented child is a change exactly like a Root edit.
 
-Resuming an unfinished application invokes no model: the persisted result is
+The ambiguous case is settled by the operator, never inferred:
+
+```text
+--resume-result <document id>
+  explicit permission to apply the latest Result's persisted output:
+  no model call, no new Result, the selected Result untouched, the Root
+  rewritten and validated through the ordinary guarded path
+--new-iteration-after <document id>
+  explicit choice to process the CURRENT tree as the next iteration:
+  ordinary comparison context and input bound, one model call, the next
+  immutable Process Result 0.2, the selected Result untouched
+```
+
+Both name exactly the latest valid, tree-bound Process Result under the
+current Root; both are checked before any model call or mutation: normal
+Standard + Process entry, that exact Document under this Root with this
+Requirement's artifact name, an unambiguous latest iteration, coherent 0.2
+evidence, and a current tree equal to its input and different from its
+output. An older or unknown Document, a legacy 0.1 artifact, an empty or
+malformed artifact, unrelated current content, the wrong Type or State, or a
+contradictory combination with `--recover-empty-result` or with each other
+refuses without proceeding normally. `--resume-result` is also refused when a
+Review Result already reviewed that iteration: its output was consumed once,
+so replaying it is not recovery, and a new iteration is the way forward.
+Neither option is a general bypass: the fresh-input guards of section 14
+apply unchanged, and the resume never launches a model runtime. Only
+Standard normalization accepts these options.
+
+Resuming with explicit permission invokes no model: the persisted result is
 read, the Root Document rewritten, validated, and the transition performed.
 Rewriting from a persisted result is naturally idempotent, and the canonical
-comparison accepts the re-serialized read-back.
+comparison accepts the re-serialized read-back. A failure after a new Result
+was persisted leaves the same ambiguous snapshot for the next run, which
+again requires an explicit choice; history is never erased.
 
 Fingerprints are taken over the same canonical representation that
 `content_equivalent` compares, so the two agree by construction. A fingerprint
@@ -421,10 +456,13 @@ the Root Document was rewritten  =>  a valid Process Result already exists
 ```
 
 Failure **after** the Process Result is persisted: the Requirement stays in
-`Process`, the Process Result and any partial writes remain, and a retry resumes
-deterministically without invoking the model — except where the only remaining
-step was the transition, which section 11 leaves to an operator. A run that
-fails to reach `Review` reports that explicitly and never claims success.
+`Process`, the Process Result and any partial writes remain, and the next
+ordinary run finds the ambiguous snapshot of section 9 (tree equal to that
+Result's input, not its output) and refuses; the operator completes it with
+`--resume-result`, which applies the persisted output without invoking the
+model — except where the only remaining step was the transition, which
+section 11 leaves to an operator. A run that fails to reach `Review` reports
+that explicitly and never claims success.
 
 Failure **before** it is persisted: no durable normalized output exists, so a
 retry may invoke the model again.
@@ -467,8 +505,8 @@ discovered after the model ran reports the model as invoked.
 
 These are fresh reads within one invocation, not a compare-and-set
 transaction: a change that lands between a guard's read and the write it
-protects is not detected. The cross-run `current == latest.input_fingerprint`
-resume rule of section 9 is unchanged.
+protects is not detected. The cross-run input-equality case of section 9 is
+an explicit operator choice, not an automatic resume.
 
 ### Empty Result Documents
 
@@ -551,7 +589,13 @@ context: RAW ancestry and the normative tree assembled with identity
 model output: unknown fields, bad relation kinds, bad finding kinds rejected
 Process Result written before any document mutation
   none exists                  -> model runs
-  current iteration incomplete -> model must NOT run, application resumes
+  tree == latest input, != output -> PROCESSING_STATE_CONFLICT, no model,
+    no mutation, the latest Result Document named with both options
+  --resume-result latest       -> model must NOT run, application resumes
+  --new-iteration-after latest -> one model call, next 0.2 Result
+  wrong / older / foreign / legacy / empty / malformed selection,
+    unrelated content, or contradictory options -> refused, nothing written
+  reviewed iteration under --resume-result -> refused, new iteration advised
   duplicate for one iteration  -> PROCESSING_STATE_CONFLICT
   malformed / wrong version    -> explicit failure, no model call
 iteration numbering is monotonic; earlier results are never modified
@@ -568,7 +612,7 @@ findings do not mutate the referenced Requirement
 NON_ATOMIC produces a finding and creates no Requirement
 Revision is never changed
 partial failure leaves State = Process with durable state intact
-retry resumes without a model call and without drift
+explicit resume completes without a model call and without drift
 State -> Review only on complete success, confirmed by read-back
 ```
 

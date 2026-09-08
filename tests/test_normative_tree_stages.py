@@ -160,7 +160,13 @@ def test_a_tree_bound_iteration_is_resumed_only_over_its_own_input_tree():
     assert first.code is ProcessCode.REQUIREMENT_PROCESSED
     set_state(ws, requirement, "Process")
     ws.content[root.secret] = original_root  # the rewrite was lost
-    resumed, model = run_process(ws, requirement)
+    refused, model = run_process(ws, requirement)  # A11: ambiguous, refused
+    assert refused.code is ProcessCode.PROCESSING_STATE_CONFLICT
+    assert not model.was_invoked
+    model = FakeModelRuntime([analysis_output()])
+    resumed = process_standard_requirement(
+        ws, model, requirement.id, resume_result=process_results(ws)[0].id
+    )
     assert resumed.code is ProcessCode.REQUIREMENT_PROCESSED
     assert resumed.iteration == 1 and not model.was_invoked
 

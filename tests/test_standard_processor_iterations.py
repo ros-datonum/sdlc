@@ -182,8 +182,16 @@ def test_retry_after_a_failed_root_rewrite_resumes_and_completes():
     ws.write_document_content = original
     set_state(ws, std, "Process")
 
+    # A11: an ordinary retry cannot distinguish this from an intentional
+    # return to the input; it refuses and the operator resumes explicitly.
     model = FakeModelRuntime([CHANGED])
-    result = run(ws, std, model)
+    refused = run(ws, std, model)
+    [node] = process_results(ws)
+    assert refused.code is StandardProcessResultCode.PROCESSING_STATE_CONFLICT
+    assert node.id in refused.message
+    assert not model.was_invoked and ws.requirements[std.id].state == "Process"
+
+    result = process_standard_requirement(ws, model, std.id, resume_result=node.id)
 
     assert not model.was_invoked, "resume must not re-invoke the model"
     assert result.code is StandardProcessResultCode.REQUIREMENT_PROCESSED
