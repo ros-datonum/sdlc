@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 
 from processor_fake import (
+    LEGACY_DRAFT_FOLDER,
+    LEGACY_RAW_FOLDER,
     FakeProcessorWorkspace,
     attach_peer_roots,
     reserialize_like_fibery,
 )
 from sdlc.fibery_workspace import (
     DocumentNode,
-    FolderNode,
     ProjectRecord,
     RequirementRecord,
 )
@@ -52,22 +53,18 @@ def rendered_document(requirement_id=REQUIREMENT_ID, **changes) -> str:
 
 
 def build_standard_workspace(
-    state="Process", type_name="Standard", others=(), with_raw=True
+    state="Process",
+    type_name="Standard",
+    others=(),
+    with_raw=True,
+    legacy_folders=True,
 ):
-    """A Project with one Standard Requirement in Process and its Root Document."""
-    root = FolderNode(id="f-root", name="SDLC", parent_id=None)
-    reqs = FolderNode(id="f-reqs", name="Requirements", parent_id=root.id)
-    stages = [
-        FolderNode(id=f"f-{s.lower()}", name=s, parent_id=reqs.id)
-        for s in ("Raw", "Draft", "Approved")
-    ]
-    project = ProjectRecord(
-        id="p-1",
-        name="SDLC",
-        code="SDLC",
-        state="Planned",
-        documents_root_folder_id=root.id,
-    )
+    """A Project with one Standard Requirement in Process and its Root Document.
+
+    `legacy_folders` selects fixture B (Documents carrying the retired
+    Raw/Draft `fibery/Folder` metadata) or fixture A (no Folder at all).
+    """
+    project = ProjectRecord(id="p-1", name="SDLC", code="SDLC", state="Planned")
     standard = RequirementRecord(
         id="std-uuid-1",
         public_id="31",
@@ -95,12 +92,12 @@ def build_standard_workspace(
         )
         records.append(raw)
 
-    ws = FakeProcessorWorkspace(project, [root, reqs, *stages], records)
-    attach_peer_roots(ws, others)
+    ws = FakeProcessorWorkspace(project, records)
+    attach_peer_roots(ws, others, legacy_folders)
     doc = DocumentNode(
         id="std-doc-1",
         name=f"{REQUIREMENT_ID} — {standard.title}",
-        folder_id="f-draft",
+        folder_id=LEGACY_DRAFT_FOLDER if legacy_folders else None,
         entity_public_id=standard.public_id,
         secret="std-secret",
     )
@@ -112,7 +109,7 @@ def build_standard_workspace(
         raw_doc = DocumentNode(
             id="raw-doc-1",
             name=f"{RAW_ID} — Initial SDLC Requirements",
-            folder_id="f-raw",
+            folder_id=LEGACY_RAW_FOLDER if legacy_folders else None,
             entity_public_id=raw.public_id,
             secret="raw-secret",
         )

@@ -53,9 +53,7 @@ allocate RAW Requirement ID
         ↓
 create Requirement entity
         ↓
-create Root Document in Requirements/Raw
-        ↓
-attach Root Document to Requirement
+create Root Document contained by the Requirement
         ↓
 write Markdown content
         ↓
@@ -107,21 +105,8 @@ Run:
 sdlc project init --name "<Project Name>"
 ```
 
-Before ingesting the RAW Requirement, verify that the initialized Project document structure contains:
-
-```text
-Requirements/Raw/
-Requirements/Draft/
-Requirements/Approved/
-```
-
-If the expected structure is incomplete:
-
-```text
-PROJECT_STRUCTURE_INVALID
-```
-
-The command must not silently create or repair missing Project folders.
+No Project folder structure exists or is checked (Project Init section 9,
+amended 2026-09-09). The Project entity is the whole prerequisite.
 
 ---
 
@@ -345,63 +330,49 @@ These are populated later by the appropriate processing/analysis agents.
 
 ## 11. Root Document Creation
 
-Resolve:
+Create the Requirement Root Document named:
 
 ```text
-Project.Documents
-```
-
-Then create the Requirement Root Document under:
-
-```text
-<Project Name>/
-└── Requirements/
-    └── Raw/
-        └── <Requirement ID> — <Title>
+<Requirement ID> — <Title>
 ```
 
 Example:
 
 ```text
-SDLC/
-└── Requirements/
-    └── Raw/
-        └── SDLC-RAW-0001 — Repository Handoff and Development Workflow
+SDLC-RAW-0001 — Repository Handoff and Development Workflow
 ```
+
+The Document is contained by the Requirement entity
+(`fibery/container-type: "object"`, `fibery/container-entity-id` = the
+Requirement's public id) and carries **no** `fibery/Folder`. Verified live on
+2026-09-09: a contained Document created without a Folder is attached,
+written, read and nested normally.
 
 ---
 
-## 12. Requirements Folder Boundary
+## 12. Lifecycle Placement Boundary
 
 This command creates only:
 
 ```text
 Requirement.Type = RAW
+State = Draft
 ```
 
-and therefore always stores the new Root Document under:
+Placement is those two fields. No Document folder expresses it, and no folder
+is read, created or validated. Root Documents created before 2026-09-09 still
+carry a `fibery/Folder`; it is inert presentation metadata that no command
+reads, checks or strips.
+
+Human navigation is the workspace-level Smart Folder with mirrored context
+views described in Project Init section 11; it is not a prerequisite of this
+command.
+
+Later Standard Requirement processing distinguishes, by the same fields:
 
 ```text
-<Project Name>/Requirements/Raw/
-```
-
-The presence of:
-
-```text
-Requirements/Draft/
-Requirements/Approved/
-```
-
-is validated as part of the Project structure, but this command does not write to either folder.
-
-Those folders are used later by Standard Requirement processing:
-
-```text
-STANDARD + State != Applied
-→ Requirements/Draft/
-
-STANDARD + State = Applied
-→ Requirements/Approved/
+STANDARD + State != Applied   → current (Draft / Process / Review / Ready / Apply)
+STANDARD + State = Applied    → applied
 ```
 
 ---
@@ -574,7 +545,6 @@ Project relation is correct
 Source Fingerprint matches
 Requirement.Documents count = 1
 Root Document exists
-Root Document is under Requirements/Raw
 Root Document title is correct
 Root Document content was written successfully
 ```
@@ -605,8 +575,7 @@ SDLC-RAW-0001 — Repository Handoff and Development Workflow
 State: Draft
 Revision: 1
 
-Document:
-SDLC/Requirements/Raw/
+Root Document:
 SDLC-RAW-0001 — Repository Handoff and Development Workflow
 
 Next:
@@ -624,7 +593,6 @@ Possible results:
 INVALID_INPUT
 PROJECT_NOT_FOUND
 PROJECT_AMBIGUOUS
-PROJECT_STRUCTURE_INVALID
 SOURCE_FILE_NOT_FOUND
 SOURCE_FILE_UNREADABLE
 INVALID_REQUIREMENT_SOURCE
@@ -748,9 +716,7 @@ Project relation is correct
 +
 Source Fingerprint is stored
 +
-exactly one Root Document is created and attached
-+
-Document is stored under Requirements/Raw
+exactly one Root Document is created and attached, with no Folder
 +
 source content is preserved
 +

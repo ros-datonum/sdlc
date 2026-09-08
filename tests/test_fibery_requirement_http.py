@@ -180,7 +180,7 @@ def test_fingerprint_lookup_scopes_to_the_project():
 # -- documents --------------------------------------------------------------
 
 
-def test_document_is_created_in_the_folder_and_attached_by_public_id():
+def test_document_is_created_contained_by_the_requirement_with_no_folder():
     """Fibery rejects the entity uuid here with parent-entity-not-found."""
     import json as _json
 
@@ -207,11 +207,13 @@ def test_document_is_created_in_the_folder_and_attached_by_public_id():
         FiberyClient(SETTINGS, url_opener=echoing, **unpaced()), "SDLC", "space-uuid"
     )
 
-    node = workspace.create_requirement_document("SDLC-RAW-0001 — T", "folder-raw", "7")
+    node = workspace.create_requirement_document("SDLC-RAW-0001 — T", "7")
 
     view = sent["view"]
     assert view["fibery/type"] == "document"
-    assert view["fibery/Folder"] == {"fibery/id": "folder-raw"}
+    # Verified live: a contained Document created without fibery/Folder is
+    # attached, written and nested normally. Placement is Type + State.
+    assert "fibery/Folder" not in view
     assert view["fibery/container-type"] == "object"
     assert view["fibery/container-entity-type"] == {"fibery/id": REQUIREMENT_TYPE_ID}
     assert view["fibery/container-entity-id"] == "7"
@@ -219,7 +221,7 @@ def test_document_is_created_in_the_folder_and_attached_by_public_id():
     # Fibery allocates no secret; the client supplies one at create time.
     assert view["fibery/meta"]["documentSecret"]
     assert node.secret == view["fibery/meta"]["documentSecret"]
-    assert node.folder_id == "folder-raw"
+    assert node.folder_id is None
     assert node.entity_public_id == "7"
 
 
@@ -227,7 +229,7 @@ def test_created_document_is_read_back_not_assumed():
     workspace, _ = build([rpc([]), rpc([])])
 
     with pytest.raises(FiberyError, match="could not be read back"):
-        workspace.create_requirement_document("N", "folder-raw", "7")
+        workspace.create_requirement_document("N", "7")
 
 
 def test_attached_documents_match_the_requirement_type_and_public_id():
@@ -287,29 +289,28 @@ def test_content_is_written_and_read_through_the_documents_endpoint():
     assert opener.requests[1]["method"] == "GET"
 
 
-def test_child_folders_are_matched_on_the_parent_id():
+def test_a_legacy_folder_on_a_document_is_read_as_inert_metadata():
+    """Old Roots still carry fibery/Folder; new ones carry none. Both resolve."""
     workspace, _ = build_views(
         [
             rpc(
                 [
                     {
-                        "fibery/id": "f1",
-                        "fibery/name": "Raw",
-                        "fibery/Parent Folder": {"fibery/id": "req"},
-                    },
-                    {
-                        "fibery/id": "f2",
-                        "fibery/name": "Raw",
-                        "fibery/Parent Folder": {"fibery/id": "elsewhere"},
-                    },
+                        "fibery/id": "old",
+                        "fibery/name": "Old",
+                        "fibery/Folder": {"fibery/id": "folder-draft"},
+                    }
                 ]
-            )
+            ),
+            rpc([{"fibery/id": "new", "fibery/name": "New", "fibery/Folder": None}]),
         ]
     )
 
-    children = workspace.child_folders("req")
+    old = workspace.resolve_document("old")
+    new = workspace.resolve_document("new")
 
-    assert [node.id for node in children] == ["f1"]
+    assert old.folder_id == "folder-draft"
+    assert new.folder_id is None
 
 
 def test_document_is_created_with_a_client_supplied_secret():
@@ -337,8 +338,8 @@ def test_document_is_created_with_a_client_supplied_secret():
         FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
     )
 
-    first = workspace.create_requirement_document("A", "folder-raw", "7")
-    second = workspace.create_requirement_document("B", "folder-raw", "8")
+    first = workspace.create_requirement_document("A", "7")
+    second = workspace.create_requirement_document("B", "8")
 
     assert first.secret and second.secret
     assert first.secret != second.secret
@@ -444,7 +445,7 @@ def test_a_missing_entity_reads_no_relations():
     assert (relations.depends_on, relations.affects) == ((), ())
 
 
-# -- apply: relation adds, ambiguity-aware lookup, Folder move --------------
+# -- apply: relation adds and ambiguity-aware lookup -------------------------
 
 
 def test_the_ambiguity_aware_lookup_asks_for_two_rows_and_returns_them_all():
@@ -521,29 +522,10 @@ def build_apply_views(payloads):
     return workspace, opener
 
 
-def test_the_document_folder_is_changed_with_update_views():
-    """Constraint 24: update-views takes the update-folders shape."""
-    workspace, opener = build_apply_views([rpc([])])
-    workspace.set_document_folder("doc-1", "folder-approved")
-
-    body = opener.requests[-1]["body"]
-    assert body["method"] == "update-views"
-    assert body["params"] == {
-        "updates": [
-            {
-                "id": "doc-1",
-                "values": {"fibery/Folder": {"fibery/id": "folder-approved"}},
-            }
-        ]
-    }
-
-
-def test_a_rejected_folder_update_becomes_a_fibery_error():
-    workspace, _ = build_apply_views(
-        [{"jsonrpc": "2.0", "id": 1, "error": {"message": "no"}}]
-    )
-    with pytest.raises(FiberyError):
-        workspace.set_document_folder("doc-1", "folder-approved")
+def test_the_apply_adapter_exposes_no_document_move():
+    """Apply never writes a Document: no Folder move exists to call."""
+    workspace, _ = build_apply_views([rpc([])])
+    assert not [name for name in dir(workspace) if "folder" in name.lower()]
 
 
 # -- Category read and the bounded Standard-only comparison query --------------

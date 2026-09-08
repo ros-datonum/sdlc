@@ -167,11 +167,8 @@ def test_field_names_are_resolved_from_the_workspace_schema():
 
     query = opener.requests[1]["body"][0]["args"]["query"]
     assert query["q/from"] == "SDLC/Project"
-    assert query["q/select"][1:4] == [
-        "SDLC/Name",
-        "SDLC/Code",
-        "SDLC/Documents Root Folder ID",
-    ]
+    assert query["q/select"][1:3] == ["SDLC/Name", "SDLC/Code"]
+    assert "SDLC/Documents Root Folder ID" not in query["q/select"]
     assert query["q/where"] == ["=", ["SDLC/Name"], "$name"]
 
 
@@ -229,7 +226,30 @@ def test_project_rows_are_mapped_onto_records():
     record = workspace.find_project_by_name("SDLC")
 
     assert (record.id, record.code, record.state) == ("p1", "SDLC", "Planned")
-    assert record.documents_root_folder_id == "folder-1"
+    # The legacy Text Field an older init populated is neither read nor
+    # surfaced; the row stays readable.
+    assert not hasattr(record, "documents_root_folder_id")
+
+
+def test_a_project_database_without_the_legacy_root_folder_field_still_resolves():
+    schema = {
+        "fibery/types": [
+            {
+                "fibery/name": "SDLC/Project",
+                "fibery/fields": [
+                    {"fibery/name": "SDLC/Name", "fibery/type": "fibery/text"},
+                    {"fibery/name": "SDLC/Code", "fibery/type": "fibery/text"},
+                    {"fibery/name": "workflow/state", "fibery/type": "workflow/x"},
+                ],
+            }
+        ]
+    }
+    opener = StubOpener([ok(schema), ok([{"fibery/id": "p1", "SDLC/Code": "SDLC"}])])
+    workspace = FiberyHttpWorkspace(
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+    )
+
+    assert workspace.find_project_by_name("SDLC").code == "SDLC"
 
 
 def test_missing_project_returns_none():
@@ -278,18 +298,6 @@ def test_unknown_state_is_reported():
         workspace.set_project_state("p1", "Planned")
 
 
-def test_root_folder_id_is_stored_on_the_project():
-    workspace, opener = build_workspace([ok({"fibery/id": "p1"})])
-
-    workspace.set_documents_root_folder("p1", "folder-1")
-
-    entity = opener.requests[1]["body"][0]["args"]["entity"]
-    assert entity == {
-        "fibery/id": "p1",
-        "SDLC/Documents Root Folder ID": "folder-1",
-    }
-
-
 def test_description_is_written_through_the_documents_endpoint():
     workspace, opener = build_workspace(
         [
@@ -315,97 +323,11 @@ def test_description_is_written_through_the_documents_endpoint():
     assert put["body"] == {"content": "Bootstrap."}
 
 
-# -- folders ---------------------------------------------------------------
+# -- no folder subsystem ---------------------------------------------------
 
 
-def test_creating_a_root_folder_omits_the_parent():
-    workspace, opener = build_views_workspace([rpc([])])
+def test_the_project_adapter_exposes_no_folder_operations():
+    """Requirement lifecycle placement is Type + State; Folders are not used."""
+    workspace, _ = build_workspace([ok([])])
 
-    node = workspace.create_folder("SDLC", None)
-
-    body = opener.requests[0]["body"]
-    assert opener.requests[0]["url"].endswith("/api/views/json-rpc")
-    assert body["method"] == "create-folders"
-    # create-folders takes "values"; create-views takes "views".
-    [value] = body["params"]["values"]
-    assert value["fibery/name"] == "SDLC"
-    assert value["fibery/container-app"] == {"fibery/id": "space-uuid"}
-    assert "fibery/Parent Folder" not in value
-    assert value["fibery/id"] == node.id
-    assert node.parent_id is None
-
-
-def test_creating_a_child_folder_sends_the_parent_folder():
-    workspace, opener = build_views_workspace([rpc([])])
-
-    node = workspace.create_folder("Requirements", "root-1")
-
-    [value] = opener.requests[0]["body"]["params"]["values"]
-    assert value["fibery/Parent Folder"] == {"fibery/id": "root-1"}
-    assert node.parent_id == "root-1"
-
-
-def test_resolving_a_folder_asks_fibery_for_that_exact_id():
-    workspace, opener = build_views_workspace(
-        [
-            rpc(
-                [
-                    {
-                        "fibery/id": "f1",
-                        "fibery/name": "Raw",
-                        "fibery/Parent Folder": {"fibery/id": "req-1"},
-                    }
-                ]
-            )
-        ]
-    )
-
-    node = workspace.resolve_folder("f1")
-
-    body = opener.requests[0]["body"]
-    assert body["method"] == "query-folders"
-    assert body["params"] == {"filter": {"ids": ["f1"]}}
-    assert (node.id, node.name, node.parent_id) == ("f1", "Raw", "req-1")
-
-
-def test_resolving_a_root_folder_reports_a_null_parent():
-    workspace, _ = build_views_workspace(
-        [
-            rpc(
-                [
-                    {
-                        "fibery/id": "f1",
-                        "fibery/name": "SDLC",
-                        "fibery/Parent Folder": None,
-                    }
-                ]
-            )
-        ]
-    )
-
-    assert workspace.resolve_folder("f1").parent_id is None
-
-
-def test_resolving_a_deleted_folder_returns_none():
-    workspace, _ = build_views_workspace([rpc([])])
-
-    assert workspace.resolve_folder("gone") is None
-
-
-def test_resolving_ignores_any_folder_fibery_returns_with_another_id():
-    """Read-back must never accept a same-named sibling in place of the id."""
-    workspace, _ = build_views_workspace(
-        [
-            rpc(
-                [
-                    {
-                        "fibery/id": "other",
-                        "fibery/name": "SDLC",
-                        "fibery/Parent Folder": None,
-                    }
-                ]
-            )
-        ]
-    )
-
-    assert workspace.resolve_folder("mine") is None
+    assert not [name for name in dir(workspace) if "folder" in name.lower()]

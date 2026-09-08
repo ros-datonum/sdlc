@@ -188,14 +188,6 @@ def test_a_missing_root_document_is_a_structure_failure():
     refused(ws, requirement, before, Code.PROJECT_STRUCTURE_INVALID)
 
 
-def test_an_ambiguous_folder_tree_is_a_structure_failure():
-    ws, requirement, _, before = build_apply_workspace()
-    ws.folders.append(
-        type(ws.folders[0])(id="f-approved-2", name="Approved", parent_id="f-reqs")
-    )
-    refused(ws, requirement, before, Code.PROJECT_STRUCTURE_INVALID)
-
-
 @pytest.mark.parametrize(
     "call",
     ["documents_attached_to_requirement", "child_documents", "requirement_relations"],

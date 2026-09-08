@@ -479,7 +479,7 @@ def test_a_failed_read_back_after_a_write_does_not_replay_the_write():
 def test_adapter_traffic_is_paced_across_endpoint_families():
     workspace, opener, _ = adapter([rpc([]), DOC, None], schema=False)
 
-    workspace.child_folders("f")
+    workspace.resolve_document("d")
     workspace.read_document_content("secret-1")
     workspace.write_document_content("secret-1", "# body")
 

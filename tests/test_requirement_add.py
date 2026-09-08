@@ -1,8 +1,8 @@
 import pytest
 
 from raw_fixtures import TITLE, VALID_SOURCE
-from requirement_fake import FakeRequirementWorkspace, project_with_structure
-from sdlc.fibery_workspace import FolderNode, ProjectRecord, RequirementRecord
+from requirement_fake import FakeRequirementWorkspace, planned_project
+from sdlc.fibery_workspace import ProjectRecord, RequirementRecord
 from sdlc.raw_source import parse_raw_requirement
 from sdlc.requirement_add import (
     INITIAL_REVISION,
@@ -14,12 +14,10 @@ from sdlc.requirement_add import (
 from sdlc.requirement_id import raw_requirement_id
 from sdlc.results import AddResultCode
 
-RAW_FOLDER_ID = "folder-raw"
-
 
 def workspace_with_project(**kwargs):
-    project, folders = project_with_structure(**kwargs)
-    return FakeRequirementWorkspace(projects=[project], folders=folders), project
+    project = planned_project(**kwargs)
+    return FakeRequirementWorkspace(projects=[project]), project
 
 
 # -- happy path ------------------------------------------------------------
@@ -50,13 +48,16 @@ def test_created_requirement_carries_the_specified_initial_values():
     assert record.source_fingerprint == parse_raw_requirement(VALID_SOURCE).fingerprint
 
 
-def test_root_document_is_created_in_the_raw_folder():
+def test_root_document_is_contained_by_the_requirement_with_no_folder():
+    """Placement is Type = Raw on the Requirement, never a Document folder."""
     workspace, _ = workspace_with_project()
 
     add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
     [document] = workspace.documents
-    assert document.folder_id == RAW_FOLDER_ID
+    [record] = workspace.requirements.values()
+    assert document.folder_id is None
+    assert document.entity_public_id == record.public_id
     assert document.name == requirement_document_name("SDLC-RAW-0001", TITLE)
 
 
@@ -136,15 +137,9 @@ def test_missing_project_is_reported_without_creating_anything():
 
 
 def test_ambiguous_project_name_is_never_guessed():
-    project, folders = project_with_structure(project_id="p1", name="SDLC", code="AAA")
-    twin = ProjectRecord(
-        id="p2",
-        name="SDLC",
-        code="BBB",
-        state="Planned",
-        documents_root_folder_id="folder-root",
-    )
-    workspace = FakeRequirementWorkspace(projects=[project, twin], folders=folders)
+    project = planned_project(project_id="p1", name="SDLC", code="AAA")
+    twin = ProjectRecord(id="p2", name="SDLC", code="BBB", state="Planned")
+    workspace = FakeRequirementWorkspace(projects=[project, twin])
 
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
@@ -163,60 +158,24 @@ def test_the_command_never_creates_a_project():
 # -- project structure -----------------------------------------------------
 
 
-@pytest.mark.parametrize("missing", ["Raw", "Draft", "Approved", "Requirements"])
-def test_missing_stage_folder_is_an_invalid_structure(missing):
-    project, folders = project_with_structure()
-    workspace = FakeRequirementWorkspace(
-        projects=[project], folders=[f for f in folders if f.name != missing]
-    )
+def test_no_folder_structure_is_read_created_or_required():
+    """The Project entity is the whole structure; no Raw/Draft/Approved tree."""
+    workspace, _ = workspace_with_project()
 
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
-    assert result.code is AddResultCode.PROJECT_STRUCTURE_INVALID
-    assert workspace.mutations == []
+    assert result.code is AddResultCode.RAW_REQUIREMENT_ADDED
+    assert not any("folder" in call.lower() for call in workspace.calls)
+    assert not any("folder" in mutation.lower() for mutation in workspace.mutations)
 
 
-def test_missing_documents_root_folder_id_is_an_invalid_structure():
-    _, folders = project_with_structure()
-    project = ProjectRecord(
-        id="p1",
-        name="SDLC",
-        code="SDLC",
-        state="Planned",
-        documents_root_folder_id=None,
-    )
-    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
+def test_the_result_names_the_root_document_not_a_folder_path():
+    workspace, _ = workspace_with_project()
 
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
-    assert result.code is AddResultCode.PROJECT_STRUCTURE_INVALID
-
-
-def test_duplicate_sibling_folder_names_make_the_structure_ambiguous():
-    """Fibery permits sibling Folders sharing a name; do not guess."""
-    project, folders = project_with_structure()
-    folders.append(
-        FolderNode(id="folder-raw-2", name="Raw", parent_id="folder-requirements")
-    )
-    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
-
-    result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
-
-    assert result.code is AddResultCode.PROJECT_STRUCTURE_INVALID
-    assert "ambiguous" in result.message
-    assert workspace.mutations == []
-
-
-def test_the_command_never_repairs_missing_folders():
-    project, folders = project_with_structure()
-    workspace = FakeRequirementWorkspace(
-        projects=[project], folders=[f for f in folders if f.name != "Draft"]
-    )
-    before = list(workspace.folders)
-
-    add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
-
-    assert workspace.folders == before
+    assert result.document_name == requirement_document_name("SDLC-RAW-0001", TITLE)
+    assert "/" not in result.document_name
 
 
 # -- source validation -----------------------------------------------------
@@ -290,23 +249,9 @@ def test_a_different_artifact_is_not_a_duplicate():
 
 
 def test_the_same_artifact_in_another_project_is_not_a_duplicate():
-    a, folders_a = project_with_structure(project_id="p1", name="A", code="AAA")
-    b_root = FolderNode(id="b-root", name="B", parent_id=None)
-    b_req = FolderNode(id="b-req", name="Requirements", parent_id=b_root.id)
-    b_stages = [
-        FolderNode(id=f"b-{s.lower()}", name=s, parent_id=b_req.id)
-        for s in ("Raw", "Draft", "Approved")
-    ]
-    b = ProjectRecord(
-        id="p2",
-        name="B",
-        code="BBB",
-        state="Planned",
-        documents_root_folder_id=b_root.id,
-    )
-    workspace = FakeRequirementWorkspace(
-        projects=[a, b], folders=[*folders_a, b_root, b_req, *b_stages]
-    )
+    a = planned_project(project_id="p1", name="A", code="AAA")
+    b = planned_project(project_id="p2", name="B", code="BBB")
+    workspace = FakeRequirementWorkspace(projects=[a, b])
     add_raw_requirement(workspace, "AAA", VALID_SOURCE)
 
     result = add_raw_requirement(workspace, "BBB", VALID_SOURCE)
@@ -339,7 +284,7 @@ def test_ids_come_from_the_fibery_public_id_not_from_counting():
 
 
 def test_existing_requirements_do_not_influence_allocation():
-    project, folders = project_with_structure()
+    project = planned_project()
     existing = RequirementRecord(
         id="r-old",
         public_id="99",
@@ -351,9 +296,7 @@ def test_existing_requirements_do_not_influence_allocation():
         project_id=project.id,
         source_fingerprint="other",
     )
-    workspace = FakeRequirementWorkspace(
-        projects=[project], folders=folders, requirements=[existing]
-    )
+    workspace = FakeRequirementWorkspace(projects=[project], requirements=[existing])
     workspace.next_public_ids = ["5"]
 
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
@@ -391,8 +334,8 @@ def test_concurrent_writers_cannot_derive_the_same_requirement_id():
     allocator counted existing RAW ids and both chose SDLC-RAW-0001. Deriving
     from the public id Fibery allocates makes that impossible.
     """
-    project, folders = project_with_structure()
-    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
+    project = planned_project()
+    workspace = FakeRequirementWorkspace(projects=[project])
     workspace.next_public_ids = ["101", "102"]
 
     first = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
@@ -408,8 +351,8 @@ def test_concurrent_writers_cannot_derive_the_same_requirement_id():
 
 
 def test_no_two_requirements_ever_share_a_requirement_id():
-    project, folders = project_with_structure()
-    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
+    project = planned_project()
+    workspace = FakeRequirementWorkspace(projects=[project])
     workspace.next_public_ids = [str(n) for n in range(200, 210)]
 
     for index in range(10):
@@ -439,8 +382,8 @@ def test_interleaved_writers_cannot_collide_even_when_both_create_first():
     allocator counted existing ids and both writers read zero, so both chose
     0001. Deriving from the public id removes the read entirely.
     """
-    project, folders = project_with_structure()
-    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
+    project = planned_project()
+    workspace = FakeRequirementWorkspace(projects=[project])
     workspace.next_public_ids = ["101", "102"]
 
     a = workspace.create_requirement(project.id, "A", 1, "fp-a")

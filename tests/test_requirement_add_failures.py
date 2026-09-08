@@ -1,7 +1,7 @@
 """Failure, validation and partial-add behaviour of `project requirement add`."""
 
 from raw_fixtures import VALID_SOURCE
-from requirement_fake import FakeRequirementWorkspace, project_with_structure
+from requirement_fake import FakeRequirementWorkspace, planned_project
 from sdlc.fibery_workspace import DocumentNode, FiberyError, RequirementRecord
 from sdlc.raw_source import parse_raw_requirement
 from sdlc.requirement_add import add_raw_requirement
@@ -9,8 +9,8 @@ from sdlc.results import AddResultCode
 
 
 def workspace_with_project():
-    project, folders = project_with_structure()
-    return FakeRequirementWorkspace(projects=[project], folders=folders), project
+    project = planned_project()
+    return FakeRequirementWorkspace(projects=[project]), project
 
 
 # -- failures before anything durable exists -------------------------------
@@ -140,8 +140,8 @@ def test_attachment_to_the_wrong_entity_is_an_attachment_failure():
     workspace, _ = workspace_with_project()
     original = workspace.create_requirement_document
 
-    def attach_elsewhere(name, folder_id, requirement_public_id):
-        document = original(name, folder_id, requirement_public_id)
+    def attach_elsewhere(name, requirement_public_id):
+        document = original(name, requirement_public_id)
         wrong = DocumentNode(
             id=document.id,
             name=document.name,
@@ -177,9 +177,7 @@ def test_state_that_did_not_take_effect_fails_validation():
     workspace, _ = workspace_with_project()
     workspace.set_requirement_state = lambda *_: None
     workspace.requirements = {}
-    project, folders = project_with_structure()
-    workspace.projects = [project]
-    workspace.folders = folders
+    workspace.projects = [planned_project()]
     original = workspace.create_requirement
 
     def created_in_wrong_state(**kwargs):
@@ -223,11 +221,12 @@ def test_requirement_id_that_did_not_persist_fails_validation():
     assert any("Requirement ID" in detail for detail in result.details)
 
 
-def test_document_in_the_wrong_folder_fails_validation():
+def test_legacy_folder_metadata_on_the_root_does_not_fail_validation():
+    """`fibery/Folder` is inert presentation metadata, never a placement check."""
     workspace, _ = workspace_with_project()
     original = workspace.resolve_document
 
-    def moved(document_id):
+    def with_legacy_folder(document_id):
         found = original(document_id)
         return DocumentNode(
             id=found.id,
@@ -237,12 +236,11 @@ def test_document_in_the_wrong_folder_fails_validation():
             secret=found.secret,
         )
 
-    workspace.resolve_document = moved
+    workspace.resolve_document = with_legacy_folder
 
     result = add_raw_requirement(workspace, "SDLC", VALID_SOURCE)
 
-    assert result.code is AddResultCode.VALIDATION_FAILED
-    assert any("Requirements/Raw" in detail for detail in result.details)
+    assert result.code is AddResultCode.RAW_REQUIREMENT_ADDED
 
 
 def test_more_than_one_attached_document_fails_validation():
@@ -252,7 +250,7 @@ def test_more_than_one_attached_document_fails_validation():
 
     def two(public_id):
         found = original(public_id)
-        return [*found, DocumentNode("extra", "Extra", "folder-raw", public_id, "s")]
+        return [*found, DocumentNode("extra", "Extra", None, public_id, "s")]
 
     workspace.documents_attached_to_requirement = two
 

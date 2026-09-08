@@ -59,12 +59,16 @@ def confirmed(kind="DEPENDS_ON", requirement_id=TARGET_ID, outcome="CONFIRMED"):
     }
 
 
-def build_apply_workspace(proposals=(), verifications=None, others=None):
+def build_apply_workspace(
+    proposals=(), verifications=None, others=None, legacy_folders=True
+):
     """A Standard Requirement in Apply, approved through the frozen chain.
 
     `proposals` are what Process proposed; `verifications` are what Review
     concluded (every proposal CONFIRMED by default). `others` are the other
     Requirements in the Project, one Standard target by default.
+    `legacy_folders` selects a Root carrying the retired Draft Folder (B) or
+    none (A).
     """
     if others is None:
         others = (standard(),)
@@ -74,7 +78,7 @@ def build_apply_workspace(proposals=(), verifications=None, others=None):
             for p in proposals
         ]
     ws, requirement, root, _ = build_review_workspace(
-        relations=tuple(proposals), others=tuple(others)
+        relations=tuple(proposals), others=tuple(others), legacy_folders=legacy_folders
     )
     reviewed = review_standard_requirement(
         ws,
@@ -136,7 +140,6 @@ def normative_writes(ws, before):
             (
                 "add_depends_on",
                 "add_affects",
-                "set_document_folder",
                 "set_requirement_state",
             )
         )

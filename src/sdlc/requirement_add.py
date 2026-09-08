@@ -11,14 +11,9 @@ from dataclasses import dataclass, field
 from sdlc.fibery_workspace import (
     DocumentNode,
     FiberyError,
-    FolderNode,
     ProjectRecord,
     RequirementRecord,
     RequirementWorkspace,
-)
-from sdlc.project_init import (
-    REQUIREMENT_STAGE_FOLDER_NAMES,
-    REQUIREMENTS_FOLDER_NAME,
 )
 from sdlc.raw_source import (
     InvalidRequirementSource,
@@ -33,7 +28,6 @@ from sdlc.results import AddResult, AddResultCode
 REQUIREMENT_TYPE_RAW = "Raw"
 REQUIREMENT_INITIAL_STATE = "Draft"
 INITIAL_REVISION = 1
-RAW_FOLDER_NAME = "Raw"
 DOCUMENT_NAME_SEPARATOR = " — "
 
 
@@ -65,15 +59,6 @@ class _Journal:
         return bool(self.created)
 
 
-@dataclass(frozen=True)
-class _RawFolders:
-    """The Project folders this command needs, resolved to real ids."""
-
-    root: FolderNode
-    requirements: FolderNode
-    raw: FolderNode
-
-
 def add_raw_requirement(
     workspace: RequirementWorkspace,
     project: str,
@@ -95,7 +80,6 @@ def add_raw_requirement(
     try:
         parsed = _parse_source(source_text)
         resolved = _resolve_project(workspace, selector)
-        folders = _resolve_folders(workspace, resolved)
 
         duplicate = _find_duplicate(workspace, resolved, parsed.fingerprint)
         if duplicate is not None:
@@ -106,13 +90,11 @@ def add_raw_requirement(
         _apply_type_and_state(workspace, requirement, journal)
 
         document = _create_document(
-            workspace, allocated_id, parsed.title, folders.raw, requirement, journal
+            workspace, allocated_id, parsed.title, requirement, journal
         )
         _write_content(workspace, document, parsed.body, journal)
 
-        _validate(
-            workspace, resolved, requirement, allocated_id, parsed, folders, document
-        )
+        _validate(workspace, resolved, requirement, allocated_id, parsed, document)
     except _StageFailed as failure:
         return _failure_result(failure, journal, resolved, allocated_id, parsed)
 
@@ -123,15 +105,8 @@ def add_raw_requirement(
         project_code=resolved.code,
         requirement_id=allocated_id,
         title=parsed.title,
-        document_path=_document_path(resolved, allocated_id, parsed.title),
+        document_name=requirement_document_name(allocated_id, parsed.title),
         created=tuple(journal.created),
-    )
-
-
-def _document_path(project: ProjectRecord, requirement_id: str, title: str) -> str:
-    return (
-        f"{project.name}/{REQUIREMENTS_FOLDER_NAME}/{RAW_FOLDER_NAME}/"
-        f"{requirement_document_name(requirement_id, title)}"
     )
 
 
@@ -241,73 +216,6 @@ def _resolve_project(workspace: RequirementWorkspace, selector: str) -> ProjectR
     return by_name[0]
 
 
-def _resolve_folders(
-    workspace: RequirementWorkspace, project: ProjectRecord
-) -> _RawFolders:
-    """Walk the real Folder tree by id, never by name alone.
-
-    Every stage folder required by Project-Init-Spec-v0.3 section 9 must be
-    present. This command never creates or repairs them.
-    """
-    root_id = project.documents_root_folder_id
-    if not root_id:
-        raise _StageFailed(
-            AddResultCode.PROJECT_STRUCTURE_INVALID,
-            f"Project {project.name!r} has no Documents Root Folder ID.",
-        )
-    try:
-        root = workspace.resolve_folder(root_id)
-        if root is None:
-            raise _StageFailed(
-                AddResultCode.PROJECT_STRUCTURE_INVALID,
-                f"Documents Root Folder ID {root_id!r} does not resolve to a Folder.",
-            )
-        requirements = _single_child(workspace, root, REQUIREMENTS_FOLDER_NAME, project)
-        stages = {
-            name: _single_child(workspace, requirements, name, project)
-            for name in REQUIREMENT_STAGE_FOLDER_NAMES
-        }
-    except FiberyError as error:
-        raise _StageFailed(
-            AddResultCode.FIBERY_READ_FAILED,
-            f"Could not read the folder structure of Project {project.name!r}.",
-            (str(error),),
-        ) from error
-    return _RawFolders(
-        root=root, requirements=requirements, raw=stages[RAW_FOLDER_NAME]
-    )
-
-
-def _single_child(
-    workspace: RequirementWorkspace,
-    parent: FolderNode,
-    name: str,
-    project: ProjectRecord,
-) -> FolderNode:
-    """The one child folder with this name, or an invalid-structure failure.
-
-    Fibery permits sibling Folders sharing a name. Two candidates make the
-    structure ambiguous, and this command must not guess which one is real.
-    """
-    matches = [
-        folder for folder in workspace.child_folders(parent.id) if folder.name == name
-    ]
-    if not matches:
-        raise _StageFailed(
-            AddResultCode.PROJECT_STRUCTURE_INVALID,
-            f"Project {project.name!r} is missing the folder "
-            f"{name!r} under {parent.name!r}.",
-        )
-    if len(matches) > 1:
-        raise _StageFailed(
-            AddResultCode.PROJECT_STRUCTURE_INVALID,
-            f"Project {project.name!r} has {len(matches)} folders named {name!r} "
-            f"under {parent.name!r}; the structure is ambiguous.",
-            tuple(folder.id for folder in matches),
-        )
-    return matches[0]
-
-
 def _find_duplicate(
     workspace: RequirementWorkspace, project: ProjectRecord, fingerprint: str
 ) -> RequirementRecord | None:
@@ -404,15 +312,14 @@ def _create_document(
     workspace: RequirementWorkspace,
     requirement_id: str,
     title: str,
-    raw_folder: FolderNode,
     requirement: RequirementRecord,
     journal: _Journal,
 ) -> DocumentNode:
+    """Create the Root Document contained by the Requirement, with no Folder."""
     name = requirement_document_name(requirement_id, title)
     try:
         document = workspace.create_requirement_document(
             name=name,
-            folder_id=raw_folder.id,
             requirement_public_id=requirement.public_id,
         )
     except FiberyError as error:
@@ -474,7 +381,6 @@ def _validate(
     requirement: RequirementRecord,
     requirement_id: str,
     parsed: RawRequirementSource,
-    folders: _RawFolders,
     document: DocumentNode,
 ) -> None:
     """Read the created state back and fail unless it matches the request."""
@@ -492,9 +398,7 @@ def _validate(
             (str(error),),
         ) from error
 
-    problems = _validation_problems(
-        state, project, requirement_id, parsed, folders, document
-    )
+    problems = _validation_problems(state, project, requirement_id, parsed, document)
     if problems:
         raise _StageFailed(
             AddResultCode.VALIDATION_FAILED,
@@ -508,7 +412,6 @@ def _validation_problems(
     project: ProjectRecord,
     requirement_id: str,
     parsed: RawRequirementSource,
-    folders: _RawFolders,
     document: DocumentNode,
 ) -> list[str]:
     record = state.requirement
@@ -540,30 +443,23 @@ def _validation_problems(
         )
     if record.source_fingerprint != parsed.fingerprint:
         problems.append("Source Fingerprint does not match the ingested artifact.")
-    problems.extend(_document_problems(state, parsed, folders, document))
+    problems.extend(_document_problems(state, parsed, document))
     return problems
 
 
 def _document_problems(
     state: _CreatedState,
     parsed: RawRequirementSource,
-    folders: _RawFolders,
     document: DocumentNode,
 ) -> list[str]:
     problems: list[str] = []
     found = state.document
     if found is None:
         problems.append(f"Root Document {document.id!r} does not exist.")
-    else:
-        if found.name != document.name:
-            problems.append(
-                f"Root Document is named {found.name!r}, expected {document.name!r}."
-            )
-        if found.folder_id != folders.raw.id:
-            problems.append(
-                f"Root Document is in folder {found.folder_id!r}, expected the "
-                f"Requirements/Raw folder {folders.raw.id!r}."
-            )
+    elif found.name != document.name:
+        problems.append(
+            f"Root Document is named {found.name!r}, expected {document.name!r}."
+        )
 
     attached_ids = [node.id for node in state.attached]
     if attached_ids != [document.id]:

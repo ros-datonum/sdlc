@@ -17,7 +17,6 @@ from sdlc.comparison_context import COMPARISON_RECORD_LIMIT
 from sdlc.fibery_workspace import (
     DocumentNode,
     FiberyError,
-    FolderNode,
     ProjectRecord,
     RequirementRecord,
     RequirementRelations,
@@ -129,9 +128,8 @@ class FakeModelRuntime:
 class FakeProcessorWorkspace:
     """Records calls and mutations so tests can assert on both."""
 
-    def __init__(self, project: ProjectRecord, folders, requirements=None):
+    def __init__(self, project: ProjectRecord, requirements=None):
         self.project = project
-        self.folders = list(folders)
         self.requirements = {r.id: r for r in (requirements or [])}
         self.documents: list[DocumentNode] = []
         self.content: dict[str, str] = {}
@@ -229,14 +227,6 @@ class FakeProcessorWorkspace:
         self._record("resolve_document")
         return next((d for d in self.documents if d.id == document_id), None)
 
-    def resolve_folder(self, folder_id):
-        self._record("resolve_folder")
-        return next((f for f in self.folders if f.id == folder_id), None)
-
-    def child_folders(self, parent_id):
-        self._record("child_folders")
-        return [f for f in self.folders if f.parent_id == parent_id]
-
     # -- writes ---------------------------------------------------------
 
     def write_document_content(self, secret, markdown):
@@ -318,15 +308,14 @@ class FakeProcessorWorkspace:
         self.mutations.append(f"add_affects {entity_id} -> {target_entity_id}")
         self._add_member(self.affects_ids, entity_id, target_entity_id)
 
-    def set_document_folder(self, document_id, folder_id):
-        """Constraint 24: the same Document moves; nothing else about it changes.
+    def relocate_legacy_folder(self, document_id, folder_id):
+        """Test helper, not a protocol method: change a Document's legacy Folder.
 
-        Constraint 25: nested children carry no Folder and are untouched.
+        Models a human or an old SDLC moving a Document between the retired
+        Raw/Draft/Approved folders. Presentation metadata only: the Document
+        keeps its id, secret, children and content.
         """
-        self._record("set_document_folder")
-        if folder_id not in {f.id for f in self.folders}:
-            raise FiberyError(f"Unknown folder {folder_id!r}.")
-        self.mutations.append(f"set_document_folder {document_id} {folder_id}")
+        self.mutations.append(f"relocate_legacy_folder {document_id} {folder_id}")
         current = next(d for d in self.documents if d.id == document_id)
         self.documents[self.documents.index(current)] = DocumentNode(
             id=current.id,
@@ -364,7 +353,7 @@ class FakeProcessorWorkspace:
         if raw_entity_id not in self.derived_from_ids[entity_id]:
             self.derived_from_ids[entity_id].append(raw_entity_id)
 
-    def create_requirement_document(self, name, folder_id, requirement_public_id):
+    def create_requirement_document(self, name, requirement_public_id):
         self._record("create_requirement_document")
         known = {r.public_id for r in self.requirements.values()}
         if requirement_public_id not in known:
@@ -372,7 +361,7 @@ class FakeProcessorWorkspace:
         node = DocumentNode(
             id=f"doc-{next(self._ids)}",
             name=name,
-            folder_id=folder_id,
+            folder_id=None,
             entity_public_id=requirement_public_id,
             secret=f"secret-{next(self._ids)}",
         )
@@ -409,21 +398,24 @@ class FakeProcessorWorkspace:
         )
 
 
-def build_workspace(raw_state="Process", raw_type="Raw", standards=()):
-    """A Project with the frozen folder tree, one RAW and its Root Document."""
-    root = FolderNode(id="f-root", name="SDLC", parent_id=None)
-    reqs = FolderNode(id="f-reqs", name="Requirements", parent_id=root.id)
-    stages = [
-        FolderNode(id=f"f-{s.lower()}", name=s, parent_id=reqs.id)
-        for s in ("Raw", "Draft", "Approved")
-    ]
-    project = ProjectRecord(
-        id="p-1",
-        name="SDLC",
-        code="SDLC",
-        state="Planned",
-        documents_root_folder_id=root.id,
-    )
+# Legacy folder ids: Documents created before the Type/State navigation model
+# still carry one of these in `fibery/Folder`. Fixtures use them to prove the
+# lifecycle ignores them; new Documents carry None.
+LEGACY_RAW_FOLDER = "f-raw"
+LEGACY_DRAFT_FOLDER = "f-draft"
+LEGACY_APPROVED_FOLDER = "f-approved"
+
+
+def build_workspace(
+    raw_state="Process", raw_type="Raw", standards=(), legacy_folders=True
+):
+    """A Project, one RAW and its Root Document.
+
+    `legacy_folders=True` gives the fixture Documents the `fibery/Folder`
+    metadata the pre-navigation-model SDLC wrote (fixture B); False models
+    Documents created after it, with no Folder (fixture A).
+    """
+    project = ProjectRecord(id="p-1", name="SDLC", code="SDLC", state="Planned")
     raw = RequirementRecord(
         id="raw-uuid-1",
         public_id="7",
@@ -435,12 +427,12 @@ def build_workspace(raw_state="Process", raw_type="Raw", standards=()):
         project_id=project.id,
         source_fingerprint="fp",
     )
-    ws = FakeProcessorWorkspace(project, [root, reqs, *stages], [raw, *standards])
-    attach_peer_roots(ws, standards)
+    ws = FakeProcessorWorkspace(project, [raw, *standards])
+    attach_peer_roots(ws, standards, legacy_folders)
     doc = DocumentNode(
         id="raw-doc-1",
         name="SDLC-RAW-0007 — Initial SDLC Requirements",
-        folder_id="f-raw",
+        folder_id=LEGACY_RAW_FOLDER if legacy_folders else None,
         entity_public_id=raw.public_id,
         secret="raw-secret",
     )
@@ -449,7 +441,7 @@ def build_workspace(raw_state="Process", raw_type="Raw", standards=()):
     return ws, raw, doc
 
 
-def attach_peer_roots(ws, records):
+def attach_peer_roots(ws, records, legacy_folders=True):
     """Give every peer Standard fixture the Root Document a real one has.
 
     Comparison context refuses a Standard without exactly one readable,
@@ -466,7 +458,7 @@ def attach_peer_roots(ws, records):
             DocumentNode(
                 id=f"peer-doc-{record.public_id}",
                 name=f"{record.requirement_id} — {record.title}",
-                folder_id="f-draft",
+                folder_id=LEGACY_DRAFT_FOLDER if legacy_folders else None,
                 entity_public_id=record.public_id,
                 secret=secret,
             )

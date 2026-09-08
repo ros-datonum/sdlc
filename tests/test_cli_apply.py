@@ -32,7 +32,6 @@ def applied(**changes):
         "message": "SDLC-FR-0031 applied from Review Result 1; State is now Applied.",
         "requirement_id": "SDLC-FR-0031",
         "state": "Applied",
-        "root_folder": "Approved",
     }
     return ApplyResult(**{**base, **changes})
 
@@ -106,7 +105,7 @@ def test_apply_runs_and_exits_zero(monkeypatch):
     assert code == cli.EXIT_SUCCESS
     assert out.getvalue().startswith("REQUIREMENT_APPLIED\n")
     assert "DEPENDS_ON SDLC-FR-0002" in out.getvalue()
-    assert "Requirements/Approved" in out.getvalue()
+    assert "Requirements/" not in out.getvalue()
     assert error_out.getvalue() == ""
     assert ws.requirements[requirement.id].state == "Applied"
 

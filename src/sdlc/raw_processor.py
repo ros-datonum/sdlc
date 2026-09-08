@@ -45,7 +45,6 @@ from sdlc.processing_result import (
     processing_result_name,
     render_processing_result,
 )
-from sdlc.project_init import REQUIREMENT_STAGE_FOLDER_NAMES, REQUIREMENTS_FOLDER_NAME
 from sdlc.raw_execution_guard import RawGuardUnavailable, RawProcessingBusy, hold
 from sdlc.raw_processing import InvalidModelOutput, parse_model_output
 from sdlc.raw_prompt import build_prompt
@@ -65,7 +64,6 @@ STANDARD_TYPE = "Standard"
 PROCESS_STATE = "Process"
 REVIEW_STATE = "Review"
 DRAFT_STATE = "Draft"
-DRAFT_FOLDER_NAME = "Draft"
 INITIAL_REVISION = 1
 
 
@@ -100,7 +98,6 @@ class _Context:
     raw: RequirementRecord
     project: ProjectRecord
     root_document: DocumentNode
-    draft_folder_id: str
     raw_body: str
     existing_standards: tuple[RequirementRecord, ...]
 
@@ -269,12 +266,10 @@ def _load_context(workspace: RawProcessorWorkspace, raw_entity_id: str) -> _Cont
 
     root = documents[0]
     body = _read_document_tree(workspace, raw, root)
-    draft_folder = _draft_folder_id(workspace, project)
     return _Context(
         raw=raw,
         project=project,
         root_document=root,
-        draft_folder_id=draft_folder,
         raw_body=body,
         existing_standards=tuple(standards),
     )
@@ -324,45 +319,6 @@ def _read_document_tree(
             (str(error),),
         ) from error
     return "\n\n".join(sections)
-
-
-def _draft_folder_id(workspace: RawProcessorWorkspace, project: ProjectRecord) -> str:
-    """Resolve `<Project>/Requirements/Draft` by real Folder ids."""
-    root_id = project.documents_root_folder_id
-    if not root_id:
-        raise _StageFailed(
-            ProcessResultCode.PROJECT_STRUCTURE_INVALID,
-            f"Project {project.name!r} has no Documents Root Folder ID.",
-        )
-    try:
-        root = workspace.resolve_folder(root_id)
-        if root is None:
-            raise _StageFailed(
-                ProcessResultCode.PROJECT_STRUCTURE_INVALID,
-                f"Documents Root Folder ID {root_id!r} does not resolve.",
-            )
-        requirements = _single_child(workspace, root.id, REQUIREMENTS_FOLDER_NAME)
-        for stage in REQUIREMENT_STAGE_FOLDER_NAMES:
-            found = _single_child(workspace, requirements, stage)
-            if stage == DRAFT_FOLDER_NAME:
-                draft = found
-    except FiberyError as error:
-        raise _StageFailed(
-            ProcessResultCode.FIBERY_READ_FAILED,
-            "Could not read the Project folder structure.",
-            (str(error),),
-        ) from error
-    return draft
-
-
-def _single_child(workspace: RawProcessorWorkspace, parent_id: str, name: str) -> str:
-    matches = [f for f in workspace.child_folders(parent_id) if f.name == name]
-    if len(matches) != 1:
-        raise _StageFailed(
-            ProcessResultCode.PROJECT_STRUCTURE_INVALID,
-            f"Expected exactly one {name!r} folder, found {len(matches)}.",
-        )
-    return matches[0].id
 
 
 # -- processing result ------------------------------------------------------
@@ -1008,7 +964,7 @@ def _create_root_document(
     record: RequirementRecord,
     journal: _Journal,
 ) -> DocumentNode:
-    """Create the Root Document under Requirements/Draft.
+    """Create the Root Document contained by the candidate, with no Folder.
 
     An existing Root was inspected and adopted before any write; only a
     candidate with no Root Document reaches this point.
@@ -1017,7 +973,6 @@ def _create_root_document(
     try:
         document = workspace.create_requirement_document(
             name=name,
-            folder_id=context.draft_folder_id,
             requirement_public_id=record.public_id,
         )
     except FiberyError as error:
@@ -1101,8 +1056,6 @@ def _validate_candidate(
             problems.append("the Project relation is wrong")
     if found is None:
         problems.append("the Root Document does not exist")
-    elif found.folder_id != context.draft_folder_id:
-        problems.append("the Root Document is not in Requirements/Draft")
     if [node.id for node in attached] != [document.id]:
         problems.append("Requirement.Documents does not hold exactly this Document")
     # Fibery re-serializes stored Markdown (constraint 11): "-" bullets read

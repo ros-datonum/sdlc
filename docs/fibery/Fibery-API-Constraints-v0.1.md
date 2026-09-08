@@ -199,11 +199,16 @@ both were accepted on one `create-views` call.
 
 ### `project init` does not use it
 
-By decision, the Project document root is the Space-level Folder tree, recorded
-in the Text Field `SDLC/Documents Root Folder ID`. No placeholder root Document
-is created, and `Project.Documents` is left for genuine Project documents.
-`Requirement.Documents` remains the mechanism for a Requirement's Root Document,
-which is placed in the right Folder through `fibery/Folder`.
+No placeholder root Document is created, and `Project.Documents` is left for
+genuine Project documents. `Requirement.Documents` remains the mechanism for a
+Requirement's Root Document.
+
+Historical: until 2026-09-09 the Project document root was a Space-level
+Folder tree recorded in the Text Field `SDLC/Documents Root Folder ID`, and
+Root Documents were placed in stage Folders through `fibery/Folder`. That was
+retired (constraint 27): lifecycle placement is Requirement Type + State, and
+new Root Documents carry no Folder. The Folder constraints above remain
+verified facts about Fibery, no longer used by any lifecycle command.
 
 ### Reading it back
 
@@ -529,3 +534,21 @@ requirement prose and the document secret in a `/api/documents/<secret>`
 path. Transport diagnostics therefore report only the endpoint family, HTTP
 status, category and attempt count, or an integer JSON-RPC code; the body,
 the vendor name and message, the path and exception text are withheld.
+
+## Constraint 27 — a contained Document needs no `fibery/Folder` — VERIFIED
+
+Verified 2026-09-09 on a disposable Project, Requirement and Documents, all
+deleted afterwards and confirmed absent.
+
+`create-views` with `fibery/type: "document"`, a client-supplied
+`documentSecret`, `fibery/container-app`, `fibery/container-type: "object"`,
+`fibery/container-entity-type` and `fibery/container-entity-id`, and **no**
+`fibery/Folder`, succeeds. The view reads back with `fibery/Folder: null`,
+`container-type "object"` and the Requirement's public id; it is listed by
+`documents_attached_to_requirement`; `PUT /api/documents/<secret>` and the
+read-back work; a child created through `fibery/parent-page-id` is listed as
+its child and reads normally; the Root stays attached afterwards.
+
+Consequence: Requirement Root Documents are created with no Folder. Lifecycle
+placement is the Requirement's Type and State; no stage moves a Document.
+Documents created earlier keep their `fibery/Folder` as inert metadata.

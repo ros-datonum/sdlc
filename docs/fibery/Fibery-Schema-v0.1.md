@@ -96,15 +96,21 @@ Requirement
 → zero or more nested child Documents
 ```
 
-Project folder structure:
+Lifecycle placement (amended 2026-09-09) is defined by Requirement fields,
+never by Document folders:
 
 ```text
-<Project Name>/
-└── Requirements/
-    ├── Raw/
-    ├── Draft/
-    └── Approved/
+RAW                 Type = Raw
+STANDARD CURRENT    Type = Standard, State != Applied
+STANDARD APPLIED    Type = Standard, State = Applied
 ```
+
+Root Documents are contained by their Requirement and carry no `fibery/Folder`
+(Documents created before the amendment still carry one; it is inert). Human
+navigation is a workspace-level Smart Folder over Projects with mirrored
+context views RAW / Draft / Approved using those filters; SDLC runtime neither
+creates nor requires it. The Project Text Field `Documents Root Folder ID` is
+legacy: unused by runtime, kept for manual cleanup.
 
 ## Milestone
 

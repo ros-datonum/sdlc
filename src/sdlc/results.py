@@ -16,7 +16,6 @@ class ResultCode(StrEnum):
     PROJECT_CODE_COLLISION = "PROJECT_CODE_COLLISION"
     FIBERY_READ_FAILED = "FIBERY_READ_FAILED"
     FIBERY_WRITE_FAILED = "FIBERY_WRITE_FAILED"
-    DOCUMENT_STRUCTURE_CREATE_FAILED = "DOCUMENT_STRUCTURE_CREATE_FAILED"
     VALIDATION_FAILED = "VALIDATION_FAILED"
     PARTIAL_INIT = "PARTIAL_INIT"
 
@@ -29,7 +28,6 @@ class AddResultCode(StrEnum):
     INVALID_INPUT = "INVALID_INPUT"
     PROJECT_NOT_FOUND = "PROJECT_NOT_FOUND"
     PROJECT_AMBIGUOUS = "PROJECT_AMBIGUOUS"
-    PROJECT_STRUCTURE_INVALID = "PROJECT_STRUCTURE_INVALID"
     SOURCE_FILE_NOT_FOUND = "SOURCE_FILE_NOT_FOUND"
     SOURCE_FILE_UNREADABLE = "SOURCE_FILE_UNREADABLE"
     INVALID_REQUIREMENT_SOURCE = "INVALID_REQUIREMENT_SOURCE"
@@ -67,7 +65,6 @@ class InitResult:
     message: str
     project_name: str
     project_code: str | None = None
-    documents: tuple[str, ...] = ()
     created: tuple[str, ...] = ()
     failed: tuple[str, ...] = ()
     details: tuple[str, ...] = field(default=())
@@ -255,7 +252,7 @@ class AddResult:
     project_code: str | None = None
     requirement_id: str | None = None
     title: str | None = None
-    document_path: str | None = None
+    document_name: str | None = None
     created: tuple[str, ...] = ()
     failed: tuple[str, ...] = ()
     details: tuple[str, ...] = field(default=())
@@ -372,8 +369,8 @@ class ApplyResult:
     """Outcome of one deterministic application of an approved Requirement.
 
     `created` lists the normative steps that became durable, so a
-    PARTIAL_APPLY reports exactly which edges exist and whether the Root
-    Document moved; a retry completes only what is missing.
+    PARTIAL_APPLY reports exactly which edges exist; a retry completes only
+    what is missing.
     """
 
     code: ApplyResultCode
@@ -382,7 +379,6 @@ class ApplyResult:
     state: str | None = None
     relations_added: tuple[str, ...] = ()
     relations_present: tuple[str, ...] = ()
-    root_folder: str | None = None
     created: tuple[str, ...] = ()
     details: tuple[str, ...] = field(default=())
 

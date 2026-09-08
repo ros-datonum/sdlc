@@ -450,7 +450,6 @@ def render_apply_result(result: ApplyResult, stream: TextIO) -> None:
             print("\nRelations already present:", file=stream)
             for item in result.relations_present:
                 print(f"- {item}", file=stream)
-        print(f"\nRoot Document: Requirements/{result.root_folder}", file=stream)
         return
     if result.code is ApplyResultCode.REQUIREMENT_ALREADY_APPLIED:
         return
@@ -640,8 +639,8 @@ def render_add_result(result: AddResult, stream: TextIO) -> None:
         print(f"{result.requirement_id} — {result.title}\n", file=stream)
         print("State: Draft", file=stream)
         print("Revision: 1\n", file=stream)
-        print("Document:", file=stream)
-        print(f"{result.document_path}\n", file=stream)
+        print("Root Document:", file=stream)
+        print(f"{result.document_name}\n", file=stream)
         print("Next:", file=stream)
         print("Review the RAW Requirement in Fibery.", file=stream)
         print("When ready, move it from Draft → Process.", file=stream)
@@ -694,10 +693,7 @@ def _render_initialized(result: InitResult, stream: TextIO) -> None:
     print(f"Name: {result.project_name}", file=stream)
     print(f"Code: {result.project_code}", file=stream)
     print("State: Planned\n", file=stream)
-    print("Documents:", file=stream)
-    for path in result.documents:
-        print(f"✓ {path}", file=stream)
-    print("\nNext:", file=stream)
+    print("Next:", file=stream)
     print("Use `sdlc project requirement add`", file=stream)
     print("to add the first RAW requirement.", file=stream)
 

@@ -498,12 +498,13 @@ immediately before Process -> Review             (Root must hold the applied out
 
 Protected by the comparison: the entity itself, its Requirement ID, Title,
 Project, Revision and public id; Type `Standard`; State `Process`; exactly one
-attached Root Document with the same identity, content secret and Folder;
-Root content canonically equivalent to the captured input (or, before the
+attached Root Document with the same identity and content secret; Root
+content canonically equivalent to the captured input (or, before the
 transition, to the output just applied); and the normative tree, traversed
 afresh from the current attachment, equal by manifest to the captured input
-tree (or, before the transition, to the result's intended output tree). A
-Folder change is a conflict, never adopted as permission to write elsewhere.
+tree (or, before the transition, to the result's intended output tree). The
+Root's legacy `fibery/Folder` is presentation metadata (amended 2026-09-09):
+a change to it is not drift and never makes evidence stale.
 
 Any drift is `PROCESSING_STATE_CONFLICT`: the stale model output is not
 persisted, no Root is rewritten, no State is written, nothing already durable

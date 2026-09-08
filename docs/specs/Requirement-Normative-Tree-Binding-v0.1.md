@@ -158,8 +158,9 @@ normative_tree_fingerprint
 Excluded on purpose: Document secrets, Folder location, timestamps,
 modification and presentation metadata, view metadata, Process and Review
 artifact contents, and the shells of section 2.2. Because the Folder is
-excluded, moving the same Root from `Requirements/Draft` to
-`Requirements/Approved` does not change the snapshot. Because parent ids are
+excluded, a legacy `fibery/Folder` on an old Root, its later change, or its
+absence on a new Root never changes the snapshot (since 2026-09-09 no stage
+writes a Folder at all). Because parent ids are
 included, re-parenting changes it; because Document ids are included,
 replacing a child with a new Document of identical content changes it;
 because the Root id is included, replacing the Root changes it; because
@@ -399,9 +400,9 @@ reads no tree and is unchanged.
 ### 5.4 Apply
 
 Before the first normative write and again before `Apply -> Applied`, Apply
-requires the same four bindings. The Root move keeps tree identity because
-the Folder is not part of the snapshot; the existing direct-child-set check
-during the move stays as the more specific error. Additive relation
+requires the same four bindings. Apply writes no Document (the historical
+Draft -> Approved Root move was retired on 2026-09-09), so tree identity is
+trivially preserved. Additive relation
 semantics, partial results, no rollback and resume are unchanged; detected
 drift after the first write is `PARTIAL_APPLY` naming `REVIEW_RESULT_STALE`
 with the durable steps kept, as today.
@@ -581,9 +582,10 @@ Stage protection:
 
 Fake fidelity and live probe, before implementation freeze: the fake must
 model nesting at depth and listing order; one narrow live probe must confirm
-nested listing at depth two or more, the folder of nested Documents
-following the Root move, and that a Document nested under an artifact is
-listed as that artifact's child. No probe runs as part of this design.
+nested listing at depth two or more and that a Document nested under an
+artifact is listed as that artifact's child (the historical "folder follows
+the Root move" check is moot: no stage moves the Root). No probe runs as part
+of this design.
 
 ## 12. Implementation boundaries
 
