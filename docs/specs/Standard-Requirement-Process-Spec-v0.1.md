@@ -220,7 +220,8 @@ overwritten during normal operation.
 Each contains at minimum:
 
 ```text
-process_result_version    0.2
+process_result_version    0.3 (manifest v2; see the version matrix in
+                          Requirement-Normative-Tree-Binding-v0.1 §3.5)
 iteration
 input_fingerprint         the Root Document content this iteration consumed
 output_fingerprint        the Root Document content this iteration produced
@@ -235,7 +236,8 @@ proposed relations
 No chain-of-thought. Serialization is JSON inside the child Document, as with
 the RAW Processing Result.
 
-A 0.2 result is valid only when both manifests belong to this Requirement,
+A tree-bound result is valid only when both manifests carry the version its
+own version declares, belong to this Requirement,
 their Root entries agree with the retained fingerprints and the output tree
 differs from the input tree in nothing but the Root content. A 0.1 result is
 parsed as legacy Root-only evidence, never rejected for lacking trees and
@@ -290,13 +292,14 @@ The ambiguous case is settled by the operator, never inferred:
 --new-iteration-after <document id>
   explicit choice to process the CURRENT tree as the next iteration:
   ordinary comparison context and input bound, one model call, the next
-  immutable Process Result 0.2, the selected Result untouched
+  immutable Process Result 0.3, the selected Result untouched
 ```
 
 Both name exactly the latest valid, tree-bound Process Result under the
 current Root; both are checked before any model call or mutation: normal
 Standard + Process entry, that exact Document under this Root with this
-Requirement's artifact name, an unambiguous latest iteration, coherent 0.2
+Requirement's artifact name, an unambiguous latest iteration, coherent
+current-format (0.3)
 evidence, and a current tree equal to its input and different from its
 output. An older or unknown Document, a legacy 0.1 artifact, an empty or
 malformed artifact, unrelated current content, the wrong Type or State, or a
@@ -345,7 +348,7 @@ If the Requirement is in `Process` but
 
 ```text
 current normative tree fingerprint
-  == latest (tree-bound) Process Result.normative_output_tree fingerprint
+  == latest (current-format) Process Result.normative_output_tree fingerprint
 ```
 
 the result is:
@@ -592,7 +595,7 @@ Process Result written before any document mutation
   tree == latest input, != output -> PROCESSING_STATE_CONFLICT, no model,
     no mutation, the latest Result Document named with both options
   --resume-result latest       -> model must NOT run, application resumes
-  --new-iteration-after latest -> one model call, next 0.2 Result
+  --new-iteration-after latest -> one model call, next 0.3 Result
   wrong / older / foreign / legacy / empty / malformed selection,
     unrelated content, or contradictory options -> refused, nothing written
   reviewed iteration under --resume-result -> refused, new iteration advised
@@ -602,7 +605,7 @@ iteration numbering is monotonic; earlier results are never modified
 unchanged tree on re-entry          -> NO_CHANGES_TO_PROCESS, no new result
 changed Root or child on re-entry   -> new iteration, one model call
   (child edited, added, removed, renamed or re-parented alike)
-legacy 0.1 latest result            -> new tree-bound iteration, never replayed
+older 0.1 or 0.2 latest result      -> new current-format iteration, never replayed
 input_fingerprint / output_fingerprint recorded and used as specified
 normative_input_tree / normative_output_tree recorded and read back
 tree changed during the model call  -> PROCESSING_STATE_CONFLICT, nothing written

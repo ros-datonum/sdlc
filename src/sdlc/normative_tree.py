@@ -25,7 +25,16 @@ from dataclasses import dataclass, replace
 from sdlc.fibery_workspace import DocumentNode, FiberyError, RequirementRecord
 from sdlc.raw_source import canonical_markdown, fingerprint_of
 
-NORMATIVE_TREE_VERSION = 1
+# Manifest v2 fingerprints each Document as SHA-256 over the exact UTF-8 bytes of
+# canonical_markdown(content). v1 (audit A8) hashed through fingerprint_of,
+# whose second normalization erased trailing whitespace and Unicode form
+# differences inside fenced blocks; v1 manifests stay readable as history and
+# are never rewritten or reinterpreted.
+NORMATIVE_TREE_VERSION = 2
+LEGACY_NORMATIVE_TREE_VERSION = 1
+SUPPORTED_NORMATIVE_TREE_VERSIONS = frozenset(
+    {NORMATIVE_TREE_VERSION, LEGACY_NORMATIVE_TREE_VERSION}
+)
 
 # Admission limits: early application checks on the tree itself. The final
 # bound on the complete assembled model input still applies afterwards.
@@ -78,7 +87,23 @@ class InvalidTreeManifest(ValueError):
 
 
 def document_fingerprint(content: str) -> str:
-    """The frozen Root fingerprint, applied unchanged to every Document."""
+    """The current document fingerprint: SHA-256 of the exact canonical bytes.
+
+    canonical_markdown already defines the supported equivalence (Fibery's
+    prose re-serialization absorbed, fenced content literal). Its output is
+    hashed as is: no second strip, collapse, NFC or line-ending pass, so two
+    documents fingerprint equal exactly when content_equivalent says so.
+    """
+    return hashlib.sha256(canonical_markdown(content).encode("utf-8")).hexdigest()
+
+
+def legacy_document_fingerprint(content: str) -> str:
+    """The manifest v1 / Result 0.2 algorithm, kept only to verify history.
+
+    It normalized the canonical form a second time and therefore collided on
+    fenced trailing whitespace and Unicode form (audit A8). Never used for
+    new evidence.
+    """
     return fingerprint_of(canonical_markdown(content))
 
 
@@ -110,6 +135,11 @@ class TreeManifest:
     root_document_id: str
     entries: tuple[TreeEntry, ...]
     version: int = NORMATIVE_TREE_VERSION
+
+    @property
+    def is_current(self) -> bool:
+        """Whether the content fingerprints follow the current algorithm."""
+        return self.version == NORMATIVE_TREE_VERSION
 
     @property
     def root_entry(self) -> TreeEntry:
@@ -144,10 +174,15 @@ class TreeManifest:
         """Parse and validate a persisted manifest; never consults Fibery."""
         if not isinstance(payload, dict):
             raise InvalidTreeManifest("The normative tree manifest must be an object.")
-        if payload.get(VERSION_KEY) != NORMATIVE_TREE_VERSION:
+        version = payload.get(VERSION_KEY)
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or version not in SUPPORTED_NORMATIVE_TREE_VERSIONS
+        ):
             raise InvalidTreeManifest(
-                f"Normative tree manifest version {payload.get(VERSION_KEY)!r} is "
-                f"not supported; version {NORMATIVE_TREE_VERSION} is read."
+                f"Normative tree manifest version {version!r} is not supported; "
+                f"versions {sorted(SUPPORTED_NORMATIVE_TREE_VERSIONS)} are read."
             )
         requirement_id = _require_text(
             payload.get(REQUIREMENT_ID_KEY), REQUIREMENT_ID_KEY
@@ -158,7 +193,10 @@ class TreeManifest:
             raise InvalidTreeManifest("The manifest must list at least the Root.")
         entries = tuple(sorted((_read_entry(e) for e in raw_entries), key=_entry_key))
         manifest = cls(
-            requirement_id=requirement_id, root_document_id=root_id, entries=entries
+            requirement_id=requirement_id,
+            root_document_id=root_id,
+            entries=entries,
+            version=version,
         )
         _validate_structure(manifest)
         declared = payload.get(FINGERPRINT_KEY)

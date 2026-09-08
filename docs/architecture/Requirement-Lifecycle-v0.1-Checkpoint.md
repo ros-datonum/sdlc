@@ -139,6 +139,11 @@ Standing items, recorded so they are not mistaken for guarantees:
   after HTTP 429, at most three attempts. A rate-limited mutation is reported
   once and resumed from durable state on rerun; nothing coordinates
   simultaneous SDLC processes, so one command runs at a time per workspace.
+- Document fingerprints of current evidence (Process/Review 0.3, manifest v2)
+  are SHA-256 over the exact canonical bytes (audit A8); 0.2/manifest v1
+  evidence hashed through a second normalization that missed fenced trailing
+  whitespace and Unicode form, and is readable history only. Fresh Process
+  and Review produce current evidence; nothing is rewritten.
 - A tree equal to the latest Process Result's input but not its output is
   ambiguous between an unfinished rewrite and a deliberate return to that
   input (audit A11); Standard Process refuses it and the operator chooses
@@ -157,7 +162,7 @@ Standing items, recorded so they are not mistaken for guarantees:
   Review certifies and Ready and Apply bind, per
   `docs/specs/Requirement-Normative-Tree-Binding-v0.1.md` (audit finding A5).
   Legacy Root-only Process and Review Results stay as history: never replayed,
-  never certified, never applied; Process runs a fresh tree-bound iteration
+  never certified, never applied; Process runs a fresh current-format iteration
   over them.
 - Relation removal and replacement semantics are undesigned; Apply is additive
   only.

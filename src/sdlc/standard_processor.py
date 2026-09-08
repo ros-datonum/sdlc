@@ -158,9 +158,15 @@ class _Context:
         return self.tree.manifest
 
     @property
-    def upgrades_legacy(self) -> bool:
-        """Whether the latest Process Result binds no tree (a 0.1 artifact)."""
-        return self.latest is not None and not self.latest[1].is_tree_bound
+    def upgrades_older(self) -> bool:
+        """Whether the latest Process Result is history under an older format.
+
+        A 0.1 result binds no tree; a 0.2 result binds manifest v1, whose
+        fingerprints could not see every literal difference (A8). Neither is
+        replayed: a fresh current-format iteration is produced over the tree
+        as it is now.
+        """
+        return self.latest is not None and not self.latest[1].is_current
 
 
 def process_standard_requirement(
@@ -220,9 +226,10 @@ def process_standard_requirement(
         return _failure_result(failure, journal)
 
     upgrade = (
-        f" Legacy Root-only Process Result {context.latest[1].iteration} was left "
-        "as history; this iteration binds the normative tree."
-        if context.upgrades_legacy
+        f" Older-format Process Result {context.latest[1].iteration} (version "
+        f"{context.latest[1].version}) was left as history; this iteration binds "
+        "the normative tree with the current fingerprint algorithm."
+        if context.upgrades_older
         else ""
     )
     return StandardProcessResult(
@@ -703,10 +710,11 @@ def _resumable_result(context: _Context) -> ProcessResult | None:
     if latest is None:
         return None
     result = latest[1]
-    if not result.is_tree_bound:
-        # A legacy 0.1 result binds no tree, so its output cannot be replayed
-        # safely: the children it was produced over are unknown. A fresh
-        # iteration over the current tree is required instead.
+    if not result.is_current:
+        # A 0.1 result binds no tree and a 0.2 result binds manifest v1 under
+        # the older fingerprint algorithm, so neither output can be replayed
+        # or matched safely. A fresh iteration over the current tree is
+        # required instead.
         return None
     current = context.input_tree.fingerprint
     if current == result.output_tree.fingerprint:
@@ -719,7 +727,7 @@ def _is_unchanged(context: _Context) -> bool:
     latest = context.latest
     return (
         latest is not None
-        and latest[1].is_tree_bound
+        and latest[1].is_current
         and context.input_tree.fingerprint == latest[1].output_tree.fingerprint
     )
 
@@ -737,14 +745,15 @@ def _require_latest_anchor(
     latest = context.latest
     if latest is not None and latest[0].id == document_id:
         node, result = latest
-        if not result.is_tree_bound:
+        if not result.is_current:
             raise _StageFailed(
                 StandardProcessResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
-                f"Process Result Document {document_label(node)} is a legacy "
-                "Root-only artifact and binds no tree; it can be neither resumed "
-                "nor anchored. Run the ordinary operation without "
-                f"{option}: a legacy result always yields a fresh tree-bound "
-                "iteration.",
+                f"Process Result Document {document_label(node)} is history in "
+                f"an older format (version {result.version}); its evidence "
+                "cannot be resumed or anchored under the current fingerprint "
+                f"algorithm. Run the ordinary operation without {option} in "
+                "State Process: an older result always yields a fresh "
+                "current-format iteration.",
             )
         return latest
     older = next((pair for pair in context.results if pair[0].id == document_id), None)

@@ -180,7 +180,7 @@ that Process Result's output_fingerprint
     == Review Result.reviewed_process_output_fingerprint
 current normative tree fingerprint (traversed afresh)
     == Review Result.reviewed_normative_tree fingerprint
-both artifacts tree-bound (0.2) and coherent
+both artifacts current-format (0.3, manifest v2) and coherent
     else NORMATIVE_TREE_EVIDENCE_REQUIRED, zero writes
 ```
 

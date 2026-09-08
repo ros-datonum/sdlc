@@ -2,8 +2,9 @@
 
 **Status:** approved design contract for audit finding A5, with the decisions
 recorded in section 13. Implemented in `src/sdlc/normative_tree.py`, Process
-Result 0.2, Review Result 0.2 and the Standard Process, Review, Ready and Apply
-stages; the Fibery schema is unchanged.
+Result and Review Result (0.2, then 0.3 with manifest v2 under audit finding
+A8, section 3.5) and the Standard Process, Review, Ready and Apply stages; the
+Fibery schema is unchanged.
 
 ## 1. The defect, as verified in the merged repository
 
@@ -137,7 +138,7 @@ name, Requirement identity and parentage only.
 One versioned, deterministic manifest of an observed tree:
 
 ```text
-normative_tree_version   1
+normative_tree_version   2 (current; 1 is readable history, section 3.5)
 requirement_id           the Requirement ID
 root_document_id         the Root's Document id
 documents                one entry per included Document, sorted by
@@ -176,21 +177,54 @@ not an atomic database snapshot; anything outside the tree.
 
 ### 3.3 Content fingerprint and its limits
 
-`content_fingerprint` is the existing `document_fingerprint`, that is
-`fingerprint_of(canonical_markdown(body))`. This reuses the frozen Markdown
-equivalence policy unchanged. Precisely: two bodies that differ only in what
-Fibery is known to re-serialize (bullet marker, blank lines around lists and
-headings, soft line breaks and continuation indent outside fenced blocks,
-line endings, trailing whitespace, NFC form) fingerprint the same; fenced
-blocks are literal; the open edge cases already recorded for
-`canonical_markdown` apply to children exactly as to the Root. This is
-equivalence under that policy, not a byte-exact hash of every original
-byte, and the contract claims no more.
+`content_fingerprint` is `document_fingerprint`, which under manifest v2 is
 
-The legacy `input_fingerprint`, `output_fingerprint`,
-`reviewed_document_fingerprint` and the RAW Source Fingerprint keep their
-current meaning and algorithm. The tree fingerprint is an additional binding
-in its own field; no Root-hash field ever carries a tree hash.
+```text
+SHA-256(canonical_markdown(body).encode("utf-8"))
+```
+
+the exact bytes of the canonical form, hashed once. `canonical_markdown`
+already defines the supported equivalence: two bodies that differ only in
+what Fibery is known to re-serialize outside fenced blocks (bullet marker,
+blank lines around lists and headings, soft line breaks and continuation
+indent, line endings, trailing whitespace) fingerprint the same; inside a
+supported fence every byte is literal, so trailing whitespace, blank lines,
+indentation and Unicode form differences there change the fingerprint,
+exactly as `content_equivalent` treats them. No second normalization pass
+(no rstrip, blank-line collapse, NFC or line-ending conversion) is applied
+to the canonical output. This is equivalence under that policy, not a
+byte-exact hash of every original byte, and the contract claims no more.
+
+Manifest v1 (audit finding A8) computed `fingerprint_of(canonical_markdown(body))`,
+whose second normalization erased fenced trailing whitespace and Unicode
+form differences that the canonical form preserved, so two documents that
+`content_equivalent` distinguished could fingerprint equal. v1 evidence is
+history: readable, verified against its own stored digest, never recomputed
+from current documents and never reinterpreted as v2.
+
+The Root fields `input_fingerprint`, `output_fingerprint` and
+`reviewed_document_fingerprint` carry the same document fingerprint as the
+manifest's Root entry, under the algorithm the artifact's version declares.
+The RAW Source Fingerprint keeps its transport algorithm and meaning. The
+tree fingerprint is an additional binding in its own field; no Root-hash
+field ever carries a tree hash.
+
+### 3.5 Version matrix
+
+```text
+Result version   manifest   document-hash semantics                 history   normal Process / Review / APPROVE / Apply
+0.1              none       fingerprint_of(canonical) on the Root   readable  no: Root-only; Process starts a fresh iteration
+0.2              v1         fingerprint_of(canonical) per Document  readable  no: older algorithm; Process starts a fresh iteration
+0.3 (current)    v2         SHA-256 of exact canonical bytes        current   yes, when coherent
+```
+
+Readable history is never invalid merely because it is insufficient for
+the current guarantee: it parses under its own semantics, keeps its stored
+digests, and is never modified. It is not eligible for normal current
+processing decisions, review, approval or application; obtaining current
+evidence normally means a fresh Process and a fresh independent Review, that
+is at least two model calls, and workflow movement stays an explicit operator
+action. No parser or approval command runs Process or Review itself.
 
 ### 3.4 Shared reader
 
@@ -212,25 +246,28 @@ render_normative_tree(tree)     Root first, then descendants in manifest
 The reader raises one structured error; each stage maps it to
 `NORMATIVE_TREE_INVALID` or `FIBERY_READ_FAILED`.
 
-## 4. Persisted evidence: Process Result 0.2 and Review Result 0.2
+## 4. Persisted evidence: Process Result 0.3 and Review Result 0.3
 
 ### 4.1 Fields
 
 ```text
-Process Result   process_result_version "0.2"
-                 all 0.1 fields, unchanged in name, meaning and algorithm
+Process Result   process_result_version "0.3"   (0.2: the same fields with a
+                                                 manifest v1 and the v1 hash)
+                 all 0.1 fields, unchanged in name and meaning; the Root
+                 fingerprint fields use the document hash of the declared
+                 manifest version
                  + normative_input_tree    manifest observed at load
                  + normative_output_tree   intended outcome: the input manifest
                                            with only the Root entry's
                                            content_fingerprint replaced by
                                            output_fingerprint
-Review Result    review_result_version "0.2"
+Review Result    review_result_version "0.3"   (0.2 likewise with manifest v1)
                  all 0.1 fields, unchanged
                  + reviewed_normative_tree manifest observed at load
 ```
 
-Writers emit 0.2 only. Historical artifacts are immutable: no rewrite, no
-in-place upgrade, no mutation during parsing or inspection.
+Writers emit 0.3 with manifest v2 only. Historical artifacts are immutable:
+no rewrite, no in-place upgrade, no mutation during parsing or inspection.
 
 ### 4.2 Parser classification
 
@@ -239,9 +276,15 @@ Parsers return one of three outcomes and nothing in between:
 ```text
 valid legacy evidence      version 0.1, all 0.1 rules satisfied; tree fields
                            absent; classified LEGACY_ROOT_ONLY
-valid tree-bound evidence  version 0.2, all 0.1 rules and the 0.2
-                           consistency checks satisfied
-invalid evidence           anything else: the existing INVALID_* codes
+valid older tree-bound     version 0.2 with manifest v1, all consistency
+evidence                   checks satisfied under the v1 algorithm; readable
+                           history, not current
+valid current evidence     version 0.3 with manifest v2, all 0.1 rules and
+                           the consistency checks satisfied
+invalid evidence           anything else, including a version pair that the
+                           matrix of section 3.5 does not define (0.3 with
+                           v1, 0.2 with v2, an unknown version): the
+                           existing INVALID_* codes
 ```
 
 Parsing legacy evidence never synthesizes a tree from the current workspace
@@ -249,10 +292,11 @@ and never attaches one to the artifact. There is exactly one manifest
 representation; a consumer cannot choose between a stored digest and a
 stored structure, because both must agree or the artifact is invalid.
 
-### 4.3 0.2 consistency checks, all deterministic
+### 4.3 Tree-bound consistency checks, all deterministic
 
 ```text
-manifest structure         version 1; every field present with its type;
+manifest structure         version as the Result version declares (v2 for
+                           0.3, v1 for 0.2); every field present with its type;
                            document ids unique; exactly one entry with a
                            null parent and it is root_document_id; every
                            other parent id is an entry in the manifest;
@@ -276,7 +320,7 @@ intended output            normative_output_tree equals
 review coherence           reviewed_normative_tree equals the
                            normative_output_tree of the Process Result
                            iteration named by reviewed_process_iteration,
-                           which must itself be 0.2
+                           which must itself be current (0.3)
 ```
 
 An artifact failing any check is invalid evidence, reported with the
@@ -292,7 +336,8 @@ load        read the normative tree T_in with the shared reader; artifacts,
 model       receives the Root and every normative descendant with hierarchy
             markers (today: Root plus direct children only), the RAW
             provenance and the A6 peers
-persist     Process Result 0.2 with T_in and T_out, before any Root rewrite
+persist     Process Result 0.3 (manifest v2) with T_in and T_out, before any
+            Root rewrite
 writes      the Root only; no normative child is written or deleted
 ```
 
@@ -305,7 +350,9 @@ immediately before the Root rewrite, new or supported resume  == T_in
 immediately before Process -> Review                          == T_out
 ```
 
-Iteration selection on entry, when the latest usable Process Result is 0.2:
+Iteration selection on entry, when the latest usable Process Result is
+current (0.3); an older 0.1 or 0.2 result always starts a fresh iteration
+(sections 3.5 and 6):
 
 ```text
 current tree == latest.normative_output_tree   NO_CHANGES_TO_PROCESS
@@ -325,10 +372,10 @@ are input. Section 6 covers a latest result that is 0.1.
 
 ```text
 load        read the current tree T_rev with the same reader; the latest
-            usable Process Result must be 0.2 (section 7)
+            usable Process Result must be current, 0.3 (section 7)
 model       receives the Root and every normative descendant, the persisted
             Process claims and the A6 peers
-persist     Review Result 0.2 with T_rev, which must equal the bound Process
+persist     Review Result 0.3 with T_rev, which must equal the bound Process
             Result's normative_output_tree
 re-check    before Review -> Ready: the three legacy bindings and T_rev
 no-change   requires the tree binding to match as well
@@ -385,7 +432,7 @@ preserve the legacy artifact untouched
 read and validate the CURRENT complete normative tree
 treat the absent tree evidence as a new iteration, whatever the Root says
 invoke the writer normally with the current input
-persist Process Result 0.2 before any Root rewrite
+persist Process Result 0.3 before any Root rewrite
 apply the fresh checks of section 5.1 with the new tree bindings
 ```
 
@@ -402,17 +449,18 @@ options of the Process specification, section 9, never by inference.
 ```text
 Situation                                       Behaviour
 ----------------------------------------------- -----------------------------------------------
-Review, latest Process Result is 0.1            refused, NORMATIVE_TREE_EVIDENCE_REQUIRED, with
+Review, latest Process Result is 0.1 or 0.2     refused, NORMATIVE_TREE_EVIDENCE_REQUIRED, with
                                                 the instruction to run Process; no model call,
                                                 no write
-Review, Process 0.2, latest Review Result 0.1   a new Review iteration runs and persists 0.2;
+Review, Process 0.3, latest Review Result 0.1   a new Review iteration runs and persists 0.3;
+or 0.2
                                                 no text edit is required
-Review, Process 0.2, Review 0.2, all bindings   NO_CHANGES_TO_REVIEW, as today
+Review, Process 0.3, Review 0.3, all bindings   NO_CHANGES_TO_REVIEW, as today
 equal
-APPROVE, any evidence not coherent 0.2 (legacy  refused, NORMATIVE_TREE_EVIDENCE_REQUIRED, zero
-Process or legacy Review), even when the        mutations; REWORK remains available and stays
+APPROVE, any evidence not coherent 0.3 (0.1 or  refused, NORMATIVE_TREE_EVIDENCE_REQUIRED, zero
+0.2 Process or Review), even when the           mutations; REWORK remains available and stays
 Requirement currently has no children           non-certifying
-Apply, any evidence not coherent 0.2            refused, NORMATIVE_TREE_EVIDENCE_REQUIRED before
+Apply, any evidence not coherent 0.3            refused, NORMATIVE_TREE_EVIDENCE_REQUIRED before
                                                 any mutation; the existing "no Apply-level
                                                 rework" limitation applies: the operator moves
                                                 the Requirement back manually, no edge is
@@ -436,13 +484,13 @@ explicit `--recover-empty-result` eligibility checks stay exactly as frozen
 under A3. For an eligible terminal empty shell:
 
 ```text
-recovery writes the current supported 0.2 payload
+recovery writes the current supported 0.3 payload (manifest v2)
 the shell keeps its id, parent, name and reserved iteration
 the input is the freshly captured normative tree of this run
 no earlier unpersisted output is treated as recoverable evidence
 ```
 
-Review-shell recovery additionally needs eligible current Process 0.2
+Review-shell recovery additionally needs eligible current Process 0.3
 evidence (section 7). Recovery never overwrites a non-empty 0.1 or malformed
 artifact; the normal legacy upgrade creates a new iteration and never
 repurposes a completed historical artifact.
@@ -457,7 +505,7 @@ NORMATIVE_TREE_INVALID           unsupported placement, foreign artifact name,
                                  misplaced artifact, cycle, duplicate listing,
                                  depth, count or tree-text bound
 NORMATIVE_TREE_EVIDENCE_REQUIRED the applicable evidence is legacy or not
-                                 coherent 0.2 and the operation needs
+                                 coherent current-format and the operation needs
                                  tree-bound evidence
 ```
 

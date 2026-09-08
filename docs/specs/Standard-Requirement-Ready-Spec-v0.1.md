@@ -150,7 +150,8 @@ passed**.
       == Review Result.reviewed_process_iteration
 9.  that Process Result's output_fingerprint
       == Review Result.reviewed_process_output_fingerprint
-9a. the Process Result and the Review Result are tree-bound (0.2) and the
+9a. the Process Result and the Review Result are current-format (0.3,
+      manifest v2; older 0.1 and 0.2 evidence is history) and the
       Review Result's reviewed_normative_tree is the Process Result's
       normative_output_tree; otherwise NORMATIVE_TREE_EVIDENCE_REQUIRED
 9b. the current normative tree, traversed afresh, has the fingerprint of
@@ -498,7 +499,7 @@ Before any normative mutation it must revalidate the reviewed bindings:
     == ...reviewed_process_output_fingerprint
   current normative tree fingerprint
     == ...reviewed_normative_tree fingerprint
-  both artifacts tree-bound and coherent, else NORMATIVE_TREE_EVIDENCE_REQUIRED
+  both artifacts current-format and coherent, else NORMATIVE_TREE_EVIDENCE_REQUIRED
 ```
 
 This invariant is what makes the state-only approval model sound (section 5) and

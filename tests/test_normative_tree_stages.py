@@ -115,7 +115,7 @@ def test_process_persists_a_tree_bound_result_over_the_tree_it_read():
     result, _ = run_process(ws, requirement)
     assert result.code is ProcessCode.REQUIREMENT_PROCESSED
     stored = stored_process(ws)
-    assert stored.is_tree_bound and stored.version == "0.2"
+    assert stored.is_tree_bound and stored.version == "0.3"
     assert stored.input_tree == before
     assert stored.output_tree == tree_manifest(ws, root)
     assert stored.output_tree.document_ids == before.document_ids
@@ -192,7 +192,7 @@ def test_a_legacy_root_only_result_is_never_replayed():
     result, model = run_process(ws, requirement)
     assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
     assert result.iteration == 2 and model.was_invoked
-    assert "Legacy Root-only Process Result 1" in result.message
+    assert "Older-format Process Result 1 (version 0.1)" in result.message
     assert ws.content[process_results(ws)[0].secret] == legacy_text
     assert stored_process(ws).is_tree_bound
     assert not stored_process(ws, 0).is_tree_bound
@@ -293,7 +293,7 @@ def test_review_refuses_legacy_process_evidence():
     before = len(ws.mutations)
     result, model = run_review(ws, requirement)
     assert result.code is ReviewCode.NORMATIVE_TREE_EVIDENCE_REQUIRED, result
-    assert "legacy Root-only" in result.message
+    assert "older format (version 0.1)" in result.message
     assert not model.was_invoked and ws.mutations[before:] == []
     assert review_results(ws) == []
 
@@ -408,7 +408,7 @@ def test_approval_refuses_legacy_evidence_even_without_children(legacy):
         make_legacy_review(ws)
     result = approve_standard_requirement(ws, requirement.id)
     assert result.code is ReadyCode.NORMATIVE_TREE_EVIDENCE_REQUIRED, result
-    assert "tree-bound" in result.message and "rework" in result.message
+    assert "older-format evidence" in result.message and "rework" in result.message
     assert mutations_since(ws, before) == []
 
 
