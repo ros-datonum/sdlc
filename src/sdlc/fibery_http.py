@@ -769,6 +769,10 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
     so provenance is a separate call.
     """
 
+    @property
+    def lock_scope(self) -> str:
+        return self._client.workspace_identity
+
     def read_project(self, project_id: str) -> ProjectRecord | None:
         return self._projects.read_project(project_id)
 

@@ -139,6 +139,11 @@ class FiberyClient:
         self._wall_clock = wall_clock
         self._pacer = RequestPacer(min_interval_seconds, clock, sleeper)
 
+    @property
+    def workspace_identity(self) -> str:
+        """Host and Space id, the stable non-secret identity of this workspace."""
+        return f"{self._settings.host.strip().lower()}/{self._settings.space_id}"
+
     def command(self, name: str, args: dict[str, Any] | None = None) -> Any:
         """Run one Commands API command and return its unwrapped result."""
         payload: dict[str, Any] = {"command": name}

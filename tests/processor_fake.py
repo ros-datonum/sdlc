@@ -145,6 +145,9 @@ class FakeProcessorWorkspace:
         self.failures: dict[str, FiberyError] = {}
         # Fibery always re-serializes; a test may disable it to isolate a case.
         self.reserializes = True
+        # The per-RAW execution lock scope a real workspace derives from its
+        # host and Space id.
+        self.lock_scope = "fake.fibery.io/space-1"
         self._ids = itertools.count(1)
         self._public = itertools.count(30)
 

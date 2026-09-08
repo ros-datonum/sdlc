@@ -46,6 +46,7 @@ from sdlc.processing_result import (
     render_processing_result,
 )
 from sdlc.project_init import REQUIREMENT_STAGE_FOLDER_NAMES, REQUIREMENTS_FOLDER_NAME
+from sdlc.raw_execution_guard import RawGuardUnavailable, RawProcessingBusy, hold
 from sdlc.raw_processing import InvalidModelOutput, parse_model_output
 from sdlc.raw_prompt import build_prompt
 from sdlc.raw_source import content_equivalent
@@ -117,6 +118,34 @@ def process_raw_requirement(
     the model again and complete that exact Document in place; it never
     creates a second artifact and never overwrites a non-empty one.
     """
+    # Audit A10: one RAW invocation at a time on this host. The lock is taken
+    # before any read and held through model execution, persistence, candidate
+    # application and the final transition; a competitor returns busy at once.
+    try:
+        with hold(workspace.lock_scope, raw_entity_id):
+            return _process_held(workspace, model, raw_entity_id, recover_empty_result)
+    except RawProcessingBusy as busy:
+        return ProcessResult(
+            code=ProcessResultCode.RAW_PROCESSING_IN_PROGRESS,
+            message=f"{raw_entity_id}: {busy}",
+        )
+    except RawGuardUnavailable as unavailable:
+        return ProcessResult(
+            code=ProcessResultCode.RAW_PROCESSING_GUARD_UNAVAILABLE,
+            message=(
+                f"{raw_entity_id}: {unavailable} RAW processing does not run "
+                "unguarded; nothing was read or written."
+            ),
+        )
+
+
+def _process_held(
+    workspace: RawProcessorWorkspace,
+    model: ModelRuntime,
+    raw_entity_id: str,
+    recover_empty_result: str | None,
+) -> ProcessResult:
+    """The complete invocation, executed while the RAW's lock is held."""
     journal = _Journal()
     try:
         context = _load_context(workspace, raw_entity_id)

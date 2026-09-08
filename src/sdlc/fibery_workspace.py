@@ -207,6 +207,14 @@ class RawProcessorWorkspace(Protocol):
     contracts stay exactly as they are.
     """
 
+    @property
+    def lock_scope(self) -> str:
+        """Stable identity of the workspace, for the per-RAW execution lock.
+
+        Host plus Space id: the same in every shell, working directory and
+        clone that talks to the same workspace. Never a token or a title.
+        """
+
     def read_requirement(self, entity_id: str) -> RequirementRecord | None:
         """Read one Requirement entity by id."""
 

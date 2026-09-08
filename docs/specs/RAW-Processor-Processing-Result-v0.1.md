@@ -133,6 +133,42 @@ non-empty body, any Document that is not this Requirement's terminal
 unfinished Result, and any evidence that the iteration was already consumed
 downstream. Explicit selection is not multi-writer safety.
 
+### Execution boundary: one local invocation per RAW (audit A10)
+
+Two cooperating invocations for the same RAW could both observe "no
+Processing Result" and both persist one; deterministic candidate ids do not
+protect the Processing Result itself. Every RAW invocation therefore holds an
+OS-managed advisory lock (`flock`, exclusive, non-blocking) for its whole
+duration: ordinary processing, a persisted-result resume and explicit
+empty-result recovery alike, from before the first history read through model
+execution, Result persistence, candidate application, the final transition
+and error handling. The lock is taken at the library entry point
+`process_raw_requirement`, so a direct library call is guarded exactly like
+the CLI. A competing invocation returns `RAW_PROCESSING_IN_PROGRESS`
+immediately: no model call, no Fibery read or mutation, no waiting, no retry.
+If the lock cannot be established at all, the run returns
+`RAW_PROCESSING_GUARD_UNAVAILABLE` and does nothing rather than run unguarded.
+
+The lock file is only a rendezvous object for the kernel lock. It lives in
+a private per-user directory (`~/.sdlc/locks`, mode 0700, or the directory
+named by `SDLC_LOCK_DIR`, which relocates the files but never disables the
+guard), is named by the SHA-256 of the normalized workspace identity (host
+and Space id) plus the RAW entity id, is empty, holds no owner or timestamp,
+is never unlinked on release, and is not inherited by model or auth
+subprocesses. There is no TTL, heartbeat or stale-lock stealing: when the
+holding process ends, for any reason, the kernel releases the lock and the
+next invocation inspects durable Fibery state exactly as today: a valid
+Result resumes, an empty shell follows explicit recovery, advanced
+candidates keep their cross-stage protection, and existing duplicate
+Results remain an explicit conflict. The guard prevents new overlaps; it
+never repairs old history.
+
+A10 is prevented for cooperating same-user local RAW invocations sharing the
+standard lock scope. Different machines, different OS users, direct Fibery
+writes and other pipeline stages are not coordinated by this guard. Supported
+operating systems are those where Python provides `fcntl.flock` (macOS and
+Linux); elsewhere the guarded operation fails explicitly.
+
 ### Comparison context
 
 The decomposition prompt carries the Project's other Standard Requirements
