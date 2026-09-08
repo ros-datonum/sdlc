@@ -118,7 +118,7 @@ def test_resume_completes_the_candidate_fully(failing_call):
     assert std.requirement_id and std.requirement_id.startswith("SDLC-FR-")
     assert ws.derived_from_ids[std.id] == [raw.id]
     [doc] = ws.documents_attached_to_requirement(std.public_id)
-    assert doc.folder_id == "f-draft"
+    assert doc.folder_id is None
     assert "## Requirement" in ws.content[doc.secret]
 
 
@@ -199,11 +199,11 @@ def test_resume_of_a_multi_candidate_run_completes_the_remainder():
     calls = {"n": 0}
     original = ws.create_requirement_document
 
-    def fail_second(name, folder_id, requirement_public_id):
+    def fail_second(name, requirement_public_id):
         calls["n"] += 1
         if calls["n"] == 2:
             raise FiberyError("induced")
-        return original(name, folder_id, requirement_public_id)
+        return original(name, requirement_public_id)
 
     ws.create_requirement_document = fail_second
     process_raw_requirement(ws, FakeModelRuntime([three]), raw.id)

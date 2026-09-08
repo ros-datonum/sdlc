@@ -418,7 +418,7 @@ def current_chain():
     return ws, requirement, root, child, grandchild
 
 
-def test_a_current_format_chain_reaches_applied_and_the_root_move_is_neutral():
+def test_a_current_format_chain_reaches_applied_and_the_root_is_untouched():
     ws, requirement, root, _child, _grandchild = current_chain()
     assert stored_review(ws).is_current
     before = tree_manifest(ws, root)
@@ -427,11 +427,29 @@ def test_a_current_format_chain_reaches_applied_and_the_root_move_is_neutral():
     )
     applied = apply_standard_requirement(ws, requirement.id)
     assert applied.code is ApplyResultCode.REQUIREMENT_APPLIED, applied
-    moved = next(d for d in ws.documents if d.id == root.id)
-    assert moved.folder_id == "f-approved"
+    stored = next(d for d in ws.documents if d.id == root.id)
+    assert stored == root, "same Document, same legacy Folder, nothing moved"
     assert (
-        read_normative_tree(ws, ws.requirements[requirement.id], moved).manifest
+        read_normative_tree(ws, ws.requirements[requirement.id], stored).manifest
         == before
+    )
+
+
+def test_current_evidence_bound_to_a_legacy_folder_root_survives_a_folder_change():
+    """AMR compatibility: 0.3/v2 evidence written against an old Root that
+    carries `fibery/Folder` stays current when the Folder later changes or is
+    cleared, because placement was never part of the evidence."""
+    ws, requirement, root, _child, _grandchild = current_chain()
+    assert root.folder_id == "f-draft"
+    before = tree_manifest(ws, root)
+    ws.relocate_legacy_folder(root.id, None)
+    assert stored_review(ws).is_current
+    assert tree_manifest(ws, root) == before
+    assert approve_standard_requirement(ws, requirement.id).code is (
+        ReadyDecisionResultCode.REQUIREMENT_APPROVED
+    )
+    assert apply_standard_requirement(ws, requirement.id).code is (
+        ApplyResultCode.REQUIREMENT_APPLIED
     )
 
 

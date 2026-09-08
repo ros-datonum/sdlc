@@ -234,13 +234,18 @@ def test_provenance_is_written_both_ways():
     assert ws.produces(raw.id) == [std.id]
 
 
-def test_root_documents_land_in_the_draft_folder():
+def test_root_documents_are_contained_by_the_candidate_with_no_folder():
+    """Placement is Type = Standard, State = Draft; the Root has no Folder."""
     ws, raw, _ = build_workspace()
 
     result = run(ws, raw, FakeModelRuntime([ONE]))
 
-    [doc] = [d for d in ws.documents if d.folder_id == "f-draft"]
+    [std] = [r for r in ws.requirements.values() if r.type_name == "Standard"]
+    [doc] = ws.documents_attached_to_requirement(std.public_id)
+    assert doc.folder_id is None
+    assert (std.type_name, std.state) == ("Standard", "Draft")
     assert doc.name.startswith(result.candidates[0])
+    assert not any("folder" in call.lower() for call in ws.calls)
     assert "## Acceptance / Verification" in ws.content[doc.secret]
     assert "Provenance" not in ws.content[doc.secret]
 
@@ -337,3 +342,28 @@ def test_the_processing_result_is_not_fed_back_as_source_material():
     run(ws, raw, model)
 
     assert not model.was_invoked
+
+
+# -- Type and State are the lifecycle placement; read-back must prove them ----
+
+
+@pytest.mark.parametrize(
+    "silent_write, problem",
+    [("set_requirement_type", "Type is"), ("set_requirement_state", "State")],
+)
+def test_a_type_or_state_write_that_did_not_take_effect_is_never_processed(
+    silent_write, problem
+):
+    """Placement is Type = Standard, State = Draft on the entity, and nothing
+    else expresses it, so a write that silently did not land is a validation
+    failure (the candidate's Type read-back, or the RAW transition read-back),
+    never a processed RAW."""
+    ws, raw, _ = build_workspace()
+    setattr(ws, silent_write, lambda *_: None)
+
+    result = run(ws, raw, FakeModelRuntime([ONE]))
+
+    assert result.code is ProcessResultCode.PARTIAL_PROCESSING
+    assert ProcessResultCode.VALIDATION_FAILED.value in result.details
+    assert any(problem in detail for detail in result.details)
+    assert ws.requirements[raw.id].state == "Process"

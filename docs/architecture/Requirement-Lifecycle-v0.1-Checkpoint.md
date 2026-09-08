@@ -11,17 +11,17 @@ The implemented lifecycle, in the workflow terms the frozen specifications use:
 
 ```text
 requirements-export (outside this repository)
--> project requirement add           RAW Requirement, State Draft, Root under Requirements/Raw
+-> project requirement add           RAW Requirement, State Draft, contained Root Document
 -> human: RAW Draft -> Process
 -> RAW Requirement Processor         Processing Result; 0..N Standard candidates in Draft,
-                                     Root Documents under Requirements/Draft,
+                                     each with a contained Root Document,
                                      Produces / Derived From; RAW -> Review
 -> human: Standard Draft -> Process
 -> STANDARD Process                  normalized Root Document; Process Result NNNN; -> Review
 -> STANDARD Review                   independent Review Result NNNN; -> Ready, whatever the verdict
 -> human Ready Decision              APPROVE (Ready -> Apply) with verdict acknowledgement,
                                      or REWORK (Ready -> Process)
--> STANDARD Apply                    confirmed relations written; Root Draft -> Approved; -> Applied
+-> STANDARD Apply                    confirmed relations written; no Document write; -> Applied
 ```
 
 Every model-backed stage writes a numbered, immutable artifact before it moves
@@ -69,8 +69,10 @@ When a Requirement reached `Applied` through the frozen capabilities:
 - every relation the applied Review Result confirmed exists as a forward
   `Depends On` or `Affects` edge, written additively; no pre-existing edge was
   removed; the Fibery-maintained inverses are present on the targets;
-- the same Root Document entity, with the same content secret and body, is
-  under `Requirements/Approved`, and its child artifacts moved with it;
+- the same Root Document entity, with the same content secret and body,
+  remains contained by the Requirement, never written or moved by Apply, with
+  its child artifacts in place; `State = Applied` is the only
+  approved-placement signal (navigation correction of 2026-09-09, below);
 - `Revision` is the value it had at creation;
 - no model was invoked by Ready or Apply, and `Applied` was written only after
   every other step had been read back.
@@ -81,8 +83,7 @@ Fibery allows any workflow State to be set by hand. Observing `Applied`
 therefore proves only that the State is `Applied`. It does not prove:
 
 - that the transition was made by Apply rather than by a person;
-- that the Root Document is under `Approved`, or that the confirmed edges
-  exist, for a manually placed `Applied`;
+- that the confirmed edges exist, for a manually placed `Applied`;
 - that the Root Document has not been edited since the application;
 - who approved, or when, beyond what Fibery's own history shows.
 
@@ -90,6 +91,38 @@ The same boundary was accepted for `Apply` at Ready and is not closed here.
 **State is a workflow signal, not provenance proof.** No ledger, signature or
 approval artifact is introduced to change that; a later stage that needs
 provenance must ask for it explicitly rather than infer it.
+
+### Navigation model correction (2026-09-09)
+
+Discovered in the first real dogfood: Fibery does not list entity-contained
+Documents in a Folder's sidebar, so the physical
+`<Project>/Requirements/{Raw,Draft,Approved}` folder tree never worked as
+human navigation and duplicated a signal the Requirement already carries. The
+correction, verified live before implementation:
+
+```text
+Requirement database fields define lifecycle:
+  RAW                 Type = Raw
+  STANDARD CURRENT    Type = Standard, State in Draft/Process/Review/Ready/Apply
+  STANDARD APPLIED    Type = Standard, State = Applied
+
+Documents are contained by their Requirement:
+  1 Requirement -> exactly 1 Root Document -> 0..N nested children
+  Root Documents are created with no fibery/Folder and are never moved
+
+Smart Folder / Context Views are optional workspace navigation:
+  Smart Folder over Projects -> Requirements relation -> mirrored views
+  RAW, Draft, Approved with the filters above; configured once in the UI,
+  neither created nor required by SDLC runtime
+```
+
+`project init` creates only the Project entity; Requirement Add and RAW
+Process create folderless contained Roots; Standard Process ignores the
+Root's Folder in drift checks; Apply writes no Document. Documents created
+before the correction keep their `fibery/Folder` as inert metadata and need
+no migration: their 0.3/v2 evidence stays valid because A5 never hashed the
+Folder. The Project field `Documents Root Folder ID` is unused by runtime
+and left in the schema for manual cleanup.
 
 ## 4. Normative and supporting artifacts
 

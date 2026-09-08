@@ -1,11 +1,13 @@
 # Project Init Specification v0.3
 
-**Status:** Approved MVP contract  
+**Status:** Approved MVP contract, amended 2026-09-09 (Type/State navigation
+model: no Document folder tree)  
 **Supersedes:** `Project-Init-Spec-v0.2.md`
 
 ## 1. Purpose
 
-`project init` creates the minimum Fibery structure required for a new SDLC Project.
+`project init` creates the minimum Fibery structure required for a new SDLC
+Project: the Project entity itself.
 
 The command is intentionally deterministic and narrow.
 
@@ -30,7 +32,7 @@ Optional:
 
 ```text
 Project does not exist
-→ create Project and required document structure
+→ create the Project entity
 
 Project already exists
 → do nothing
@@ -55,7 +57,6 @@ The command must:
 - repair nothing;
 - regenerate nothing;
 - leave Project Code unchanged;
-- leave document structure unchanged;
 - leave Project relations unchanged.
 
 Recommended result:
@@ -171,116 +172,64 @@ The command must not create Project Phases.
 
 The command must not populate Requirements, Milestones, Epics, User Stories, or Tasks.
 
-## 9. Project Document Structure
+## 9. No Project Document Structure
 
-Create the following Fibery document/folder hierarchy:
+`project init` creates **no** Document folder tree. The physical
+`<Project>/Requirements/{Raw,Draft,Approved}` hierarchy that v0.3 originally
+required is retired: Fibery does not show entity-contained Documents in a
+Folder's sidebar listing, so the tree never functioned as human navigation,
+and it duplicated a lifecycle signal the Requirement already carries.
 
-```text
-<Project Name>/
-└── Requirements/
-    ├── Raw/
-    ├── Draft/
-    └── Approved/
-```
-
-Example:
-
-```text
-SDLC/
-└── Requirements/
-    ├── Raw/
-    ├── Draft/
-    └── Approved/
-```
+Historical note: Projects initialized before 2026-09-09 still have that tree
+and a populated `Documents Root Folder ID`. They remain readable; the folders
+and the field are inert. Nothing repairs, deletes or migrates them, and the
+Fibery schema field is left in place for manual cleanup.
 
 ## 10. Documents
 
-After the Project root is created, associate it with the Project through the
-Fibery Documents field:
+`project init` creates no Document. `Project.Documents` is left for genuine
+Project documents. A Requirement's Root Document is contained by the
+Requirement entity (`fibery/container-type: "object"`) and is created by the
+requirement commands, never here. The command reads and writes no Folder,
+sends no `fibery/Folder`, and does not read, write or require the legacy
+`Documents Root Folder ID` field.
+
+## 11. Requirement Lifecycle Placement
+
+Lifecycle placement is defined by Requirement Database fields, not by where a
+Document sits:
 
 ```text
-Project.Documents
+RAW                 Type = Raw
+STANDARD CURRENT    Type = Standard, State in Draft / Process / Review / Ready / Apply
+STANDARD APPLIED    Type = Standard, State = Applied
 ```
 
-`Documents` holds the Project root Document, which sits at the top of:
+`Applied` on the Requirement is the only approved-placement signal. No stage
+moves a Document to express it.
+
+### Human navigation
+
+Human navigation is workspace-level Fibery UI configuration, made once per
+workspace and shared by every Project:
 
 ```text
-<Project Name>/
+Smart Folder over Projects
+-> Requirements relation
+-> mirrored context views:
+     RAW        Type = Raw
+     Draft      Type = Standard AND State != Applied
+     Approved   Type = Standard AND State = Applied
 ```
 
-Fibery represents this natively. The document hierarchy is built from Fibery
-**Folders** (`fibery/Parent Folder`), Documents join a Folder through
-`fibery/Folder`, and a Document is associated with the Project entity by being
-contained by it (`fibery/container-type: "object"`).
-
-See `docs/fibery/Fibery-API-Constraints-v0.1.md` for the verified representation.
-Slash-delimited names are not a valid substitute for real Folders.
-
-The command must verify that the stored reference resolves correctly before reporting success.
-
-## 11. Requirements Folder Semantics
-
-### `Requirements/Raw`
-
-Contains Root Documents associated with:
-
-```text
-Requirement.Type = RAW
-```
-
-RAW Requirements are added later through:
-
-```bash
-sdlc project requirement add
-```
-
-### `Requirements/Draft`
-
-Contains Root Documents for Standard Requirements that have been created but have not yet reached:
-
-```text
-State = Applied
-```
-
-During:
-
-```text
-Draft → Process → Review → Ready → Apply
-```
-
-the Standard Requirement Root Document remains under:
-
-```text
-Requirements/Draft/
-```
-
-### `Requirements/Approved`
-
-Contains Root Documents for Standard Requirements after:
-
-```text
-State = Applied
-```
-
-When a Standard Requirement is successfully applied, its Root Document is moved from:
-
-```text
-Requirements/Draft/
-```
-
-to:
-
-```text
-Requirements/Approved/
-```
-
-`project init` does not create Requirement entities or Requirement Documents.
+SDLC runtime neither creates nor validates it. It is not a prerequisite of
+any command: if a user deletes or changes those views, every lifecycle
+command still behaves correctly and only navigation UX is affected.
 
 ## 12. Requirement Document Invariant
 
-This command does not create Requirement Documents, but it establishes the folder structure used by later requirements operations.
-
-The SDLC Requirement contract is:
+This command does not create Requirement Documents. The SDLC Requirement
+contract, enforced by the requirement commands, is:
 
 ```text
 1 Requirement Entity
@@ -303,9 +252,7 @@ PROJECT_ALREADY_EXISTS
 and the command exits without mutation.
 
 It does **not**:
-- create missing folders;
 - fix missing fields;
-- restore deleted folders;
 - repair Project relations;
 - recreate the Project;
 - update Project metadata.
@@ -326,16 +273,7 @@ Project Code is globally unique
 Project State = Planned
 ```
 
-### Documents
-
-```text
-<Project Name>/ exists
-<Project Name>/Requirements/ exists
-<Project Name>/Requirements/Raw/ exists
-<Project Name>/Requirements/Draft/ exists
-<Project Name>/Requirements/Approved/ exists
-Project.Documents holds the <Project Name>/ root Document
-```
+No Document or Folder is validated, because none is created.
 
 The command must read the created state back from Fibery rather than assume successful writes.
 
@@ -355,13 +293,6 @@ Project initialized.
 Name: SDLC
 Code: SDLC
 State: Planned
-
-Documents:
-✓ SDLC/
-✓ Requirements/
-✓ Requirements/Raw/
-✓ Requirements/Draft/
-✓ Requirements/Approved/
 
 Next:
 Use `sdlc project requirement add`
@@ -398,7 +329,6 @@ INVALID_PROJECT_CODE
 PROJECT_CODE_COLLISION
 FIBERY_READ_FAILED
 FIBERY_WRITE_FAILED
-DOCUMENT_STRUCTURE_CREATE_FAILED
 VALIDATION_FAILED
 PARTIAL_INIT
 ```
@@ -424,10 +354,8 @@ VALIDATION_FAILED
 Both must report the durable state that was created, so either can be
 diagnosed without querying Fibery by hand.
 
-Read-back must identify objects this run created by their own Fibery id.
-Resolving them by name is not sufficient: Fibery permits sibling Folders with
-identical names, so a name lookup can return a pre-existing object and report a
-false `VALIDATION_FAILED`.
+Read-back must identify the Project this run created by its own Fibery id,
+never by a name lookup that could return a pre-existing object.
 
 ## 18. Partial Initialization
 
@@ -498,16 +426,6 @@ Project entity exists
 unique immutable Project Code exists
 +
 Project State = Planned
-+
-Project document root exists
-+
-Requirements/Raw exists
-+
-Requirements/Draft exists
-+
-Requirements/Approved exists
-+
-Project.Documents references the root Document
 +
 post-create validation succeeds
 ```

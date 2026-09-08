@@ -16,7 +16,6 @@ from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_workspace import (
     DocumentNode,
     FiberyError,
-    FolderNode,
     ProjectRecord,
     RequirementRecord,
     RequirementRelations,
@@ -51,10 +50,6 @@ DOCUMENT_SECRET_META_KEY = "documentSecret"
 QUERY_VIEWS_METHOD = "query-views"
 CREATE_VIEWS_METHOD = "create-views"
 CREATE_VIEWS_PARAM = "views"
-# Constraint 24: the same shape as update-folders, and it moves the same
-# Document entity between Folders in place.
-UPDATE_VIEWS_METHOD = "update-views"
-UPDATE_VIEWS_PARAM = "updates"
 ADD_COLLECTION_ITEMS_COMMAND = "fibery.entity/add-collection-items"
 # Two rows distinguish "exactly one" from "more than one" without listing.
 AMBIGUITY_QUERY_LIMIT = 2
@@ -67,7 +62,6 @@ COMPARISON_QUERY_LIMIT = COMPARISON_RECORD_LIMIT + 2
 FIELD_LABEL_NAME = "name"
 FIELD_LABEL_CODE = "code"
 FIELD_LABEL_DESCRIPTION = "description"
-FIELD_LABEL_DOCUMENTS_ROOT_FOLDER = "documents root folder id"
 
 ID_FIELD = "fibery/id"
 FIELD_NAME_KEY = "fibery/name"
@@ -82,16 +76,6 @@ DOCUMENT_SECRET_FIELD = "Collaboration~Documents/secret"
 VIEW_NAME_KEY = "fibery/name"
 VIEW_CONTAINER_APP_KEY = "fibery/container-app"
 
-# Folders carry the hierarchy. See Fibery-API-Constraints-v0.1 constraint 1:
-# these json-rpc methods are undocumented, and create-folders takes "values"
-# where create-views takes "views".
-FOLDER_PARENT_KEY = "fibery/Parent Folder"
-QUERY_FOLDERS_METHOD = "query-folders"
-FOLDER_FILTER_KEY = "filter"
-FOLDER_IDS_FILTER_KEY = "ids"
-CREATE_FOLDERS_METHOD = "create-folders"
-CREATE_FOLDERS_PARAM = "values"
-
 # Callers only need to distinguish "none", "exactly one" and "more than one".
 PROJECT_CODE_COUNT_LIMIT = 2
 EXISTENCE_QUERY_LIMIT = 2
@@ -105,7 +89,6 @@ class _ProjectSchema:
 
     name_field: str
     code_field: str
-    documents_root_folder_field: str
     description_field: str | None
     state_type: str
 
@@ -236,40 +219,6 @@ class FiberyHttpWorkspace:
             raise FiberyError("Could not read the Project Description document secret.")
         self._client.put_document(secret, description)
 
-    def set_documents_root_folder(self, project_id: str, folder_id: str) -> None:
-        schema = self._project_schema()
-        self._update_project(
-            project_id, {schema.documents_root_folder_field: folder_id}
-        )
-
-    def create_folder(self, name: str, parent_id: str | None) -> FolderNode:
-        folder_id = str(uuid.uuid4())
-        values: dict[str, Any] = {
-            ID_FIELD: folder_id,
-            VIEW_NAME_KEY: name,
-            VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._space_id},
-        }
-        if parent_id is not None:
-            values[FOLDER_PARENT_KEY] = {ID_FIELD: parent_id}
-        self._client.views_rpc(CREATE_FOLDERS_METHOD, {CREATE_FOLDERS_PARAM: [values]})
-        return FolderNode(id=folder_id, name=name, parent_id=parent_id)
-
-    def resolve_folder(self, folder_id: str) -> FolderNode | None:
-        """Read one Folder back by id.
-
-        query-folders accepts the same {"filter": {"ids": [...]}} shape as
-        query-views, so this asks Fibery for exactly one Folder rather than
-        matching a name that siblings may share.
-        """
-        folders = self._client.views_rpc(
-            QUERY_FOLDERS_METHOD,
-            {FOLDER_FILTER_KEY: {FOLDER_IDS_FILTER_KEY: [folder_id]}},
-        )
-        for folder in folders or []:
-            if folder.get(ID_FIELD) == folder_id:
-                return _to_folder(folder)
-        return None
-
     def _update_project(self, project_id: str, values: dict[str, Any]) -> None:
         self._client.command(
             "fibery.entity/update",
@@ -296,7 +245,6 @@ class FiberyHttpWorkspace:
                             ID_FIELD,
                             schema.name_field,
                             schema.code_field,
-                            schema.documents_root_folder_field,
                             {WORKFLOW_STATE_FIELD: [ENUM_NAME_FIELD]},
                         ],
                         "q/where": where,
@@ -314,7 +262,6 @@ class FiberyHttpWorkspace:
             name=row.get(schema.name_field) or "",
             code=row.get(schema.code_field),
             state=(row.get(WORKFLOW_STATE_FIELD) or {}).get(ENUM_NAME_FIELD),
-            documents_root_folder_id=row.get(schema.documents_root_folder_field),
         )
 
     def _project_schema(self) -> _ProjectSchema:
@@ -341,9 +288,6 @@ class FiberyHttpWorkspace:
             ),
             code_field=_require_field(
                 by_label, FIELD_LABEL_CODE, self.project_database
-            ),
-            documents_root_folder_field=_require_field(
-                by_label, FIELD_LABEL_DOCUMENTS_ROOT_FOLDER, self.project_database
             ),
             description_field=(
                 by_label[FIELD_LABEL_DESCRIPTION].get(FIELD_NAME_KEY)
@@ -386,14 +330,6 @@ def _require_field(
     return field[FIELD_NAME_KEY]
 
 
-def _to_folder(folder: dict[str, Any]) -> FolderNode:
-    return FolderNode(
-        id=folder[ID_FIELD],
-        name=folder.get(VIEW_NAME_KEY) or "",
-        parent_id=(folder.get(FOLDER_PARENT_KEY) or {}).get(ID_FIELD),
-    )
-
-
 @dataclass(frozen=True)
 class _RequirementSchema:
     """Resolved API names for the Requirement Database."""
@@ -434,24 +370,13 @@ class FiberyRequirementWorkspace:
     def requirement_database(self) -> str:
         return f"{self._space}/{REQUIREMENT_DATABASE_NAME}"
 
-    # -- projects and folders ------------------------------------------
+    # -- projects -------------------------------------------------------
 
     def find_project_by_code(self, code: str) -> ProjectRecord | None:
         return self._projects.find_project_by_code(code)
 
     def find_projects_by_name(self, name: str) -> list[ProjectRecord]:
         return self._projects.find_projects_by_name(name)
-
-    def resolve_folder(self, folder_id: str) -> FolderNode | None:
-        return self._projects.resolve_folder(folder_id)
-
-    def child_folders(self, parent_id: str) -> list[FolderNode]:
-        folders = self._client.views_rpc(QUERY_FOLDERS_METHOD, {}) or []
-        return [
-            _to_folder(folder)
-            for folder in folders
-            if (folder.get(FOLDER_PARENT_KEY) or {}).get(ID_FIELD) == parent_id
-        ]
 
     # -- requirements ---------------------------------------------------
 
@@ -527,8 +452,15 @@ class FiberyRequirementWorkspace:
     # -- documents ------------------------------------------------------
 
     def create_requirement_document(
-        self, name: str, folder_id: str, requirement_public_id: str
+        self, name: str, requirement_public_id: str
     ) -> DocumentNode:
+        """Create a Root Document contained by the Requirement.
+
+        No `fibery/Folder` is sent: lifecycle placement is the Requirement's
+        Type and State, and a contained Document without a Folder is created,
+        attached, written and nested normally (verified live before this
+        contract replaced the stage folders).
+        """
         document_id = str(uuid.uuid4())
         # Fibery does not allocate a document secret: a Document created
         # without one in fibery/meta comes back with meta {} and has no
@@ -544,7 +476,6 @@ class FiberyRequirementWorkspace:
                         VIEW_TYPE_KEY: DOCUMENT_VIEW_TYPE,
                         VIEW_META_KEY: {DOCUMENT_SECRET_META_KEY: secret},
                         VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._space_id},
-                        VIEW_FOLDER_KEY: {ID_FIELD: folder_id},
                         VIEW_CONTAINER_TYPE_KEY: CONTAINER_TYPE_OBJECT,
                         VIEW_CONTAINER_ENTITY_TYPE_KEY: {
                             ID_FIELD: self._requirement_schema().type_id
@@ -1016,20 +947,6 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
         if not schema.affects_field:
             raise FiberyError(f"{self.requirement_database} has no 'Affects' Field.")
         self._add_collection_item(schema.affects_field, entity_id, target_entity_id)
-
-    def set_document_folder(self, document_id: str, folder_id: str) -> None:
-        """Move the same Document entity into another Folder (constraint 24)."""
-        self._client.views_rpc(
-            UPDATE_VIEWS_METHOD,
-            {
-                UPDATE_VIEWS_PARAM: [
-                    {
-                        "id": document_id,
-                        "values": {VIEW_FOLDER_KEY: {ID_FIELD: folder_id}},
-                    }
-                ]
-            },
-        )
 
     def _add_collection_item(self, field: str, entity_id: str, item_id: str) -> None:
         """Additive membership; a repeated add is a no-op (constraint 26)."""

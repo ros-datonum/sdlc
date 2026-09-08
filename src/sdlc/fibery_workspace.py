@@ -23,7 +23,6 @@ class ProjectRecord:
     name: str
     code: str | None
     state: str | None
-    documents_root_folder_id: str | None
 
 
 @dataclass(frozen=True)
@@ -49,9 +48,11 @@ class RequirementRecord:
 class DocumentNode:
     """One Fibery Document (a View of type "document").
 
-    `folder_id` is the Folder it sits in; `entity_public_id` is the public id of
-    the entity it is attached to, which is how Fibery models the Documents
-    field. Both are None when Fibery has not set them.
+    `entity_public_id` is the public id of the entity it is attached to, which
+    is how Fibery models the Documents field. `folder_id` is the legacy
+    `fibery/Folder` value: Documents created before the Type/State navigation
+    model still carry one, new ones carry none, and no lifecycle behaviour
+    reads it. Both are None when Fibery has not set them.
     """
 
     id: str
@@ -60,19 +61,6 @@ class DocumentNode:
     entity_public_id: str | None
     secret: str | None = None
     parent_document_id: str | None = None
-
-
-@dataclass(frozen=True)
-class FolderNode:
-    """One Fibery Folder in the Project document structure.
-
-    Folders are the real hierarchy: a Folder nests under another through
-    `fibery/Parent Folder`, and `parent_id` is None at the Project root.
-    """
-
-    id: str
-    name: str
-    parent_id: str | None
 
 
 class FiberyWorkspace(Protocol):
@@ -97,20 +85,6 @@ class FiberyWorkspace(Protocol):
     def set_project_description(self, project_id: str, description: str) -> None:
         """Replace the Project Description rich text with Markdown."""
 
-    def create_folder(self, name: str, parent_id: str | None) -> FolderNode:
-        """Create one Folder, nested under parent_id when it is not None."""
-
-    def resolve_folder(self, folder_id: str) -> FolderNode | None:
-        """Read one Folder back by its own id, or None if it is gone.
-
-        Fibery allows sibling Folders with identical names, so this is the
-        only unambiguous way to verify a Folder this run created. Name-based
-        lookup is for discovery, never for read-back.
-        """
-
-    def set_documents_root_folder(self, project_id: str, folder_id: str) -> None:
-        """Store the root Folder id on the Project."""
-
     def read_project(self, project_id: str) -> ProjectRecord | None:
         """Read a Project entity back by id."""
 
@@ -127,17 +101,6 @@ class RequirementWorkspace(Protocol):
 
     def find_projects_by_name(self, name: str) -> list[ProjectRecord]:
         """Every Project with this exact Name, so ambiguity can be detected."""
-
-    def resolve_folder(self, folder_id: str) -> FolderNode | None:
-        """Read one Folder back by its own id, or None if it is gone."""
-
-    def child_folders(self, parent_id: str) -> list[FolderNode]:
-        """Every Folder directly under this parent.
-
-        Returns all of them rather than one match by name: Fibery permits
-        sibling Folders sharing a name, and the caller must treat that as an
-        invalid structure rather than silently picking one.
-        """
 
     def find_requirement_by_fingerprint(
         self, project_id: str, fingerprint: str
@@ -166,9 +129,9 @@ class RequirementWorkspace(Protocol):
         """Read a Requirement entity back by id."""
 
     def create_requirement_document(
-        self, name: str, folder_id: str, requirement_public_id: str
+        self, name: str, requirement_public_id: str
     ) -> DocumentNode:
-        """Create the Root Document in a Folder, attached to the Requirement."""
+        """Create the Root Document contained by the Requirement, with no Folder."""
 
     def resolve_document(self, document_id: str) -> DocumentNode | None:
         """Read one Document back by its own id, or None."""
@@ -288,18 +251,12 @@ class RawProcessorWorkspace(Protocol):
         """
 
     def create_requirement_document(
-        self, name: str, folder_id: str, requirement_public_id: str
+        self, name: str, requirement_public_id: str
     ) -> DocumentNode:
-        """Create a Root Document in a Folder, attached to a Requirement."""
+        """Create a Root Document contained by a Requirement, with no Folder."""
 
     def resolve_document(self, document_id: str) -> DocumentNode | None:
         """Read one Document back by id."""
-
-    def resolve_folder(self, folder_id: str) -> FolderNode | None:
-        """Read one Folder back by id."""
-
-    def child_folders(self, parent_id: str) -> list[FolderNode]:
-        """Folders directly under this parent."""
 
 
 class ReadyDecisionWorkspace(Protocol):
@@ -331,9 +288,9 @@ class ApplyWorkspace(Protocol):
     """Operations the Standard Requirement Apply performs against Fibery.
 
     Confined to what deterministic application needs. There is no way to
-    write a Document body, create a Document, remove a relation or touch
-    `Revision` through this protocol. The three writes are additive relation
-    membership, a Document's Folder, and the workflow State.
+    write a Document body, create or move a Document, remove a relation or
+    touch `Revision` through this protocol. The two writes are additive
+    relation membership and the workflow State.
     """
 
     def read_requirement(self, entity_id: str) -> RequirementRecord | None:
@@ -351,17 +308,11 @@ class ApplyWorkspace(Protocol):
     def read_project(self, project_id: str) -> ProjectRecord | None:
         """Read the Project a Requirement belongs to."""
 
-    def resolve_folder(self, folder_id: str) -> FolderNode | None:
-        """Read one Folder back by id."""
-
-    def child_folders(self, parent_id: str) -> list[FolderNode]:
-        """Folders directly under this parent."""
-
     def documents_attached_to_requirement(self, public_id: str) -> list[DocumentNode]:
         """Documents attached to this Requirement entity."""
 
     def resolve_document(self, document_id: str) -> DocumentNode | None:
-        """Read one Document back by id, including its Folder."""
+        """Read one Document back by id."""
 
     def child_documents(self, parent_document_id: str) -> list[DocumentNode]:
         """Documents nested directly under this Document."""
@@ -377,9 +328,6 @@ class ApplyWorkspace(Protocol):
 
     def add_affects(self, entity_id: str, target_entity_id: str) -> None:
         """Add one Affects edge. Fibery maintains the inverse Impacted By."""
-
-    def set_document_folder(self, document_id: str, folder_id: str) -> None:
-        """Move the same Document entity into another Folder."""
 
     def set_requirement_state(self, entity_id: str, state: str) -> None:
         """Move the Requirement's workflow State."""

@@ -200,24 +200,22 @@ def test_a_detached_root_during_the_model_call_is_a_conflict():
     assert processor_writes(ws, before) == []
 
 
-def test_a_root_moved_to_another_folder_during_the_model_call_is_a_conflict():
+def test_a_legacy_folder_change_during_the_model_call_is_not_drift():
+    """`fibery/Folder` is presentation metadata: moving it is not a conflict."""
     ws, std, root = build_standard_workspace()
-    before = len(ws.mutations)
 
     result = run(
         ws,
         std,
         ChangingModelRuntime(
-            OUTPUT, lambda: ws.set_document_folder(root.id, "f-approved")
+            OUTPUT, lambda: ws.relocate_legacy_folder(root.id, "f-approved")
         ),
     )
 
-    assert result.code is Code.PROCESSING_STATE_CONFLICT
+    assert result.code is Code.REQUIREMENT_PROCESSED
     assert root_of(ws, std).folder_id == "f-approved"
-    assert process_results(ws) == []
-    assert [
-        m for m in ws.mutations[before:] if not m.startswith("set_document_folder")
-    ] == []
+    assert len(process_results(ws)) == 1
+    assert ws.requirements[std.id].state == "Review"
 
 
 # -- metadata drift during model.run ----------------------------------------

@@ -2,7 +2,7 @@
 
 Models the Fibery identity behaviour that actually bites:
 - Documents attach to an entity by its PUBLIC ID, not its uuid;
-- sibling Folders may share a name;
+- a Root Document is contained by its Requirement and carries no Folder;
 - Requirement Name is a read-only formula, so it is derived here too.
 """
 
@@ -13,7 +13,6 @@ import itertools
 from sdlc.fibery_workspace import (
     DocumentNode,
     FiberyError,
-    FolderNode,
     ProjectRecord,
     RequirementRecord,
 )
@@ -30,11 +29,9 @@ class FakeRequirementWorkspace:
     def __init__(
         self,
         projects: list[ProjectRecord] | None = None,
-        folders: list[FolderNode] | None = None,
         requirements: list[RequirementRecord] | None = None,
     ) -> None:
         self.projects = list(projects or [])
-        self.folders = list(folders or [])
         self.requirements = {r.id: r for r in requirements or []}
         self.documents: list[DocumentNode] = []
         self.content: dict[str, str] = {}
@@ -51,7 +48,7 @@ class FakeRequirementWorkspace:
         self._ids = itertools.count(1)
         self._public_ids = itertools.count(1)
 
-    # -- projects and folders ------------------------------------------
+    # -- projects -------------------------------------------------------
 
     def find_project_by_code(self, code: str) -> ProjectRecord | None:
         self._record("find_project_by_code")
@@ -60,14 +57,6 @@ class FakeRequirementWorkspace:
     def find_projects_by_name(self, name: str) -> list[ProjectRecord]:
         self._record("find_projects_by_name")
         return [p for p in self.projects if p.name == name]
-
-    def resolve_folder(self, folder_id: str) -> FolderNode | None:
-        self._record("resolve_folder")
-        return next((f for f in self.folders if f.id == folder_id), None)
-
-    def child_folders(self, parent_id: str) -> list[FolderNode]:
-        self._record("child_folders")
-        return [f for f in self.folders if f.parent_id == parent_id]
 
     # -- requirements ---------------------------------------------------
 
@@ -134,7 +123,7 @@ class FakeRequirementWorkspace:
     # -- documents ------------------------------------------------------
 
     def create_requirement_document(
-        self, name: str, folder_id: str, requirement_public_id: str
+        self, name: str, requirement_public_id: str
     ) -> DocumentNode:
         self._record("create_requirement_document")
         known_public = {r.public_id for r in self.requirements.values()}
@@ -145,13 +134,13 @@ class FakeRequirementWorkspace:
         document = DocumentNode(
             id=f"document-{number}",
             name=name,
-            folder_id=folder_id,
+            folder_id=None,
             entity_public_id=requirement_public_id,
             secret=f"secret-{number}",
         )
         self.documents.append(document)
         self.content[document.secret] = ""
-        self.mutations.append(f"create_document {name} folder={folder_id}")
+        self.mutations.append(f"create_document {name}")
         return document
 
     def resolve_document(self, document_id: str) -> DocumentNode | None:
@@ -172,9 +161,6 @@ class FakeRequirementWorkspace:
         return self.content.get(secret, "")
 
     # -- helpers ---------------------------------------------------------
-
-    def folder_named(self, name: str, parent_id: str | None) -> list[FolderNode]:
-        return [f for f in self.folders if f.name == name and f.parent_id == parent_id]
 
     def _record(self, method: str) -> None:
         self.calls.append(method)
@@ -197,25 +183,10 @@ class FakeRequirementWorkspace:
         )
 
 
-def project_with_structure(
+def planned_project(
     project_id: str = "project-1",
     name: str = "SDLC",
     code: str = "SDLC",
-) -> tuple[ProjectRecord, list[FolderNode]]:
-    """A Project plus the real folder tree `project init` would have created."""
-    root = FolderNode(id="folder-root", name=name, parent_id=None)
-    requirements = FolderNode(
-        id="folder-requirements", name="Requirements", parent_id=root.id
-    )
-    stages = [
-        FolderNode(id=f"folder-{stage.lower()}", name=stage, parent_id=requirements.id)
-        for stage in ("Raw", "Draft", "Approved")
-    ]
-    project = ProjectRecord(
-        id=project_id,
-        name=name,
-        code=code,
-        state="Planned",
-        documents_root_folder_id=root.id,
-    )
-    return project, [root, requirements, *stages]
+) -> ProjectRecord:
+    """A Project exactly as `project init` leaves it: the entity, nothing else."""
+    return ProjectRecord(id=project_id, name=name, code=code, state="Planned")

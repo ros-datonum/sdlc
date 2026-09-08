@@ -1,8 +1,9 @@
-"""`STANDARD Requirement + Apply`: entry, relations, the Root move, the invariant.
+"""`STANDARD Requirement + Apply`: entry, relations, the Root, the invariant.
 
-Apply writes three kinds of thing and nothing else: missing confirmed edges,
-the Root Document's Folder, and the final State. Everything here asserts on
-the mutation log that those are the only writes, on every path.
+Apply writes two kinds of thing and nothing else: missing confirmed edges and
+the final State. The Root Document is never written or moved; `Applied` on
+the Requirement is the only approved-placement signal. Everything here asserts
+on the mutation log that those are the only writes, on every path.
 """
 
 from __future__ import annotations
@@ -54,9 +55,8 @@ def test_a_standard_requirement_in_apply_is_applied():
     assert result.code is Code.REQUIREMENT_APPLIED
     assert result.is_normal
     assert state_of(ws, requirement) == "Applied"
-    assert root_node(ws, root).folder_id == "f-approved"
+    assert root_node(ws, root).folder_id == root.folder_id
     assert normative_writes(ws, before) == [
-        f"set_document_folder {root.id} f-approved",
         f"set_requirement_state {requirement.id} Applied",
     ]
 
@@ -100,13 +100,13 @@ def test_already_applied_is_normal_and_changes_nothing():
 
 
 def test_already_applied_does_not_repair_or_overclaim():
-    """A manual Applied with the Root still in Draft is reported, not fixed."""
+    """A manual Applied with the edges never written is reported, not fixed."""
     ws, requirement, root, before = build_apply_workspace(proposals=(proposal(),))
     set_state(ws, requirement, "Applied")
     result = apply(ws, requirement)
     assert result.code is Code.REQUIREMENT_ALREADY_APPLIED
     assert "not that every Apply invariant holds" in result.message
-    assert root_node(ws, root).folder_id == "f-draft"
+    assert root_node(ws, root) == root
     assert edges(ws, requirement.id) == set()
     assert mutations_since(ws, before) == []
 
@@ -223,24 +223,26 @@ def test_targets_in_any_state_are_accepted():
     assert len(edges(ws, requirement.id)) == 6
 
 
-# -- the Root Document move -------------------------------------------------
+# -- the Root Document is never written ------------------------------------
 
 
-def test_the_same_root_moves_from_draft_to_approved_with_its_body():
-    ws, requirement, root, _ = build_apply_workspace()
+def test_the_root_stays_the_same_document_with_its_body_and_children():
+    ws, requirement, root, before = build_apply_workspace()
     body = ws.content[root.secret]
     children = child_ids(ws, root)
     apply(ws, requirement)
-    moved = root_node(ws, root)
-    assert moved.id == root.id
-    assert moved.secret == root.secret
-    assert moved.folder_id == "f-approved"
+    stored = root_node(ws, root)
+    assert stored == root, "id, secret, containment and legacy Folder unchanged"
     assert ws.content[root.secret] == body
     assert child_ids(ws, root) == children
     assert (
         len([d for d in ws.documents if d.entity_public_id == requirement.public_id])
         == 1
     )
+    assert not any(
+        m.startswith(("create_", "write_content", "relocate_legacy_folder"))
+        for m in mutations_since(ws, before)
+    ), "a successful Apply issues zero Document writes"
 
 
 def test_children_keep_their_parent_and_are_never_written():
@@ -258,40 +260,29 @@ def test_children_keep_their_parent_and_are_never_written():
         if d.parent_document_id == root.id
     }
     assert children_after == children_before
-    assert not any(
-        m.startswith("set_document_folder") and root.id not in m
-        for m in mutations_since(ws, before)
-    )
+    assert all(root.id not in m for m in mutations_since(ws, before))
 
 
-def test_a_root_already_in_approved_is_not_moved_again():
-    ws, requirement, root, _ = build_apply_workspace()
-    ws.set_document_folder(root.id, "f-approved")
+@pytest.mark.parametrize("legacy_folder", ["f-draft", "f-approved", "f-raw", None])
+def test_a_root_with_any_legacy_folder_or_none_is_applied_identically(legacy_folder):
+    """`fibery/Folder` is inert: the Root is not checked, moved or repaired."""
+    ws, requirement, root, _ = build_apply_workspace(proposals=(proposal(),))
+    ws.relocate_legacy_folder(root.id, legacy_folder)
     before = len(ws.mutations)
     result = apply(ws, requirement)
     assert result.code is Code.REQUIREMENT_APPLIED
+    assert root_node(ws, root).folder_id == legacy_folder
     assert normative_writes(ws, before) == [
-        f"set_requirement_state {requirement.id} Applied"
+        f"add_depends_on {requirement.id} -> {TARGET_ENTITY}",
+        f"set_requirement_state {requirement.id} Applied",
     ]
 
 
-def test_a_root_in_an_unexpected_folder_is_refused():
-    ws, requirement, root, _ = build_apply_workspace(proposals=(proposal(),))
-    ws.set_document_folder(root.id, "f-raw")
-    before = len(ws.mutations)
-    result = apply(ws, requirement)
-    assert result.code is Code.PROJECT_STRUCTURE_INVALID
-    assert mutations_since(ws, before) == []
-    assert root_node(ws, root).folder_id == "f-raw"
-    assert state_of(ws, requirement) == "Apply"
-
-
-def test_a_root_move_that_does_not_read_back_is_not_applied():
+def test_apply_reads_no_folder_structure():
     ws, requirement, _, _ = build_apply_workspace()
-    ws.set_document_folder = lambda document_id, folder_id: None
-    result = apply(ws, requirement)
-    assert result.code is Code.VALIDATION_FAILED
-    assert state_of(ws, requirement) == "Apply"
+    calls_before = len(ws.calls)
+    assert apply(ws, requirement).code is Code.REQUIREMENT_APPLIED
+    assert not any("folder" in call.lower() for call in ws.calls[calls_before:])
 
 
 # -- the final transition ---------------------------------------------------
@@ -306,13 +297,26 @@ def test_applied_is_written_last_and_read_back():
     assert "read_requirement" in reads_after_write
 
 
-def test_a_silently_ignored_applied_write_is_never_reported_as_applied():
-    ws, requirement, _, _ = build_apply_workspace()
+def test_a_silently_ignored_applied_write_after_an_edge_is_a_partial_apply():
+    ws, requirement, _, _ = build_apply_workspace(proposals=(proposal(),))
     ws.set_requirement_state = lambda entity_id, state: None
     result = apply(ws, requirement)
     assert result.code is Code.PARTIAL_APPLY
     assert "VALIDATION_FAILED" in result.details
     assert state_of(ws, requirement) == "Apply"
+
+
+def test_a_silently_ignored_applied_write_with_nothing_durable_is_not_partial():
+    """With no edges to write, Applied is the first and only write. If it does
+    not take effect nothing durable exists, so the outcome is a plain
+    VALIDATION_FAILED, not a partial application claiming durable steps."""
+    ws, requirement, _, before = build_apply_workspace()
+    ws.set_requirement_state = lambda entity_id, state: None
+    result = apply(ws, requirement)
+    assert result.code is Code.VALIDATION_FAILED
+    assert result.created == ()
+    assert state_of(ws, requirement) == "Apply"
+    assert mutations_since(ws, before) == []
 
 
 def test_revision_is_never_changed():
@@ -327,7 +331,7 @@ def test_revision_is_never_changed():
 
 def test_only_the_three_write_kinds_ever_happen():
     others = (standard(), standard(OTHER_ID, OTHER_ENTITY))
-    ws, requirement, root, before = build_apply_workspace(
+    ws, requirement, _, before = build_apply_workspace(
         proposals=(proposal(DEPENDS, TARGET_ID), proposal(AFFECTS, OTHER_ID)),
         others=others,
     )
@@ -337,7 +341,6 @@ def test_only_the_three_write_kinds_ever_happen():
     assert mutations_since(ws, before) == [
         f"add_depends_on {requirement.id} -> {TARGET_ENTITY}",
         f"add_affects {requirement.id} -> {OTHER_ENTITY}",
-        f"set_document_folder {root.id} f-approved",
         f"set_requirement_state {requirement.id} Applied",
     ]
     assert ws.content == documents, (
@@ -373,7 +376,7 @@ def test_the_final_invariant_holds_after_a_normal_application():
         "Applied",
         1,
     )
-    assert root_node(ws, root).folder_id == "f-approved"
+    assert root_node(ws, root) == root
     assert ws.content[root.secret] == body
     assert edges(ws, requirement.id) == {(DEPENDS, TARGET_ID), (AFFECTS, OTHER_ID)}
     assert {
@@ -381,15 +384,9 @@ def test_the_final_invariant_holds_after_a_normal_application():
         for d in ws.documents
         if d.parent_document_id == root.id
     } == artifacts
-    assert result.created == [
+    assert tuple(result.created) == (
         f"relation DEPENDS_ON {TARGET_ID}",
         f"relation AFFECTS {OTHER_ID}",
-        "Root Document Folder = Approved",
-        "State = Applied",
-    ] or tuple(result.created) == (
-        f"relation DEPENDS_ON {TARGET_ID}",
-        f"relation AFFECTS {OTHER_ID}",
-        "Root Document Folder = Approved",
         "State = Applied",
     )
 
@@ -406,15 +403,15 @@ def test_the_fake_treats_a_repeated_add_as_a_no_op():
     assert ws.inverse_relations(TARGET_ENTITY).depends_on == (REQUIREMENT_ID,)
 
 
-def test_the_fake_moves_the_same_document_and_leaves_children_alone():
-    """Constraints 24 and 25, verified live."""
+def test_the_fake_relocates_legacy_folders_without_touching_children():
+    """Constraints 24 and 25, verified live: a human Folder move is inert."""
     ws, _, root, _ = build_apply_workspace(proposals=(proposal(),))
     children = {
         (d.id, d.parent_document_id, d.folder_id)
         for d in ws.documents
         if d.parent_document_id == root.id
     }
-    ws.set_document_folder(root.id, "f-approved")
+    ws.relocate_legacy_folder(root.id, "f-approved")
     moved = root_node(ws, root)
     assert (moved.id, moved.secret, moved.folder_id) == (
         root.id,

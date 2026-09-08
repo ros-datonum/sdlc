@@ -72,7 +72,7 @@ model runs once
                   assign Requirement ID from public-id
                   set Type/State
                   add Derived From
-                  create Root Document in Requirements/Draft
+                  create Root Document contained by the candidate (no Folder)
                   write content
                   validate
 -> RAW: Process -> Review

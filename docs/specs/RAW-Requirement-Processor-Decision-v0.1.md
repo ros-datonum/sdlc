@@ -52,7 +52,8 @@ the RAW Requirement Processor may:
   - Non-Functional Requirement;
   - Constraint;
 - create Standard Requirement candidates in `Draft`;
-- create their Root Documents under `Requirements/Draft/`;
+- create their Root Documents, contained by each candidate, with no Folder
+  (placement is `Type = Standard`, `State = Draft`; amended 2026-09-09);
 - establish `Produces / Derived From` provenance relations;
 - identify possible duplication, conflict, overlap, or change to existing Standard Requirements;
 - record such cases as findings for Review.
@@ -144,7 +145,7 @@ normalize / decompose
         ↓
 State = Draft
         ↓
-Root Documents in Requirements/Draft/
+Root Documents contained by the candidates (no Folder)
         ↓
 Produces / Derived From relations
         ↓

@@ -72,14 +72,16 @@ Python standard, because the pinned uv (0.11.21) publishes no 3.12.14 download.
 `docs/fibery/Fibery-API-Constraints-v0.1.md` records the Fibery interface
 behaviour verified against the workspace.
 
-Folders are real and nestable. `/api/views/json-rpc` exposes `query-folders`,
-`create-folders`, `update-folders` and `delete-folders`; a Folder nests under
-another through `fibery/Parent Folder`, and a Document is placed in a Folder
-through `fibery/Folder`. These Folder methods are not covered by the published
-Views API reference.
-
-Folder names are not unique: siblings may share a name. Folders created by a
-run are therefore read back by their own id, never by name.
+Requirement lifecycle placement is the Requirement's Type and State. Root
+Documents are contained by their Requirement and carry no `fibery/Folder`;
+no command creates, resolves or moves a Folder (the earlier
+`Requirements/{Raw,Draft,Approved}` tree is retired, and Documents that still
+carry a Folder from that time are treated as inert). Human navigation is a
+one-time workspace configuration in the Fibery UI: a Smart Folder over
+Projects with mirrored context views RAW (`Type = Raw`), Draft
+(`Type = Standard AND State != Applied`) and Approved
+(`Type = Standard AND State = Applied`). The runtime neither creates nor
+requires it.
 
 ### Request pacing and rate limits
 

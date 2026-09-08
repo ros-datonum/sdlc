@@ -58,21 +58,21 @@ def test_code_and_description_are_optional():
 # -- rendering -------------------------------------------------------------
 
 
-def test_initialized_output_leads_with_the_result_code_and_lists_documents():
+def test_initialized_output_leads_with_the_result_code_and_names_no_folders():
     output = render(
         InitResult(
             code=ResultCode.PROJECT_INITIALIZED,
             message="ok",
             project_name="SDLC",
             project_code="SDLC",
-            documents=("SDLC", "SDLC/Requirements"),
         )
     )
 
     assert output.splitlines()[0] == "PROJECT_INITIALIZED"
     assert "Name: SDLC" in output
     assert "State: Planned" in output
-    assert "✓ SDLC/Requirements" in output
+    assert "Documents:" not in output
+    assert "Requirements/" not in output
 
 
 def test_already_exists_output_says_nothing_was_changed():

@@ -27,7 +27,7 @@ class FiberyStandIn:
         self.projects = {
             record["fibery/id"]: dict(record) for record in existing_projects
         }
-        self.folders = {}
+        self.views_calls = []
         self.next_id = 1
 
     def __call__(self, request, timeout):
@@ -76,17 +76,7 @@ class FiberyStandIn:
         return {"fibery/id": record["fibery/id"]}
 
     def _views(self, body):
-        if body["method"] == "create-folders":
-            for folder in body["params"]["values"]:
-                self.folders[folder["fibery/id"]] = folder
-            return []
-        if body["method"] == "query-folders":
-            wanted = body["params"].get("filter", {}).get("ids")
-            return [
-                folder
-                for folder in self.folders.values()
-                if wanted is None or folder["fibery/id"] in wanted
-            ]
+        self.views_calls.append(body["method"])
         raise AssertionError(f"Unexpected views method {body['method']}")
 
 
@@ -116,7 +106,8 @@ def test_initializes_a_new_project_end_to_end(fibery, capsys):
 
     assert exit_code == cli.EXIT_SUCCESS
     assert out.splitlines()[0] == "PROJECT_INITIALIZED"
-    assert "✓ SDLC/Requirements/Approved" in out
+    assert "State: Planned" in out
+    assert "Requirements/" not in out
 
 
 def test_end_to_end_run_leaves_the_expected_fibery_state(fibery, capsys):
@@ -126,34 +117,22 @@ def test_end_to_end_run_leaves_the_expected_fibery_state(fibery, capsys):
     assert project["SDLC/Name"] == "SDLC"
     assert project["SDLC/Code"] == "SDLC"
     assert project["workflow/state"] == {"enum/name": "Planned"}
-
-    root_id = project["SDLC/Documents Root Folder ID"]
-    assert root_id in fibery.folders
-    assert fibery.folders[root_id]["fibery/name"] == "SDLC"
-    assert "fibery/Parent Folder" not in fibery.folders[root_id]
-
-    by_name = {f["fibery/name"]: f for f in fibery.folders.values()}
-    assert sorted(by_name) == ["Approved", "Draft", "Raw", "Requirements", "SDLC"]
-    requirements = by_name["Requirements"]
-    assert requirements["fibery/Parent Folder"] == {"fibery/id": root_id}
-    for stage in ("Raw", "Draft", "Approved"):
-        assert by_name[stage]["fibery/Parent Folder"] == {
-            "fibery/id": requirements["fibery/id"]
-        }
+    # The legacy Text Field exists in the schema but is neither written nor
+    # required; no Folder or View is touched at all.
+    assert "SDLC/Documents Root Folder ID" not in project
+    assert fibery.views_calls == []
 
 
 def test_rerunning_reports_already_exists_and_changes_nothing(fibery, capsys):
     run(["project", "init", "--name", "SDLC"], capsys)
-    before = (json.dumps(fibery.projects, sort_keys=True), len(fibery.folders))
+    before = json.dumps(fibery.projects, sort_keys=True)
 
     exit_code, out, _ = run(["project", "init", "--name", "SDLC"], capsys)
 
     assert exit_code == cli.EXIT_SUCCESS
     assert out.splitlines()[0] == "PROJECT_ALREADY_EXISTS"
-    assert (
-        json.dumps(fibery.projects, sort_keys=True),
-        len(fibery.folders),
-    ) == before
+    assert json.dumps(fibery.projects, sort_keys=True) == before
+    assert fibery.views_calls == []
 
 
 def test_supplied_code_already_in_use_fails_on_stderr(fibery, capsys):

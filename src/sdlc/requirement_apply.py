@@ -2,23 +2,25 @@
 
 Implements Standard-Requirement-Apply-Spec-v0.1. Apply is deterministic
 execution of an already-approved Requirement: no model, no quality judgement,
-no new human decision. It writes exactly three kinds of thing, each verified
+no new human decision. It writes exactly two kinds of thing, each verified
 by read-back, and writes `Applied` last so the State is a true completion
 marker:
 
 - the confirmed relation proposals of the latest valid Review Result, as
   additive `Depends On` / `Affects` edges (Fibery maintains the inverses);
-- the Root Document's Folder, from `Requirements/Draft` to
-  `Requirements/Approved`, as the same Document entity;
 - the workflow State, `Apply -> Applied`.
+
+The Root Document is never written or moved: it stays the same contained
+Document, and `Applied` on the Requirement is the only approved-placement
+signal. A successful Apply issues zero Document writes.
 
 Two invariants shape the code:
 
 - **nothing normative is written until every predictable check has passed**:
   the reviewed-state binding, the Review Result's agreement with its own
-  relation mirror, every relation target, the existing edges and the Root
-  Folder are all validated first, and the binding is checked again immediately
-  before the first write;
+  relation mirror, every relation target and the existing edges are all
+  validated first, and the binding is checked again immediately before the
+  first write;
 - **the Requirement stays in Apply until every step has succeeded**. A failure
   after the first write is PARTIAL_APPLY naming what became durable; nothing
   is rolled back, and a retry completes only the missing ensure-state steps.
@@ -33,7 +35,6 @@ from sdlc.fibery_workspace import (
     ApplyWorkspace,
     DocumentNode,
     FiberyError,
-    FolderNode,
     ProjectRecord,
     RequirementRecord,
 )
@@ -50,7 +51,6 @@ from sdlc.process_result import (
     parse_process_result,
     parse_process_result_name,
 )
-from sdlc.project_init import REQUIREMENT_STAGE_FOLDER_NAMES, REQUIREMENTS_FOLDER_NAME
 from sdlc.results import ApplyResult, ApplyResultCode
 from sdlc.review_result import (
     InvalidReviewResult,
@@ -65,8 +65,6 @@ from sdlc.standard_review import VerificationOutcome
 STANDARD_TYPE = "Standard"
 APPLY_STATE = "Apply"
 APPLIED_STATE = "Applied"
-DRAFT_FOLDER_NAME = "Draft"
-APPROVED_FOLDER_NAME = "Approved"
 
 Edge = tuple[RelationKind, str]
 
@@ -109,12 +107,10 @@ class _Bindings:
 
 @dataclass(frozen=True)
 class _Structure:
-    """The Requirement's Project, Root Document and stage Folders."""
+    """The Requirement's Project and its one contained Root Document."""
 
     project: ProjectRecord
     root: DocumentNode
-    draft_folder_id: str
-    approved_folder_id: str
 
 
 @dataclass(frozen=True)
@@ -155,7 +151,6 @@ class _Plan:
     targets: dict[Edge, RequirementRecord]
     present: tuple[Edge, ...]
     missing: tuple[Edge, ...]
-    root_in_approved: bool
 
 
 def apply_standard_requirement(
@@ -173,12 +168,11 @@ def apply_standard_requirement(
         structure = _resolve_structure(workspace, requirement)
         evidence = _read_evidence(workspace, requirement, structure.root)
         _check_bindings(requirement, evidence)
-        plan = _plan(workspace, requirement, structure, evidence)
+        plan = _plan(workspace, requirement, evidence)
         # Immediately before the first write, never on state read earlier.
         _recheck_bindings(workspace, requirement, structure.root, evidence)
 
         _ensure_edges(workspace, requirement, plan, journal)
-        _ensure_root_folder(workspace, requirement, structure, plan, journal)
         _recheck_bindings(workspace, requirement, structure.root, evidence)
         _transition_to_applied(workspace, requirement, journal)
     except _StageFailed as failure:
@@ -194,7 +188,6 @@ def apply_standard_requirement(
         state=APPLIED_STATE,
         relations_added=tuple(_describe(edge) for edge in plan.missing),
         relations_present=tuple(_describe(edge) for edge in plan.present),
-        root_folder=APPROVED_FOLDER_NAME,
         created=tuple(journal.created),
     )
 
@@ -288,7 +281,7 @@ def _require_apply(requirement: RequirementRecord) -> None:
 def _resolve_structure(
     workspace: ApplyWorkspace, requirement: RequirementRecord
 ) -> _Structure:
-    """The Project, its Draft and Approved Folders, and the one Root Document."""
+    """The Project and the one Root Document contained by the Requirement."""
     try:
         project = workspace.read_project(requirement.project_id or "")
         attached = workspace.documents_attached_to_requirement(requirement.public_id)
@@ -309,59 +302,7 @@ def _resolve_structure(
             f"{requirement.requirement_id} has {len(attached)} attached "
             "Documents; exactly one Root Document is required.",
         )
-    draft, approved = _stage_folders(workspace, project)
-    return _Structure(
-        project=project,
-        root=attached[0],
-        draft_folder_id=draft.id,
-        approved_folder_id=approved.id,
-    )
-
-
-def _stage_folders(
-    workspace: ApplyWorkspace, project: ProjectRecord
-) -> tuple[FolderNode, FolderNode]:
-    """Resolve `<Project>/Requirements/{Draft,Approved}` by real Folder ids.
-
-    The same single-child rule the frozen RAW Processor applies: a name that
-    resolves to zero or several Folders is a structure the capability cannot
-    act on.
-    """
-    root_id = project.documents_root_folder_id
-    if not root_id:
-        raise _StageFailed(
-            ApplyResultCode.PROJECT_STRUCTURE_INVALID,
-            f"Project {project.name!r} has no Documents Root Folder ID.",
-        )
-    try:
-        root = workspace.resolve_folder(root_id)
-        if root is None:
-            raise _StageFailed(
-                ApplyResultCode.PROJECT_STRUCTURE_INVALID,
-                f"Documents Root Folder ID {root_id!r} does not resolve.",
-            )
-        requirements = _single_child(workspace, root.id, REQUIREMENTS_FOLDER_NAME)
-        stages = {
-            name: _single_child(workspace, requirements.id, name)
-            for name in REQUIREMENT_STAGE_FOLDER_NAMES
-        }
-    except FiberyError as error:
-        raise _StageFailed(
-            ApplyResultCode.FIBERY_READ_FAILED,
-            "Could not read the Project folder structure.",
-            (str(error),),
-        ) from error
-    return stages[DRAFT_FOLDER_NAME], stages[APPROVED_FOLDER_NAME]
-
-
-def _single_child(workspace: ApplyWorkspace, parent_id: str, name: str) -> FolderNode:
-    matches = [f for f in workspace.child_folders(parent_id) if f.name == name]
-    if len(matches) != 1:
-        raise _StageFailed(
-            ApplyResultCode.PROJECT_STRUCTURE_INVALID,
-            f"Expected exactly one {name!r} folder, found {len(matches)}.",
-        )
-    return matches[0]
+    return _Structure(project=project, root=attached[0])
 
 
 # -- evidence ---------------------------------------------------------------
@@ -692,17 +633,11 @@ def _describe_drift(reviewed: _Bindings, current: _Bindings) -> tuple[str, ...]:
 def _plan(
     workspace: ApplyWorkspace,
     requirement: RequirementRecord,
-    structure: _Structure,
     evidence: _Evidence,
 ) -> _Plan:
     targets = _preflight_targets(workspace, requirement, evidence.confirmed)
     present, missing = _partition_edges(workspace, requirement, evidence.confirmed)
-    return _Plan(
-        targets=targets,
-        present=present,
-        missing=missing,
-        root_in_approved=_root_in_approved(requirement, structure),
-    )
+    return _Plan(targets=targets, present=present, missing=missing)
 
 
 def _preflight_targets(
@@ -803,21 +738,6 @@ def _existing_edges(
     }
 
 
-def _root_in_approved(requirement: RequirementRecord, structure: _Structure) -> bool:
-    """Draft means move; Approved means already done; anything else is refused."""
-    folder_id = structure.root.folder_id
-    if folder_id == structure.approved_folder_id:
-        return True
-    if folder_id == structure.draft_folder_id:
-        return False
-    raise _StageFailed(
-        ApplyResultCode.PROJECT_STRUCTURE_INVALID,
-        f"The Root Document of {requirement.requirement_id} is in Folder "
-        f"{folder_id!r}, neither {DRAFT_FOLDER_NAME} nor {APPROVED_FOLDER_NAME}; "
-        "refusing to move a Document from an unexpected location.",
-    )
-
-
 # -- normative writes -------------------------------------------------------
 
 
@@ -849,44 +769,6 @@ def _ensure_edges(
                 f"{_describe(edge)} does not read back on "
                 f"{requirement.requirement_id} after being added.",
             )
-
-
-def _ensure_root_folder(
-    workspace: ApplyWorkspace,
-    requirement: RequirementRecord,
-    structure: _Structure,
-    plan: _Plan,
-    journal: _Journal,
-) -> None:
-    """Move the same Root Document to Approved, and prove it moved intact."""
-    if plan.root_in_approved:
-        return
-    root = structure.root
-    try:
-        children_before = {child.id for child in workspace.child_documents(root.id)}
-        workspace.set_document_folder(root.id, structure.approved_folder_id)
-        stored = workspace.resolve_document(root.id)
-        children_after = {child.id for child in workspace.child_documents(root.id)}
-    except FiberyError as error:
-        raise _StageFailed(
-            ApplyResultCode.FIBERY_WRITE_FAILED,
-            f"Could not move the Root Document of {requirement.requirement_id} "
-            f"to {APPROVED_FOLDER_NAME}.",
-            (str(error),),
-        ) from error
-    if stored is None or stored.folder_id != structure.approved_folder_id:
-        raise _StageFailed(
-            ApplyResultCode.VALIDATION_FAILED,
-            f"The Root Document of {requirement.requirement_id} does not read "
-            f"back under {APPROVED_FOLDER_NAME}.",
-        )
-    if stored.secret != root.secret or children_after != children_before:
-        raise _StageFailed(
-            ApplyResultCode.VALIDATION_FAILED,
-            f"The Root Document of {requirement.requirement_id} changed identity "
-            "or lost nested Documents while moving.",
-        )
-    journal.created.append(f"Root Document Folder = {APPROVED_FOLDER_NAME}")
 
 
 def _transition_to_applied(

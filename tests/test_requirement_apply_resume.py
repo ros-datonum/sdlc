@@ -74,29 +74,7 @@ def test_failure_after_the_first_edge_keeps_it_and_stays_in_apply():
     assert result.created == (f"relation DEPENDS_ON {TARGET_ID}",)
     assert "FIBERY_WRITE_FAILED" in result.details
     assert edges(ws, requirement.id) == {(DEPENDS, TARGET_ID)}
-    assert root_node(ws, root).folder_id == "f-draft"
-
-
-def test_failure_after_all_edges_before_the_move():
-    ws, requirement, root, _ = build_two_edge_workspace()
-    ws.failures["set_document_folder"] = FiberyError("move failed")
-    result = apply(ws, requirement)
-    assert_partial(result, ws, requirement)
-    assert edges(ws, requirement.id) == {(DEPENDS, TARGET_ID), (AFFECTS, OTHER_ID)}
-    assert root_node(ws, root).folder_id == "f-draft"
-    assert "Root Document Folder" not in " ".join(result.created)
-
-
-def test_failure_during_the_move_read_back():
-    ws, requirement, root, _ = build_two_edge_workspace()
-    ws.failures["resolve_document"] = FiberyError("read-back failed")
-    result = apply(ws, requirement)
-    assert_partial(result, ws, requirement)
-    # The move went through but was never confirmed, so it is not claimed;
-    # the retry inspects the Folder and treats the step as already done.
-    assert root_node(ws, root).folder_id == "f-approved"
-    assert "Root Document Folder = Approved" not in result.created
-    assert "FIBERY_WRITE_FAILED" in result.details
+    assert root_node(ws, root) == root
 
 
 def test_failure_during_the_applied_write():
@@ -105,7 +83,7 @@ def test_failure_during_the_applied_write():
     result = apply(ws, requirement)
     assert_partial(result, ws, requirement)
     assert "FIBERY_WRITE_FAILED" in result.details
-    assert root_node(ws, root).folder_id == "f-approved"
+    assert root_node(ws, root) == root
     assert edges(ws, requirement.id) == {(DEPENDS, TARGET_ID), (AFFECTS, OTHER_ID)}
 
 
@@ -133,7 +111,7 @@ def test_an_edge_that_does_not_read_back_is_a_validation_failure():
 
 
 def test_retry_after_a_relation_partial_writes_only_the_missing_edge():
-    ws, requirement, root, _ = build_two_edge_workspace()
+    ws, requirement, _, _ = build_two_edge_workspace()
     ws.failures["add_affects"] = FiberyError("add_affects failed")
     apply(ws, requirement)
     before = len(ws.mutations)
@@ -144,14 +122,13 @@ def test_retry_after_a_relation_partial_writes_only_the_missing_edge():
     assert result.relations_added == (f"AFFECTS {OTHER_ID}",)
     assert normative_writes(ws, before) == [
         f"add_affects {requirement.id} -> {OTHER_ENTITY}",
-        f"set_document_folder {root.id} f-approved",
         f"set_requirement_state {requirement.id} Applied",
     ]
     assert ws.depends_on_ids[requirement.id] == [TARGET_ENTITY]
     assert ws.affects_ids[requirement.id] == [OTHER_ENTITY]
 
 
-def test_retry_after_the_root_moved_only_transitions():
+def test_retry_after_the_applied_write_failed_only_transitions():
     ws, requirement, root, _ = build_two_edge_workspace()
     ws.failures["set_requirement_state"] = FiberyError("state write failed")
     apply(ws, requirement)
@@ -162,24 +139,11 @@ def test_retry_after_the_root_moved_only_transitions():
     assert normative_writes(ws, before) == [
         f"set_requirement_state {requirement.id} Applied"
     ]
-    assert root_node(ws, root).folder_id == "f-approved"
+    assert root_node(ws, root) == root
     assert (
         len([d for d in ws.documents if d.entity_public_id == requirement.public_id])
         == 1
     )
-
-
-def test_retry_after_a_move_read_back_failure_does_not_move_twice():
-    ws, requirement, root, _ = build_two_edge_workspace()
-    ws.failures["resolve_document"] = FiberyError("read-back failed")
-    apply(ws, requirement)
-    before = len(ws.mutations)
-    result = apply(ws, requirement)
-    assert result.code is Code.REQUIREMENT_APPLIED
-    assert not any(
-        m.startswith("set_document_folder") for m in mutations_since(ws, before)
-    )
-    assert root_node(ws, root).id == root.id
 
 
 def test_retry_revalidates_the_binding_before_resuming():
@@ -197,7 +161,7 @@ def test_retry_revalidates_the_binding_before_resuming():
 
 def test_no_apply_result_artifact_is_ever_created():
     ws, requirement, _, before = build_two_edge_workspace()
-    ws.failures["set_document_folder"] = FiberyError("move failed")
+    ws.failures["add_affects"] = FiberyError("add_affects failed")
     apply(ws, requirement)
     apply(ws, requirement)
     assert not any(
@@ -237,28 +201,10 @@ def test_drift_after_edges_are_written_keeps_them_and_never_reaches_applied():
     assert_partial(result, ws, requirement)
     assert "REVIEW_RESULT_STALE" in result.details
     assert edges(ws, requirement.id) == {(DEPENDS, TARGET_ID), (AFFECTS, OTHER_ID)}
-    assert root_node(ws, root).folder_id == "f-approved", "the move as reached stays"
     assert not any(
         m.startswith("set_requirement_state") for m in mutations_since(ws, before)
     )
     assert "State = Applied" not in result.created
-
-
-def test_drift_detected_mid_apply_does_not_move_the_root_back():
-    ws, requirement, root, _ = build_two_edge_workspace()
-    original = ws.set_document_folder
-
-    def edit_after_moving(document_id, folder_id):
-        original(document_id, folder_id)
-        ws.content[root.secret] += "\nConcurrent edit.\n"
-
-    ws.set_document_folder = edit_after_moving
-    result = apply(ws, requirement)
-    assert_partial(result, ws, requirement)
-    assert root_node(ws, root).folder_id == "f-approved"
-    assert [m for m in ws.mutations if m.startswith("set_document_folder")] == [
-        f"set_document_folder {root.id} f-approved"
-    ]
 
 
 def test_revision_is_unchanged_across_partial_and_resume():
@@ -299,9 +245,9 @@ def test_an_applied_write_that_also_moves_revision_is_not_reported_as_applied():
     assert "Revision" in " ".join(result.details)
     assert "State = Applied" not in result.created
     # Durable state is reported as it is: the State write landed, the edges
-    # and the Root move stay, and nothing is rolled back.
+    # stay, and nothing is rolled back.
     assert state_of(ws, requirement) == "Applied"
     assert ws.requirements[requirement.id].revision == requirement.revision + 1
     assert edges(ws, requirement.id) == {(DEPENDS, TARGET_ID), (AFFECTS, OTHER_ID)}
-    assert root_node(ws, root).folder_id == "f-approved"
+    assert root_node(ws, root) == root
     assert apply(ws, requirement).code is Code.REQUIREMENT_ALREADY_APPLIED

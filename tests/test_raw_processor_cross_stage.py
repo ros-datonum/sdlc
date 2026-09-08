@@ -122,7 +122,7 @@ def test_a_retry_never_demotes_or_rewrites_an_applied_candidate():
     assert ws.mutations[mutations_before:] == []
     assert snapshot(ws, applied) == before
     assert ws.requirements[applied.id].state == "Applied"
-    assert before["folder"] == "f-approved"
+    assert before["folder"] is None, "Apply never gives the Root a Folder"
     assert ws.requirements[raw.id].state == "Process"
     assert len(standards(ws)) == 1, "the retry must not create the second candidate"
 

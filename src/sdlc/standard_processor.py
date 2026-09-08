@@ -912,9 +912,10 @@ def _require_unchanged(
 
     Protected: the entity itself, its Requirement ID, Title, Project, Revision
     and public id, Type Standard, State Process, exactly one attached Root
-    Document with the same identity, secret and Folder, Root content
-    canonically equivalent to `expected_content`, and the freshly traversed
-    normative tree equal to `expected_tree`.
+    Document with the same identity and secret, Root content canonically
+    equivalent to `expected_content`, and the freshly traversed normative
+    tree equal to `expected_tree`. The Root's legacy `fibery/Folder` is
+    presentation metadata and is not compared.
     """
     observed = _observe(workspace, context, stage)
     drift = (
@@ -978,8 +979,6 @@ def _root_drift(
     drift: list[str] = []
     if current.secret != root.secret:
         drift.append("the Root Document's content secret changed")
-    if current.folder_id != root.folder_id:
-        drift.append(f"the Root Document moved to Folder {current.folder_id!r}")
     if observed.root_content is None or not content_equivalent(
         observed.root_content, expected_content
     ):

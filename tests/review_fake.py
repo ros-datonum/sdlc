@@ -64,6 +64,7 @@ def build_review_workspace(
     others=(),
     process_iterations=1,
     normalized_changes=None,
+    legacy_folders=True,
 ):
     """A Standard Requirement in Review with its Process history in place.
 
@@ -92,7 +93,7 @@ def build_review_workspace(
             )
         )
     ws, requirement, root = build_standard_workspace(
-        state=state, type_name=type_name, others=others
+        state=state, type_name=type_name, others=others, legacy_folders=legacy_folders
     )
     content = normalized(**(normalized_changes or {}))
     document = NormalizedRequirement(**content).document(REQUIREMENT_ID)

@@ -325,7 +325,7 @@ def test_folder_secret_and_serialization_are_not_identity():
     ws, requirement, root = build_standard_workspace()
     a = add_child(ws, root, "A", "a\n", document_id="a")
     before = read(ws, requirement, root).manifest
-    ws.set_document_folder(root.id, "f-approved")
+    ws.relocate_legacy_folder(root.id, "f-approved")
     replace_node(ws, a, secret="rotated")
     ws.content["rotated"] = "a\n"
     assert read(ws, requirement, root).manifest.fingerprint == before.fingerprint

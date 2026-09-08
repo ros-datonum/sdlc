@@ -1,6 +1,7 @@
 # Standard Requirement Apply Specification v0.1
 
-**Status:** APPROVED. Frozen contract for implementation. No implementation exists yet.
+**Status:** APPROVED. Frozen contract, implemented. Amended 2026-09-09: the
+Root Document move (former section 10) is retired; Apply writes no Document.
 
 Design for `Requirement.Type = Standard` + `Requirement.State = Apply`.
 
@@ -35,7 +36,6 @@ turns what was reviewed and approved into canonical Fibery state:
 ```text
 revalidate the approved binding
 -> apply the confirmed relations
--> move the same Root Document Draft -> Approved
 -> verify
 -> Apply -> Applied
 -> verify
@@ -106,8 +106,7 @@ not silently add another one behind them.
 
 ```text
 the Requirement entity (Requirement ID, Type, State, Revision, Project)
-its Root Document, current content and current Folder
-the Project folder structure (Requirements/Draft, Requirements/Approved)
+its Root Document and current content
 the latest valid Review Result
 the latest valid Process Result
 the Requirement's existing Depends On / Affects edges
@@ -197,7 +196,7 @@ If any binding disagrees before the first write:
 ```text
 REVIEW_RESULT_STALE
 State remains Apply
-relation writes = 0, Document folder writes = 0, State writes = 0, model calls = 0
+relation writes = 0, Document writes = 0, State writes = 0, model calls = 0
 ```
 
 Apply does not run Process, Review or Ready Decision, does not repair anything
@@ -322,82 +321,64 @@ legitimately reference one another before all have individually reached
 the target's workflow completion. No `target must be Applied` rule exists and
 none may be inferred.
 
-## 10. Root Document move — required by the frozen document contract
+## 10. No Root Document move — the Type/State placement contract
 
-The frozen Project Init specification (section 11) fixes the placement:
+Amended 2026-09-09. The original contract moved the Root Document's
+`fibery/Folder` from `Requirements/Draft` to `Requirements/Approved` because
+Project Init section 11 fixed placement by folder. That folder model is
+retired: lifecycle placement is the Requirement's Type and State, and
+`State = Applied` is the only approved-placement signal.
 
-```text
-State != Applied   -> Requirements/Draft/
-State  = Applied   -> Requirements/Approved/
-```
+Apply therefore:
 
-and states that on successful application the Root Document is **moved** from
-`Draft` to `Approved`. Apply therefore changes the Root Document's
-`fibery/Folder` from the Project's `Requirements/Draft` Folder to its
-`Requirements/Approved` Folder before the final transition.
+- writes **no** Document: no Folder change, no body write, no create, no
+  move, on any path; a successful Apply issues zero Document writes;
+- reads no Project folder structure and requires none;
+- does not inspect, check or repair the Root's `fibery/Folder`. A Root that
+  still carries a legacy Folder (created before the amendment), one whose
+  Folder a human later changed, and one with no Folder at all are applied
+  identically;
+- keeps the same Root Document entity, id, secret, body and nested children,
+  and proves it through the reviewed-state bindings (section 6), which cover
+  Root content and the normative tree.
 
-Verified mechanism (constraint 24): `update-views` with
-`params.updates: [{id, values: {"fibery/Folder": {"fibery/id": <Approved>}}}]`
-changes the Folder in place; the Document keeps its id, its public id, its
-content secret and its body.
+Human navigation of Applied Requirements is the workspace-level Smart Folder
+context view `Approved` (`Type = Standard AND State = Applied`), configured
+once in the Fibery UI and never required by this command.
 
-Rules:
-
-- the **same Root Document entity** moves; no second Root Document is created,
-  no copy is placed under `Approved`, no delete-and-recreate;
-- the Root Document body is not written; the only Document mutation is the
-  Folder;
-- `Draft` and `Approved` are resolved by real Folder ids from the Project's
-  Documents Root Folder through the single-child rule the frozen RAW Processor
-  already uses (`PROJECT_STRUCTURE_INVALID` if the tree is ambiguous);
-- Process Results and Review Results are nested under the Root through
-  `fibery/parent-page-id`, carry no Folder of their own, and follow the Root
-  automatically (constraint 25). Apply writes nothing to any child; the
-  hierarchy is verified unchanged after the move.
-
-### Folder idempotency
-
-```text
-Root in Draft       -> move to Approved
-Root in Approved    -> step already complete; no write
-Root anywhere else  -> PROJECT_STRUCTURE_INVALID; no write
-```
-
-An unexpected Folder is never silently repaired.
+Historical: the mechanism that was used, `update-views` on `fibery/Folder`
+(constraint 24), remains a verified fact and is no longer called.
 
 ## 11. Mutation ordering
 
 ```text
  1. resolve Requirement                       Type Standard; State Apply | Applied
- 2. resolve Root Document, its current Folder, the Draft and Approved Folder ids
+ 2. resolve the one contained Root Document
  3. resolve latest Review Result; parse; mirror consistency; no duplicate edge
  4. resolve latest Process Result; parse
- 5. validate the three reviewed-state bindings                   (section 6)
+ 5. validate the reviewed-state bindings                          (section 6)
  6. preflight every relation target                              (section 9)
  7. read current Depends On / Affects; compute the missing edges
- 8. inspect the Root Folder                                      (section 10)
- 9. revalidate the three bindings immediately before the first write
+ 8. revalidate the bindings immediately before the first write
     ------------------------------ first normative write ------------------
-10. add each missing confirmed edge, one command each; read back after each
-11. move Root Draft -> Approved if not already there; read back the Folder
-12. revalidate the three bindings again                          (section 12)
-13. set State = Applied
-14. read the Requirement back: State Applied, Revision unchanged
-15. validate the final invariant                                 (section 13)
+ 9. add each missing confirmed edge, one command each; read back after each
+10. revalidate the bindings again                                (section 12)
+11. set State = Applied
+12. read the Requirement back: State Applied, Revision unchanged
+13. validate the final invariant                                 (section 13)
 ```
 
-Steps 1–9 perform reads only. If any of them fails, nothing was written and the
-result is the specific refusal. Every write from step 10 on is individually
+Steps 1–8 perform reads only. If any of them fails, nothing was written and the
+result is the specific refusal. Every write from step 9 on is individually
 verified by read-back, and `Applied` is written last, so it is a true
 completion marker. No write happens before the complete target preflight.
-
-Relations are written before the Root move because the move is the more
-visible change: a Root under `Approved` with edges still missing would look
-finished to a human browsing Fibery, while missing edges under `Draft` do not.
+With no confirmed edges to write, `Applied` is the first and only write; if
+it does not take effect nothing durable exists, so the outcome is
+`VALIDATION_FAILED`, not `PARTIAL_APPLY`.
 
 ## 12. Revalidation before Applied
 
-Step 12 repeats the section 6 check, including a fresh traversal of the
+Step 10 repeats the section 6 check, including a fresh traversal of the
 normative tree. If the Root Document, a normative child or the Process
 history moved during the application:
 
@@ -408,8 +389,7 @@ result: PARTIAL_APPLY, details naming REVIEW_RESULT_STALE and what moved
 durable completed steps remain
 ```
 
-Edges written in step 10 and a completed Root move are **not** reverted
-(section 15). This is the smallest protection available without a
+Edges written in step 9 are **not** reverted (section 15). This is the smallest protection available without a
 compare-and-set primitive, and it is what guarantees a Requirement whose
 content changed mid-application is never marked `Applied`.
 
@@ -422,8 +402,7 @@ Type = Standard
 State = Applied
 Revision unchanged from entry
 
-the same Root Document entity exists
-Root Document Folder = Requirements/Approved
+the same Root Document entity exists, never written or moved
 Root Document body unchanged from entry
 
 every edge in the validated confirmed set exists
@@ -434,8 +413,7 @@ the reviewed-state binding was valid immediately before State = Applied
 ```
 
 After the final transition Apply re-reads the Requirement to confirm `Applied`
-and the unchanged `Revision`; the edge and Folder read-backs happened at steps
-10 and 11. Apply does not claim the binding can never change *after* the
+and the unchanged `Revision`; the edge read-backs happened at step 9. Apply does not claim the binding can never change *after* the
 transition: a human may edit the Root Document one second later, and that is a
 revision question this specification does not design.
 
@@ -449,7 +427,7 @@ the Requirement remains Apply until every step has succeeded
 ```
 
 Any failure after the first normative write returns `PARTIAL_APPLY`, listing
-exactly what became durable (edges written, Root moved) and the failing step's
+exactly what became durable (edges written) and the failing step's
 code and cause, following the `PARTIAL_PROCESSING` / `PARTIAL_REVIEW`
 convention. Failures before the first write return their specific code and
 report nothing durable, because nothing is.
@@ -459,8 +437,7 @@ ensure-state operation, the retry naturally completes only what is missing:
 
 ```text
 edge 1 written, edge 2 not             -> step 7 finds 1 present; writes only 2
-all edges written, move failed         -> step 7 writes nothing; step 11 moves
-edges + move done, Applied failed      -> steps 10 and 11 write nothing; step 13
+all edges written, Applied failed      -> step 9 writes nothing; step 11
 ```
 
 The retry revalidates the reviewed binding first (steps 5 and 9), so a
@@ -512,10 +489,9 @@ Requirement's content. Read-back verifies it did not change.
 
 ## 18. Root content and artifacts
 
-Zero writes to the Root Document body, to any Process Result and to any Review
-Result. Apply reads them. It never edits, deletes, rewrites, copies or
-independently moves them; they follow their parent Root as a consequence of the
-Root's Folder change (constraint 25).
+Zero writes to the Root Document, to any Process Result and to any Review
+Result. Apply reads them. It never edits, deletes, rewrites, copies or moves
+them.
 
 ## 19. Model runtime
 
@@ -532,16 +508,14 @@ A narrow `ApplyWorkspace` protocol, in the pattern of `ReadyDecisionWorkspace`:
 
 ```text
 reads   read_requirement, count-aware lookup by Requirement ID,
-        read_project, resolve_folder, child_folders,
-        documents_attached_to_requirement, child_documents,
+        read_project, documents_attached_to_requirement, child_documents,
         read_document_content, requirement_relations
-writes  add_requirement_relation(entity_id, kind, target_entity_id)
-        set_document_folder(document_id, folder_id)
+writes  add_depends_on / add_affects(entity_id, target_entity_id)
         set_requirement_state(entity_id, state)
 ```
 
-No document content write, no document create, no relation removal. What the
-protocol omits, the capability structurally cannot do.
+No document content write, no document create, no document move, no relation
+removal. What the protocol omits, the capability structurally cannot do.
 
 ## 21. Result vocabulary
 
@@ -560,7 +534,7 @@ Validation and decision:
 REQUIREMENT_NOT_FOUND
 NOT_A_STANDARD_REQUIREMENT
 REQUIREMENT_NOT_IN_APPLY
-PROJECT_STRUCTURE_INVALID        folder tree, Root Document count, unexpected Root Folder
+PROJECT_STRUCTURE_INVALID        no resolvable Project, Root Document count
 NO_PROCESS_RESULT
 INVALID_PROCESS_RESULT
 NO_REVIEW_RESULT
@@ -592,7 +566,7 @@ batch is not transactional. Apply cannot make "validate, then write" atomic
 around:
 
 ```text
-binding validation -> edge writes -> Root Folder move -> Applied transition
+binding validation -> edge writes -> Applied transition
 ```
 
 The residual race:
@@ -618,8 +592,8 @@ Mitigation, in order of effect:
    previously displayed state;
 2. the binding is revalidated before `Applied` (step 12), so a Requirement
    whose content moved is never marked `Applied`;
-3. the writes are additive edges a human reviewed and approved, and a Folder
-   move; neither destroys anything.
+3. the writes are additive edges a human reviewed and approved; nothing is
+   destroyed.
 
 This can temporarily leave a normative relation attached to a Requirement whose
 content subsequently drifted. For v0.1 that is accepted under the project's
@@ -640,13 +614,13 @@ the only thing the write depends on. No locking.
 
 ## 23. Fibery fake fidelity
 
-The three behaviours Apply depends on were verified live on 2026-09-04 and are
-recorded as constraints 24, 25 and 26. The implementation fake must reproduce
-them exactly, and deterministic tests must exercise each:
+The behaviours Apply depends on were verified live on 2026-09-04 and are
+recorded as constraint 26 (constraints 24 and 25, the Folder move and its
+effect on children, were verified then and are no longer used). The
+implementation fake must reproduce them exactly, and deterministic tests must
+exercise each:
 
 ```text
-update-views changes a Document's Folder in place; id, secret, body unchanged
-nested children keep parent-page-id, null Folder and body after the move
 add-collection-items is idempotent; membership is a set
 the inverse side (Blocks / Impacted By) appears on the target
 Apply -> Applied State transition and read-back
@@ -680,7 +654,7 @@ legacy 0.1 Process or Review Result       -> NORMATIVE_TREE_EVIDENCE_REQUIRED
 missing / malformed / duplicate Review Result
 missing / malformed / duplicate Process Result
 older artifact never used as fallback
-every case -> zero relation, Folder and State writes
+every case -> zero relation, Document and State writes
 ```
 
 ### Review Result consistency
@@ -697,7 +671,7 @@ every refusal -> zero normative mutation
 ### Relations
 
 ```text
-zero confirmed proposals                  -> no relation write, Root moved, Applied
+zero confirmed proposals                  -> no relation write, no Document write, Applied
 one DEPENDS_ON; one AFFECTS; several mixed
 edge already present                      -> not written again, still Applied
 target missing                            -> RELATION_TARGET_NOT_FOUND, zero writes
@@ -712,23 +686,21 @@ existing unrelated edges never removed
 repeated add of a present edge is a no-op in the fake, as verified live
 ```
 
-### Root Folder and hierarchy
+### Root Document and hierarchy
 
 ```text
-Draft -> Approved, same Document id, same secret, body unchanged
-already Approved -> no Folder write, application completes
-neither Draft nor Approved -> PROJECT_STRUCTURE_INVALID, zero writes
-child Process / Review Results keep parent-page-id, null Folder and content
-no write to any child
+same Document id, same secret, same legacy Folder, body unchanged
+a Root with a legacy Draft, Approved or Raw Folder, or none -> applied identically
+child Process / Review Results keep parent-page-id, Folder and content
+zero Document writes on the successful path; no write to any child
+no folder read of any kind
 ```
 
 ### Partial failure and resume
 
 ```text
 fail after the first of two edges         -> PARTIAL_APPLY, State Apply
-fail after all edges, before the move
-fail during the Folder move
-fail after the move, before Applied
+fail after all edges, before Applied
 fail during the Applied write / read-back
 each: retry completes with no duplicate edge, no second Root, one Applied
 ```
@@ -737,7 +709,7 @@ each: retry completes with no duplicate edge, no second Root, one Applied
 
 ```text
 binding moves before the first write      -> REVIEW_RESULT_STALE, zero writes
-binding moves after edges were written    -> edges kept, Root move as reached,
+binding moves after edges were written    -> edges kept, no Document write,
                                              no Applied, PARTIAL_APPLY (stale)
 a child edited between the checkpoints    -> the same, named in the details
 ```
@@ -765,7 +737,7 @@ confirm a relation to the other. Verify independently in Fibery:
 
 ```text
 same Requirement entity, State = Applied, Revision unchanged
-same Root Document entity, Folder = Requirements/Approved, body unchanged
+same Root Document entity, same Folder value as before (legacy or none), body unchanged
 Process Results and Review Results unchanged and still nested under the Root
 only the confirmed proposals became edges; pre-existing edges preserved
 the inverse side is visible on the target
@@ -805,8 +777,8 @@ Decisions approved with this contract:
    capability; the frozen lookup and its callers are unchanged (section 9).
 5. The persisted `confirmed_relation_proposals` mirror must equal the derived
    confirmed set; disagreement is `INVALID_REVIEW_RESULT` (section 5).
-6. No Apply Result artifact; progress is observable from State, edges and Root
-   Folder (section 14).
+6. No Apply Result artifact; progress is observable from State and edges
+   (section 14).
 7. Apply reads edges before writing and does not rely on Fibery's verified
    idempotent add for correctness (section 8).
 

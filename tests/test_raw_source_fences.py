@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from raw_fixtures import TITLE, VALID_SOURCE
-from requirement_fake import FakeRequirementWorkspace, project_with_structure
+from requirement_fake import FakeRequirementWorkspace, planned_project
 from sdlc.raw_source import (
     METADATA_SECTION,
     REQUIRED_SECTIONS,
@@ -74,8 +74,7 @@ def section_lines(body: str, name: str) -> list[str]:
 
 
 def ingest(text: str):
-    project, folders = project_with_structure()
-    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
+    workspace = FakeRequirementWorkspace(projects=[planned_project()])
     return workspace, add_raw_requirement(workspace, "SDLC", text)
 
 
@@ -197,8 +196,7 @@ def test_ingest_stores_the_example_and_creates_exactly_one_requirement():
 
 def test_reingesting_an_example_bearing_artifact_is_a_duplicate():
     text = with_example("Constraints", fenced(SECTION_LIKE_EXAMPLE))
-    project, folders = project_with_structure()
-    workspace = FakeRequirementWorkspace(projects=[project], folders=folders)
+    workspace = FakeRequirementWorkspace(projects=[planned_project()])
     first = add_raw_requirement(workspace, "SDLC", text)
     mutations = list(workspace.mutations)
     second = add_raw_requirement(workspace, "SDLC", text)
