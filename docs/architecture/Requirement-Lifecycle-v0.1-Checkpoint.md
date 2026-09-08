@@ -137,8 +137,10 @@ Standing items, recorded so they are not mistaken for guarantees:
 - Fibery rate-limits at three requests per second per token; the client paces
   every request at least 0.5 s apart and retries only known read-only requests
   after HTTP 429, at most three attempts. A rate-limited mutation is reported
-  once and resumed from durable state on rerun; nothing coordinates
-  simultaneous SDLC processes, so one command runs at a time per workspace.
+  once and resumed from durable state on rerun. RAW processing holds a
+  per-RAW OS lock so two cooperating local invocations of the same RAW cannot
+  overlap (audit A10); nothing else coordinates simultaneous SDLC processes,
+  so one command at a time per workspace remains the operating rule.
 - Document fingerprints of current evidence (Process/Review 0.3, manifest v2)
   are SHA-256 over the exact canonical bytes (audit A8); 0.2/manifest v1
   evidence hashed through a second normalization that missed fenced trailing

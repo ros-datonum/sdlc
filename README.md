@@ -187,6 +187,19 @@ Review additionally refuses when a Process finding or relation names a
 Requirement that is not an included peer. This is Root-Document comparison;
 details that live only in child Documents are not covered.
 
+## One RAW invocation at a time
+
+`sdlc project requirement process` holds an OS advisory lock for the RAW it
+works on, from before its first read until it finishes or fails. A second
+invocation for the same RAW on the same host and OS user returns
+`RAW_PROCESSING_IN_PROGRESS` at once, with no model call and no Fibery
+access; run it again after the first finishes. The lock files are empty
+rendezvous objects under `~/.sdlc/locks` (or `SDLC_LOCK_DIR`), keyed by
+workspace and RAW entity id, never by branch or working directory; a process
+that dies releases its lock automatically and nothing needs manual cleanup.
+This covers cooperating local invocations only: other machines, other OS
+users, direct Fibery edits and the other pipeline stages are not coordinated.
+
 ## Recovering an empty Result Document
 
 Each model-backed command creates its Result as a child Document first and
