@@ -68,7 +68,7 @@ normative tree (see the comparison scope below)
 the Requirement's existing real Depends On / Affects relations
 ```
 
-The latest Process Result must be tree-bound (0.2) and its intended output
+The latest Process Result must be current-format (0.3, manifest v2) and its intended output
 tree must be the current tree; otherwise the run refuses with
 `NORMATIVE_TREE_EVIDENCE_REQUIRED` before the reviewer runs, because a review
 certifies Process evidence about the tree it sees, and there is none.
@@ -201,7 +201,8 @@ Results:
 Contents:
 
 ```text
-review_result_version              0.2
+review_result_version              0.3 (manifest v2; version matrix in
+                                   Requirement-Normative-Tree-Binding-v0.1 §3.5)
 iteration                          review iteration
 requirement_id
 reviewed_document_fingerprint      canonical fingerprint of what was reviewed
@@ -333,7 +334,7 @@ current Root Document canonical fingerprint == reviewed_document_fingerprint
 latest Process Result iteration             == reviewed_process_iteration
 that Process Result's output_fingerprint    == reviewed_process_output_fingerprint
 current normative tree fingerprint          == reviewed_normative_tree fingerprint
-that Process Result is tree-bound and its normative_output_tree is the current tree
+that Process Result is current-format and its normative_output_tree is the current tree
 ```
 
 must hold. If any differ the Review Result is **stale**:
@@ -434,7 +435,7 @@ the latest Review Result is a legacy 0.1 artifact
 
 If `Requirement.State = Review` and the current document fingerprint, the
 normative tree fingerprint, Process iteration and Process output fingerprint
-all exactly match the latest successfully reviewed, tree-bound input:
+all exactly match the latest successfully reviewed, current-format input:
 
 ```text
 NO_CHANGES_TO_REVIEW

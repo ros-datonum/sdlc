@@ -356,7 +356,7 @@ def test_an_explicit_new_iteration_processes_the_current_tree_once():
     assert len(process_results(ws)) == 2
     assert ws.content[node.secret] == old_body
     new = stored(ws)
-    assert new.input_tree == x and new.version == "0.2"
+    assert new.input_tree == x and new.version == "0.3"
     assert "Fresh" in ws.content[root.secret]
     assert ws.requirements[requirement.id].state == "Review"
     assert [m for m in ws.mutations[before:] if m.startswith("write_content")] == [

@@ -192,7 +192,7 @@ def _already_reviewed(context: _Context, bindings: _Bindings) -> bool:
     latest = context.latest_review
     return (
         latest is not None
-        and latest.is_tree_bound
+        and latest.is_current
         and latest.reviews(
             bindings.document_fingerprint,
             bindings.process_iteration,
@@ -442,16 +442,18 @@ def _require_tree_evidence(
 ) -> None:
     """A review certifies a tree only against a Process Result that produced it.
 
-    A legacy 0.1 Process Result binds no tree, and a 0.2 result whose intended
+    A 0.1 Process Result binds no tree, a 0.2 result binds manifest v1 under
+    the older fingerprint algorithm, and a current result whose intended
     output is not the current tree describes an input that no longer exists:
-    both need Process to run again before anything can be reviewed.
+    all need Process to run again before anything can be reviewed.
     """
-    if not process.is_tree_bound:
+    if not process.is_current:
         raise _StageFailed(
             StandardReviewResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
             f"Process Result {process.iteration} of {requirement.requirement_id} "
-            "binds no normative tree (a legacy Root-only artifact); run Process "
-            "to produce tree-bound evidence before reviewing. Nothing was written.",
+            f"is history in an older format (version {process.version}); run "
+            "Process to produce current-format evidence before reviewing. "
+            "Nothing was written.",
         )
     if process.output_tree.fingerprint != current.fingerprint:
         raise _StageFailed(
@@ -1053,7 +1055,7 @@ def _recheck_bindings(
         tree_fingerprint=tree.fingerprint,
     )
     if current == bindings and (
-        latest.is_tree_bound and latest.output_tree.fingerprint == tree.fingerprint
+        latest.is_current and latest.output_tree.fingerprint == tree.fingerprint
     ):
         return
 

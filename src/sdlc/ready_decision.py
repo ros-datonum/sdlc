@@ -364,17 +364,18 @@ def _read_history(
 def _require_tree_evidence(requirement: RequirementRecord, history: _History) -> None:
     """Approval certifies a tree, so only tree-bound, coherent evidence counts.
 
-    Legacy Root-only artifacts stay readable history but prove nothing about
-    the children, whether or not the Requirement has any today.
+    Older-format artifacts stay readable history but cannot certify the
+    current contract: 0.1 binds no tree, and 0.2 binds manifest v1, whose
+    fingerprints could not see every literal difference (A8).
     """
     process, review = history.latest_process, history.latest_review
-    if not process.is_tree_bound or not review.is_tree_bound:
+    if not process.is_current or not review.is_current:
         raise _Refused(
             ReadyDecisionResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
-            f"{requirement.requirement_id} has only legacy Root-only evidence "
-            f"(Process Result {process.iteration} tree-bound: {process.is_tree_bound}, "
-            f"Review Result {review.iteration} tree-bound: {review.is_tree_bound}); "
-            "approval needs tree-bound Process and Review evidence. Send it for "
+            f"{requirement.requirement_id} has only older-format evidence "
+            f"(Process Result {process.iteration} version {process.version}, "
+            f"Review Result {review.iteration} version {review.version}); approval "
+            "needs current-format Process and Review evidence. Send it for "
             "rework, then run Process and Review. Nothing was written.",
         )
 

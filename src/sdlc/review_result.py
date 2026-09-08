@@ -21,7 +21,12 @@ import json
 import re
 from dataclasses import dataclass
 
-from sdlc.normative_tree import InvalidTreeManifest, TreeManifest
+from sdlc.normative_tree import (
+    LEGACY_NORMATIVE_TREE_VERSION,
+    NORMATIVE_TREE_VERSION,
+    InvalidTreeManifest,
+    TreeManifest,
+)
 from sdlc.standard_analysis import FindingKind, RelationKind
 from sdlc.standard_review import (
     FindingVerification,
@@ -36,11 +41,23 @@ from sdlc.standard_review import (
 
 # 0.2 binds the normative tree (Requirement-Normative-Tree-Binding-v0.1); 0.1
 # is the legacy Root-only binding, still readable as history, never written.
-REVIEW_RESULT_VERSION = "0.2"
+# 0.3 binds manifest v2 (exact canonical-byte fingerprints, audit A8); 0.2
+# bound manifest v1 under the older algorithm; 0.1 is Root-only. Older
+# versions are history: readable, never written, never reinterpreted.
+REVIEW_RESULT_VERSION = "0.3"
+TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION = "0.2"
 LEGACY_REVIEW_RESULT_VERSION = "0.1"
 SUPPORTED_REVIEW_RESULT_VERSIONS = frozenset(
-    {REVIEW_RESULT_VERSION, LEGACY_REVIEW_RESULT_VERSION}
+    {
+        REVIEW_RESULT_VERSION,
+        TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION,
+        LEGACY_REVIEW_RESULT_VERSION,
+    }
 )
+MANIFEST_VERSION_BY_RESULT_VERSION = {
+    TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION: LEGACY_NORMATIVE_TREE_VERSION,
+    REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
+}
 REVIEW_RESULT_SUFFIX = "Review Result"
 ITERATION_WIDTH = 4
 FIRST_ITERATION = 1
@@ -109,6 +126,15 @@ class ReviewResult:
     def is_tree_bound(self) -> bool:
         return self.reviewed_tree is not None
 
+    @property
+    def is_current(self) -> bool:
+        """0.3 with a manifest v2 tree: the evidence Ready and Apply certify."""
+        return (
+            self.version == REVIEW_RESULT_VERSION
+            and self.reviewed_tree is not None
+            and self.reviewed_tree.is_current
+        )
+
     def reviews_tree(self, tree_fingerprint: str) -> bool:
         return (
             self.reviewed_tree is not None
@@ -147,6 +173,11 @@ def build_review_result(
     reviewed_tree: TreeManifest,
 ) -> ReviewResult:
     """Assemble the artifact, deriving the verdict rather than accepting one."""
+    if not reviewed_tree.is_current:
+        raise InvalidReviewResult(
+            f"A Review Result {REVIEW_RESULT_VERSION} binds manifest version "
+            f"{NORMATIVE_TREE_VERSION}, not {reviewed_tree.version}."
+        )
     if reviewed_tree.root_entry.content_fingerprint != reviewed_document_fingerprint:
         raise InvalidReviewResult(
             "The reviewed tree's Root fingerprint disagrees with the reviewed "
@@ -300,7 +331,11 @@ def _read_reviewed_tree(
     requirement_id: str,
     reviewed_document: str,
 ) -> TreeManifest | None:
-    """The 0.2 tree binding; none for 0.1, and none ever synthesized."""
+    """The tree binding of a 0.2 or 0.3 payload; none for 0.1, never synthesized.
+
+    The manifest version must be the one the Result version declares; a
+    mixture is a contradiction, not a best-effort read.
+    """
     if version == LEGACY_REVIEW_RESULT_VERSION:
         if REVIEWED_TREE_KEY in payload:
             raise InvalidReviewResult(
@@ -311,6 +346,13 @@ def _read_reviewed_tree(
         tree = TreeManifest.from_payload(payload.get(REVIEWED_TREE_KEY))
     except InvalidTreeManifest as error:
         raise InvalidReviewResult(f"Invalid normative tree binding: {error}") from error
+    expected_manifest = MANIFEST_VERSION_BY_RESULT_VERSION[version]
+    if tree.version != expected_manifest:
+        raise InvalidReviewResult(
+            f"A Review Result {version} binds manifest version {expected_manifest}, "
+            f"but {REVIEWED_TREE_KEY} is version {tree.version}; the payload mixes "
+            "fingerprint algorithms."
+        )
     if tree.requirement_id != requirement_id:
         raise InvalidReviewResult(
             f"{REVIEWED_TREE_KEY} belongs to {tree.requirement_id!r}, not "

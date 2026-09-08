@@ -16,8 +16,13 @@ import json
 import re
 from dataclasses import dataclass
 
-from sdlc.normative_tree import InvalidTreeManifest, TreeManifest
-from sdlc.raw_source import canonical_markdown, fingerprint_of
+from sdlc.normative_tree import (
+    LEGACY_NORMATIVE_TREE_VERSION,
+    NORMATIVE_TREE_VERSION,
+    InvalidTreeManifest,
+    TreeManifest,
+    document_fingerprint,
+)
 from sdlc.standard_analysis import (
     SECTION_KEYS,
     AnalysisResult,
@@ -29,13 +34,26 @@ from sdlc.standard_analysis import (
     RelationKind,
 )
 
-# 0.2 binds the normative tree (Requirement-Normative-Tree-Binding-v0.1); 0.1
-# is the legacy Root-only binding, still readable as history, never written.
-PROCESS_RESULT_VERSION = "0.2"
+# 0.3 binds the normative tree with manifest v2 (exact canonical-byte document
+# fingerprints, audit A8). 0.2 bound manifest v1 under the older fingerprint
+# algorithm; 0.1 is the Root-only binding. Both older versions stay readable
+# as history under their own semantics and are never written or rewritten.
+PROCESS_RESULT_VERSION = "0.3"
+TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION = "0.2"
 LEGACY_PROCESS_RESULT_VERSION = "0.1"
 SUPPORTED_PROCESS_RESULT_VERSIONS = frozenset(
-    {PROCESS_RESULT_VERSION, LEGACY_PROCESS_RESULT_VERSION}
+    {
+        PROCESS_RESULT_VERSION,
+        TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION,
+        LEGACY_PROCESS_RESULT_VERSION,
+    }
 )
+# The manifest version each tree-bound Result version must carry; a payload
+# that mixes them is a contradiction, never a best-effort read.
+MANIFEST_VERSION_BY_RESULT_VERSION = {
+    TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION: LEGACY_NORMATIVE_TREE_VERSION,
+    PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
+}
 PROCESS_RESULT_SUFFIX = "Process Result"
 ITERATION_WIDTH = 4
 FIRST_ITERATION = 1
@@ -75,20 +93,6 @@ def parse_process_result_name(name: str) -> tuple[str, int] | None:
     return match.group("requirement_id"), int(match.group("iteration"))
 
 
-def document_fingerprint(content: str) -> str:
-    """Fingerprint Root Document content.
-
-    Fingerprints the same canonical representation `content_equivalent`
-    compares, so the two agree by construction:
-
-        content_equivalent(a, b)  <=>  document_fingerprint(a) == ...(b)
-
-    Without that, Fibery's Markdown re-serialization would make an untouched
-    document look edited and force a spurious processing iteration.
-    """
-    return fingerprint_of(canonical_markdown(content))
-
-
 @dataclass(frozen=True)
 class ProcessResult:
     """One completed or in-flight processing iteration."""
@@ -116,6 +120,21 @@ class ProcessResult:
     def is_tree_bound(self) -> bool:
         return self.input_tree is not None and self.output_tree is not None
 
+    @property
+    def is_current(self) -> bool:
+        """0.3 with manifest v2 on both trees: evidence the current stages use.
+
+        0.1 and 0.2 are history under their own algorithms; they are read,
+        never replayed, certified or applied.
+        """
+        return (
+            self.version == PROCESS_RESULT_VERSION
+            and self.input_tree is not None
+            and self.output_tree is not None
+            and self.input_tree.is_current
+            and self.output_tree.is_current
+        )
+
 
 def build_process_result(
     requirement_id: str,
@@ -131,6 +150,11 @@ def build_process_result(
     """
     document = analysis.normalized.document(requirement_id)
     output_fingerprint = document_fingerprint(document)
+    if not input_tree.is_current:
+        raise InvalidProcessResult(
+            f"A Process Result {PROCESS_RESULT_VERSION} binds manifest version "
+            f"{NORMATIVE_TREE_VERSION}, not {input_tree.version}."
+        )
     if input_tree.root_entry.content_fingerprint != input_fingerprint:
         raise InvalidProcessResult(
             "The captured tree's Root fingerprint disagrees with input_fingerprint."
@@ -278,12 +302,13 @@ def _read_trees(
     input_fingerprint: str,
     output_fingerprint: str,
 ) -> tuple[TreeManifest | None, TreeManifest | None]:
-    """The 0.2 tree bindings, validated for internal consistency.
+    """The tree bindings of a 0.2 or 0.3 payload, validated for consistency.
 
-    A legacy 0.1 payload has none, and none is ever synthesized for it. A 0.2
-    payload must carry both, owned by this Requirement, with Root entries
-    agreeing with the retained Root fingerprints, and an output tree that
-    preserves every child, parent and name of the input tree.
+    A legacy 0.1 payload has none, and none is ever synthesized for it. A
+    tree-bound payload must carry both, owned by this Requirement, in the
+    manifest version its own version declares, with Root entries agreeing
+    with the retained Root fingerprints, and an output tree that preserves
+    every child, parent and name of the input tree.
     """
     if version == LEGACY_PROCESS_RESULT_VERSION:
         if INPUT_TREE_KEY in payload or OUTPUT_TREE_KEY in payload:
@@ -298,6 +323,14 @@ def _read_trees(
         raise InvalidProcessResult(
             f"Invalid normative tree binding: {error}"
         ) from error
+    expected_manifest = MANIFEST_VERSION_BY_RESULT_VERSION[version]
+    for label, tree in ((INPUT_TREE_KEY, input_tree), (OUTPUT_TREE_KEY, output_tree)):
+        if tree.version != expected_manifest:
+            raise InvalidProcessResult(
+                f"A Process Result {version} binds manifest version "
+                f"{expected_manifest}, but {label} is version {tree.version}; the "
+                "payload mixes fingerprint algorithms."
+            )
     for label, tree in ((INPUT_TREE_KEY, input_tree), (OUTPUT_TREE_KEY, output_tree)):
         if tree.requirement_id != requirement_id:
             raise InvalidProcessResult(

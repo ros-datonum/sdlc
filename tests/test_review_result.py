@@ -241,7 +241,7 @@ def test_invalid_json_is_rejected():
 
 def test_an_unsupported_version_is_rejected():
     result = build()
-    tampered = render_review_result(result).replace('"0.2"', '"9.9"', 1)
+    tampered = render_review_result(result).replace('"0.3"', '"9.9"', 1)
     with pytest.raises(InvalidReviewResult, match="is not supported"):
         parse_review_result(tampered)
 

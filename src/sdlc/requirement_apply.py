@@ -440,16 +440,16 @@ def _read_tree(
 
 
 def _require_tree_evidence(requirement: RequirementRecord, evidence: _Evidence) -> None:
-    """Only tree-bound, coherent evidence may be applied; legacy is history."""
+    """Only current-format, coherent evidence may be applied; older is history."""
     process, review = evidence.latest_process, evidence.latest_review
-    if not process.is_tree_bound or not review.is_tree_bound:
+    if not process.is_current or not review.is_current:
         raise _StageFailed(
             ApplyResultCode.NORMATIVE_TREE_EVIDENCE_REQUIRED,
-            f"{requirement.requirement_id} has only legacy Root-only evidence "
-            f"(Process Result {process.iteration} tree-bound: {process.is_tree_bound}, "
-            f"Review Result {review.iteration} tree-bound: {review.is_tree_bound}); "
-            "application needs tree-bound Process and Review evidence. Nothing "
-            "was written.",
+            f"{requirement.requirement_id} has only older-format evidence "
+            f"(Process Result {process.iteration} version {process.version}, "
+            f"Review Result {review.iteration} version {review.version}); "
+            "application needs current-format Process and Review evidence. "
+            "Nothing was written.",
         )
 
 
