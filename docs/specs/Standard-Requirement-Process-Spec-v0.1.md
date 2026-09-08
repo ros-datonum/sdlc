@@ -174,9 +174,16 @@ proposed_relations:
     rationale
 
 findings:
-  - kind: POSSIBLE_DUPLICATE | POSSIBLE_CONFLICT | POSSIBLE_CHANGE
-          | POSSIBLE_SUPERSESSION | NON_ATOMIC
-    requirement_id      (omitted for NON_ATOMIC)
+  - kind: INCOMPLETE | AMBIGUOUS | NON_ATOMIC | INCONSISTENT | NOT_TESTABLE
+          | MISSING_CONSTRAINT | MISSING_EDGE_CASE        (about this Requirement)
+          | POSSIBLE_DUPLICATE | POSSIBLE_CONFLICT | POSSIBLE_CHANGE
+          | POSSIBLE_SUPERSESSION                         (about another one)
+    requirement_id      required for the kinds about another Requirement,
+                        naming it; omitted or null for the kinds about this
+                        Requirement, even when the detail cites a peer as
+                        evidence. A finding that breaks this rule rejects
+                        the whole output (INVALID_MODEL_OUTPUT); the prompt
+                        states the rule with examples.
     detail
 ```
 

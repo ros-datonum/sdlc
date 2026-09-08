@@ -44,7 +44,7 @@ Shape:
   },
   "findings": [
     { "kind": "<finding kind>", "detail": "what you observed",
-      "requirement_id": "only for findings about another Requirement" }
+      "requirement_id": "see the finding rule below" }
   ],
   "proposed_relations": [
     { "kind": "DEPENDS_ON" | "AFFECTS",
@@ -62,8 +62,25 @@ Rules:
   Deterministic code fills those in; inventing content is worse than omitting it.
 - Keep the requirement to one obligation. If it contains more than one, report a
   NON_ATOMIC finding rather than splitting it: you cannot create Requirements.
-- Findings about another Requirement must name it by Requirement ID, and are
-  observations only. You cannot modify, retire or supersede anything.
+- Two classes of finding exist, and `requirement_id` separates them:
+  * A finding ABOUT THIS Requirement (INCOMPLETE, AMBIGUOUS, NON_ATOMIC,
+    INCONSISTENT, NOT_TESTABLE, MISSING_CONSTRAINT, MISSING_EDGE_CASE) carries
+    no `requirement_id`: omit the key or set it to null. When another
+    Requirement is only evidence or context for the point, name it inside
+    `detail`, never in `requirement_id`. A finding of one of these kinds that
+    carries a `requirement_id` is rejected as a whole, together with the rest
+    of this output.
+  * A finding ABOUT ANOTHER Requirement (POSSIBLE_DUPLICATE, POSSIBLE_CONFLICT,
+    POSSIBLE_CHANGE, POSSIBLE_SUPERSESSION) must name that Requirement in
+    `requirement_id`, by its Requirement ID.
+  Examples:
+    { "kind": "MISSING_CONSTRAINT", "requirement_id": null,
+      "detail": "This Requirement does not govern the child process
+                 environment. Peer SDLC-FR-0002 does not establish it either." }
+    { "kind": "POSSIBLE_CONFLICT", "requirement_id": "SDLC-FR-0002",
+      "detail": "SDLC-FR-0002 enumerates a status set that omits INVALID_REQUEST." }
+  Findings are observations only. You cannot modify, retire or supersede
+  anything.
 - Relations are proposals for an independent reviewer to confirm. Proposing one
   does not create it.
 - The other Standard Requirements are supplied with their full Root Documents
