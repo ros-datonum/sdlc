@@ -10,6 +10,7 @@ from dataclasses import replace
 
 import pytest
 
+from processor_fake import reserialize_like_fibery
 from review_fake import (
     build_review_workspace,
     review_output,
@@ -43,7 +44,11 @@ from sdlc.review_result import (
     parse_review_result,
     render_review_result,
 )
-from sdlc.standard_analysis import AnalysisResult, NormalizedRequirement
+from sdlc.standard_analysis import (
+    AnalysisResult,
+    NormalizedRequirement,
+    parse_analysis_output,
+)
 from standard_fake import REQUIREMENT_ID, build_standard_workspace, normalized
 from test_review_result import root_only_manifest
 from tree_fake import add_child, chain, edit, remove_node, replace_node
@@ -548,6 +553,42 @@ def test_a_process_result_binds_its_input_and_intended_output_trees():
     assert payload["process_result_version"] == "0.3"
     assert payload["normative_input_tree"]["normative_tree_version"] == 2
     assert payload["normative_input_tree"]["documents"][0]["document_id"] == "a"
+    assert parse_process_result(render_process_result(result)) == result
+
+
+def test_a_schema_rendered_product_level_root_binds_as_a_valid_tree():
+    """The Document Schema's abstraction amendment left rendering unchanged:
+    a valid document is read, fingerprinted and bound exactly as before."""
+    product_level = parse_analysis_output(
+        json.dumps(
+            {
+                "normalized_requirement": {
+                    "title": "Bound provider execution time",
+                    "requirement": (
+                        "Provider execution must stop within the configured "
+                        "execution time limit and report the timeout outcome "
+                        "to the caller."
+                    ),
+                    "acceptance_verification": (
+                        "An execution that exceeds the configured limit ends, "
+                        "and its caller observes a timeout outcome."
+                    ),
+                }
+            }
+        )
+    )
+    document = product_level.normalized.document(REQUIREMENT_ID)
+    ws, requirement, root = build_standard_workspace()
+    ws.content[root.secret] = reserialize_like_fibery(document)
+
+    tree = read(ws, requirement, root)
+    result = tree_bound_process_result(ws, root, iteration=1, analysis=product_level)
+
+    assert tree.manifest.root_entry.content_fingerprint == document_fingerprint(
+        document
+    )
+    assert TreeManifest.from_payload(tree.manifest.to_payload()) == tree.manifest
+    assert result.output_tree == tree.manifest
     assert parse_process_result(render_process_result(result)) == result
 
 

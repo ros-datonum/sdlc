@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from sdlc.raw_processing import MISSING_INFORMATION, NO_OPEN_QUESTIONS, SECTION_KEYS
 from sdlc.standard_analysis import (
     FindingKind,
     InvalidAnalysisOutput,
@@ -167,3 +168,45 @@ def test_the_rendered_document_follows_the_approved_schema():
     ]
     assert "Provenance" not in document
     assert document.splitlines()[0] == f"# SDLC-FR-9 — {normalized()['title']}"
+
+
+# -- abstraction boundary ---------------------------------------------------
+
+
+def test_a_product_level_requirement_may_omit_unestablished_sections():
+    product_level = {
+        "title": "Bound provider execution time",
+        "requirement": (
+            "Provider execution must stop within the configured execution time "
+            "limit and report the timeout outcome to the caller."
+        ),
+        "acceptance_verification": (
+            "An execution that exceeds the configured limit ends, and its caller "
+            "observes a timeout outcome for that request."
+        ),
+    }
+
+    result = parse_analysis_output(
+        json.dumps({"normalized_requirement": product_level})
+    )
+
+    assert {key: getattr(result.normalized, key) for key in SECTION_KEYS} == {
+        "requirement": product_level["requirement"],
+        "detailed_behavior": MISSING_INFORMATION,
+        "rationale": MISSING_INFORMATION,
+        "acceptance_verification": product_level["acceptance_verification"],
+        "constraints_edge_cases": MISSING_INFORMATION,
+        "non_goals": MISSING_INFORMATION,
+        "open_questions": NO_OPEN_QUESTIONS,
+    }
+
+
+@pytest.mark.parametrize("key", SECTION_KEYS)
+def test_normalization_cannot_add_an_architecture_section(key):
+    leaking = "Text.\n\n## Architecture\n\nA watchdog thread kills the process."
+
+    with pytest.raises(
+        InvalidAnalysisOutput,
+        match=f"normalized_requirement {key} contains the heading '## Architecture'",
+    ):
+        parse_analysis_output(analysis_output(normalized_changes={key: leaking}))

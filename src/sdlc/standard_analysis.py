@@ -20,8 +20,10 @@ from sdlc.raw_processing import (
     MISSING_INFORMATION,
     NO_OPEN_QUESTIONS,
     OPEN_QUESTIONS_KEY,
+    RESERVED_HEADING_MESSAGE,
     SECTION_KEYS,
     TITLE_SEPARATOR,
+    reserved_heading,
 )
 
 # `<CODE>-<FR|NFR|CON|RAW>-<digits>`; the processor never invents one.
@@ -240,7 +242,13 @@ def _section_text(value: object, key: str, where: str) -> str:
         return NO_OPEN_QUESTIONS if key == OPEN_QUESTIONS_KEY else MISSING_INFORMATION
     if not isinstance(value, str):
         raise InvalidAnalysisOutput(f"{where} must be a string.")
-    return value.strip()
+    text = value.strip()
+    heading = reserved_heading(text)
+    if heading is not None:
+        raise InvalidAnalysisOutput(
+            RESERVED_HEADING_MESSAGE.format(where=where, heading=heading)
+        )
+    return text
 
 
 def _read_finding(entry: object, index: int) -> Finding:
