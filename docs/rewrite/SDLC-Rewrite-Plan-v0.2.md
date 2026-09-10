@@ -1,11 +1,13 @@
 # SDLC Rewrite Plan v0.2
 
-**Status:** DRAFT — HUMAN REVIEW REQUIRED  
-**Implementation authorization:** NOT GRANTED  
+**Status:** FROZEN  
+**Implementation authorization:** GRANTED  
 **Target repository:** `ros-datonum/sdlc`  
 **Implementation baseline:** `e15e59f8ed8d36f00e86e94dfca2b643215ab641`  
 **Primary requirements input:** `SDLC-Corrected-Product-Functional-Requirements-v0.2.md`  
 **Requirements input SHA-256:** `0eec181a2e80410d9bfe260d4e1fd83286245ba3e4e9647f715aa8c887b9d53c`
+**Frozen Plan Commit:** recorded in `docs/rewrite/SDLC-Rewrite-Freeze-v0.2.md`  
+**Block A verification:** `docs/rewrite/Block-A-Verification-v0.1.md` — C01–C04 human-approved and independently verified on 2026-09-10.
 
 ---
 
@@ -366,7 +368,7 @@ These items are **human/reviewer authored**. Claude/Codex may not make architect
 
 ## RW-C01 — Freeze Standard Requirement abstraction v0.2
 
-**Status:** PLANNED  
+**Status:** VERIFIED  
 **Owner:** Human + independent design reviewer  
 **Implementation Actor:** NONE  
 **Depends On:** none
@@ -438,15 +440,15 @@ At minimum:
 
 ### Verification
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Human approved; independent review confirmed all acceptance criteria against product requirements and dependent contracts.  
+**Verified Commit:** `546ac6c574eb0460ebb3bf9f2c8d64177c1772ed`
 
 ---
 
 ## RW-C02 — Freeze corrected Requirement lifecycle ownership
 
-**Status:** PLANNED  
+**Status:** VERIFIED  
 **Owner:** Human + independent design reviewer  
 **Implementation Actor:** NONE  
 **Depends On:** `RW-C01`
@@ -513,15 +515,15 @@ The parent RAW processing authorization is sufficient to carry newly created Sta
 
 ### Verification
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Human approved; independent review confirmed all acceptance criteria against product requirements and dependent contracts.  
+**Verified Commit:** `a3c8b0d2e57c4412a004f285f9c89143f285da70`
 
 ---
 
 ## RW-C03 — Freeze project bootstrap contract
 
-**Status:** PLANNED  
+**Status:** VERIFIED  
 **Owner:** Human + independent design reviewer  
 **Implementation Actor:** NONE  
 **Depends On:** `RW-C01`
@@ -577,15 +579,15 @@ Exact bootstrap command/script name may be frozen in this contract before implem
 
 ### Verification
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Human approved; independent review confirmed all acceptance criteria against product requirements and dependent contracts.  
+**Verified Commit:** `a940527a892c6e74059d613952ee52de05aba92c`
 
 ---
 
 ## RW-C04 — Freeze state-trigger worker contract
 
-**Status:** PLANNED  
+**Status:** VERIFIED  
 **Owner:** Human + independent design reviewer  
 **Implementation Actor:** NONE  
 **Depends On:** `RW-C02`
@@ -635,9 +637,9 @@ It must define:
 
 ### Verification
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Human approved; independent review confirmed all acceptance criteria against product requirements and dependent contracts.  
+**Verified Commit:** `08f64c20dd059a7222aa8211d0dbaed434e8be09`
 
 ---
 
@@ -1726,10 +1728,10 @@ Only the human/independent reviewer may record that marker.
 
 | ID | Title | Owner | Initial Status | Depends On |
 |---|---|---|---|---|
-| RW-C01 | Standard Requirement abstraction v0.2 | Human/Reviewer | PLANNED | — |
-| RW-C02 | Requirement lifecycle ownership | Human/Reviewer | PLANNED | C01 |
-| RW-C03 | Project bootstrap contract | Human/Reviewer | PLANNED | C01 |
-| RW-C04 | State-trigger worker contract | Human/Reviewer | PLANNED | C02 |
+| RW-C01 | Standard Requirement abstraction v0.2 | Human/Reviewer | VERIFIED | — |
+| RW-C02 | Requirement lifecycle ownership | Human/Reviewer | VERIFIED | C01 |
+| RW-C03 | Project bootstrap contract | Human/Reviewer | VERIFIED | C01 |
+| RW-C04 | State-trigger worker contract | Human/Reviewer | VERIFIED | C02 |
 | RW-R01 | Standard Requirement document schema | Agent | PLANNED | C01 |
 | RW-R02 | RAW decomposition contract | Agent | PLANNED | R01 |
 | RW-R03 | Standard Process correction | Agent | PLANNED | R01 + R02 |
@@ -1765,14 +1767,10 @@ Status: FROZEN
 Implementation authorization: GRANTED
 ```
 
-5. Commit this exact file to `main`.
-6. Record its commit SHA here:
+5. Commit the frozen normative plan to `main`.
+6. Record that exact commit SHA in `docs/rewrite/SDLC-Rewrite-Freeze-v0.2.md`. The freeze record is metadata only and does not modify the frozen normative plan.
 
-```text
-Plan Commit: <SHA>
-```
-
-7. Every implementation prompt must name exactly one `RW-*` item and the frozen Plan Commit.
-8. Implementation agent must read that item from the repository before modifying code.
+7. Every implementation prompt must name exactly one `RW-*` item and the frozen Plan Commit from the freeze record.
+8. Implementation agent must read that item from the repository at the frozen Plan Commit before modifying code.
 9. No implementation item starts from a prose summary supplied in chat when the repository plan is available.
 
