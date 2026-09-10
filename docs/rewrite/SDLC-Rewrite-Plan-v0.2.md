@@ -651,7 +651,7 @@ No implementation item in this block starts before `RW-C01 = VERIFIED`.
 
 ## RW-R01 — Update Standard Requirement Document Schema
 
-**Status:** IMPLEMENTING  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-C01`
 
@@ -702,10 +702,30 @@ At minimum:
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
+**Implementation Commit:** `07a4e0c8e5863651d57f0b95eab3e881a5f4aa23`  
+**Implementation Evidence:**
+
+- AC1 — `Standard-Requirement-Document-Schema-v0.1.md` §1 states Requirement = WHAT / Architecture = HOW / Delivery Planning / Task, implementation independence as default, and the source-mandated mechanism exception; every §3 section definition is bounded by it.
+- AC2 — Schema §4: only title and `Requirement` need content; any other section may be omitted, keeps its heading, and renders `Not specified in source.` / `None.`. Tests: `test_every_section_but_the_requirement_may_be_omitted`, `test_a_product_level_requirement_renders_under_the_schema` (exact golden document), `test_a_product_level_requirement_may_omit_unestablished_sections`.
+- AC3 — Schema §3 `Detailed Behavior` lists allowed WHAT clarifications and forbids architecture, algorithm, module/function design, worker/process topology, implementation sequence/steps, test implementation, deployment mechanics; source-mandated mechanisms go to `Requirement`/`Constraints & Edge Cases`, never here. Schema §5 + `raw_processing.reserved_heading`: section content adding a level-1/2 heading outside a fence is `INVALID_MODEL_OUTPUT` in both RAW decomposition and Standard Process parsing.
+- AC4 — Renderer, headings, order, fixed texts and title line unchanged. `test_a_schema_rendered_product_level_root_binds_as_a_valid_tree`: Fibery-reserialized schema document is read by `read_normative_tree`, fingerprints as `document_fingerprint(document)`, manifest round-trips, Process Result output tree equals the observed tree and round-trips. Existing normative-tree, fingerprint-versioning, processor and review suites green.
+- AC5 — Valid: product-level timeout Requirement (abstraction contract example 5) renders exactly. Rejected: `test_an_implementation_leaking_section_is_rejected` (architecture section in Detailed Behavior, Task steps as H1 in Acceptance, setext test-code section in Constraints, indented deployment section in Requirement), `test_no_section_can_add_a_document_section`, `test_normalization_cannot_add_an_architecture_section`. Still content: `test_subheadings_fences_and_spaced_rules_remain_section_content`.
+- Targeted: `uv run pytest -q tests/test_raw_processing.py tests/test_standard_analysis.py tests/test_normative_tree.py tests/test_fingerprint_versioning.py` → 188 passed.
+- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 132 files already formatted; 1579 passed (baseline 1556 at `1919850`).
+
 **Blocker:** —  
-**Execution Notes:** —
+**Execution Notes:**
+
+- Base `1919850`; IMPLEMENTING mark `370d62a`; implementation `07a4e0c`.
+- `Detailed Behavior` retained under its existing heading/key and redefined; renaming or dropping headings would stop existing Root Documents matching persisted evidence (`content_equivalent` recovery checks).
+- "Omit" is implemented as omitted content rendered with the fixed text; headings are always present (deterministic structure preserved).
+- The structural check runs only on new model output (`parse_model_output`, `parse_analysis_output`). Persisted Processing/Process Results build `Candidate`/`NormalizedRequirement` directly and are neither re-validated nor migrated.
+- Behavior change: model output with a level-1/2 heading inside a section now fails through the existing `INVALID_MODEL_OUTPUT` path. `raw_prompt.py`, `standard_prompt.py`, `review_prompt.py` were not changed; RW-R02/RW-R03 prompt work should state this rule to the model.
+- Prose-level implementation leakage is a semantic judgement and is not deterministically detected; no keyword/regex classifier was added. It remains for model-backed Process/Review (RW-R03/RW-R04).
+- Existing structural fixtures (`FULL_CANDIDATE`, `standard_fake.normalized()`) still carry mechanism-flavoured Detailed Behavior text; left unchanged.
+- No Fibery schema/live state, lifecycle, model-runtime, decomposition or Review semantics changed.
+- Environment: `.python-version` is `3.12.13` (global default `3.12.14`); repository has no Dockerfile or CI config. Reported, not changed.
+- Out-of-scope discovery recorded as `CR-001` (section 11).
 
 ### Verification Record
 
@@ -1693,6 +1713,25 @@ Status: PROPOSED
 ```
 
 No proposed change is approved merely by appearing here.
+
+```text
+CR-001
+Discovered In: RW-R01
+Observation: A model-supplied Standard Requirement title is rendered into the
+  document's level-1 title line and the Root Document name, but title
+  validation in raw_processing/standard_analysis accepts line breaks. A title
+  "T\n## Architecture" renders an extra `## Architecture` section, bypassing
+  the structural boundary RW-R01 enforces for section content (verified by
+  running parse_model_output(...).document() on such a title).
+Why current item cannot/should not absorb it: RW-R01 must preserve Requirement
+  ID/title binding and authorizes no change to the title contract of RAW
+  decomposition or Standard Process output.
+Proposed decision: Reject a model-supplied title containing a line break as
+  invalid model output, with tests, in the items that own those output
+  contracts (RW-R02 for RAW decomposition, RW-R03 for Standard Process).
+Blocking: NO
+Status: PROPOSED
+```
 
 ---
 
