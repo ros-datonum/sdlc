@@ -651,7 +651,7 @@ No implementation item in this block starts before `RW-C01 = VERIFIED`.
 
 ## RW-R01 — Update Standard Requirement Document Schema
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-C01`
 
