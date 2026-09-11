@@ -1102,7 +1102,7 @@ No code item in this block starts before `RW-C02` and `RW-C04` are `VERIFIED`.
 
 ## RW-O01 — Separate normal lifecycle control from admin CLI invocation
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-C02`
 
