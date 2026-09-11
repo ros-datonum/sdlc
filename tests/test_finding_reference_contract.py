@@ -325,3 +325,50 @@ def test_the_built_prompts_carry_the_rule_and_the_peer_context():
         comparison=comparison,
     )
     assert "ABOUT THIS Requirement" in prompt and PEER_ID in context
+
+
+# -- IMPLEMENTATION_LEAKAGE (RW-R03) is a self finding in both stages ------------
+
+LEAKAGE_DETAIL = (
+    "Detailed Behavior prescribes a watchdog thread; the source requires only "
+    f"bounded execution, and {PEER_ID} states no mechanism either."
+)
+
+
+def leakage_finding(**extra):
+    return {"kind": "IMPLEMENTATION_LEAKAGE", "detail": LEAKAGE_DETAIL, **extra}
+
+
+def test_implementation_leakage_is_pinned_as_a_self_finding():
+    kind = FindingKind.IMPLEMENTATION_LEAKAGE
+    assert kind in SELF_KINDS and kind not in CROSS_KINDS
+    assert not kind.is_about_another_requirement
+
+
+def test_process_persists_implementation_leakage_without_a_requirement_id():
+    ws, _model, result = run_process([leakage_finding()])
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    stored = parse_process_result(ws.content[process_results(ws)[0].secret])
+    [finding] = stored.findings
+    assert finding.kind is FindingKind.IMPLEMENTATION_LEAKAGE
+    assert finding.requirement_id is None and finding.detail == LEAKAGE_DETAIL
+
+
+def test_process_rejects_implementation_leakage_that_names_a_peer():
+    ws, _model, result = run_process([leakage_finding(requirement_id=PEER_ID)])
+    assert result.code is ProcessCode.INVALID_MODEL_OUTPUT
+    assert "must not name another one" in " ".join(result.details)
+    assert process_results(ws) == []
+
+
+def test_review_ingests_and_verifies_a_process_leakage_finding():
+    from review_fake import confirm, finding
+
+    ws, requirement, _root, _ = build_review_workspace(
+        others=[PEER],
+        findings=[finding(FindingKind.IMPLEMENTATION_LEAKAGE, LEAKAGE_DETAIL)],
+    )
+    model = FakeModelRuntime([review_output(finding_verifications=[confirm(0)])])
+    result = review_standard_requirement(ws, model, requirement.id)
+    assert result.code is ReviewCode.REQUIREMENT_REVIEWED, result
+    assert "IMPLEMENTATION_LEAKAGE" in model.calls[0]["context"]

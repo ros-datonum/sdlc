@@ -835,7 +835,7 @@ At minimum inspect/change as required:
 
 ## RW-R03 — Correct Standard Process normalization and analysis
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R01`, `RW-R02`
 
@@ -889,10 +889,31 @@ At minimum:
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
+**Implementation Commit:** `a4243ba03a99608d591439907aa8d217e78c8c20`  
+**Implementation Evidence:**
+
+- AC1 — New self finding `IMPLEMENTATION_LEAKAGE` in the closed `FindingKind`; `standard_prompt.INSTRUCTIONS` "Implementation leakage": keep the WHAT, remove or omit non-mandated HOW, report the finding describing the leaked material, never move the HOW into another section or turn it into a product constraint; a Requirement that is itself HOW is reported, not rescued with an invented WHAT, and goes to Review defective. Tests: `test_partial_leakage_keeps_the_what_and_reports_the_how` (watchdog/SIGKILL/`run_model()` Detailed Behavior → Requirement verbatim, Detailed Behavior `Not specified in source.`, no mechanism word anywhere in the rewritten Root, finding persisted with null `requirement_id` and naming the watchdog); `test_a_candidate_that_is_entirely_how_is_reported_not_rescued` (Task statement verbatim, no fabricated WHAT, no Requirement created or split, State `Review`); `test_observable_acceptance_is_kept_and_test_mechanics_are_not`; `test_test_mechanics_alone_are_omitted_not_turned_into_acceptance`.
+- AC2 — prompt "What normalization is": keep a valid high-level Requirement high-level; never add technical design to make it concrete; Process need not turn every input into a valid Requirement. `test_a_valid_high_level_requirement_stays_high_level` (Root rewritten from exactly the model's sections, unestablished sections keep the fixed text, no mechanism added, no finding); `test_an_observable_requirement_is_not_penalized_for_absent_test_design`; `test_technical_facets_of_one_obligation_are_not_non_atomic`.
+- AC3 — prompt "Source-mandated mechanisms": an explicitly mandated mechanism is legitimate and is not leakage; current implementation, example, background, existing architecture or suggested solution is no mandate; an unclear mandate that changes WHAT stays an open question. `test_a_source_mandated_constraint_stays_intact_and_is_not_leakage` ("must use argv and must never use a shell" verbatim, no finding, so no deterministic filter touches mechanism words).
+- AC4 — prompt `open_questions`, source-preservation and completeness rules. `test_an_open_product_decision_stays_open_and_unanswered` (question verbatim under `## Open Questions`, no answer in any other section); `test_an_architecture_only_question_is_not_missing_requirement_content` (queue-library question not kept, `None.` rendered, no `INCOMPLETE`).
+- AC5 — `git diff 49e858c a4243ba -- src/` touches only `standard_analysis.py` (one enum member, docstring), `standard_prompt.py`, and the self-kind list in `review_prompt.py`. `standard_processor.py`, `process_result.py`, `standard_review.py`, `review_result.py`, `standard_reviewer.py`, comparison context and normative tree are unchanged; the Process Result format and version are unchanged and existing results parse as before. Green: `test_standard_processor.py`, `test_standard_processor_iterations.py`, `test_standard_processor_state_machine.py`, `test_standard_processor_concurrency.py`, `test_standard_process_explicit_resume.py`, `test_standard_process_review_chain.py`, `test_empty_result_recovery.py`, `test_normative_tree.py`, `test_normative_tree_stages.py`, `test_fingerprint_versioning.py`, `test_comparison_context.py`.
+- AC6 — `tests/test_standard_process_abstraction.py` (17 tests over the real Process stage boundary: the ten semantic classes plus prompt/contract pins, including `test_independent_obligations_yield_non_atomic_without_a_split` and `test_peer_findings_and_relation_proposals_stay_non_mutating`) and four pinned tests in `test_finding_reference_contract.py`: `test_implementation_leakage_is_pinned_as_a_self_finding`, `test_process_persists_implementation_leakage_without_a_requirement_id`, `test_process_rejects_implementation_leakage_that_names_a_peer`, `test_review_ingests_and_verifies_a_process_leakage_finding`.
+- Red check against the `49e858c` source: the RW-R03 module (scratch copy with a `getattr` fallback for the absent enum member) → 14 failed, 3 passed (preservation: independent-obligation `NON_ATOMIC`, peer/relation non-mutation, prompt shape); the four leakage finding-reference tests fail; the two prompt-partition tests pass on both trees.
+- Targeted: `uv run pytest -q tests/test_standard_process_abstraction.py tests/test_comparison_context.py tests/test_empty_result_recovery.py tests/test_finding_reference_contract.py tests/test_fingerprint_versioning.py tests/test_normative_tree_stages.py tests/test_normative_tree.py tests/test_raw_decomposition_contract.py tests/test_raw_processing.py tests/test_standard_analysis.py tests/test_standard_process_explicit_resume.py tests/test_standard_process_review_chain.py tests/test_standard_processor_concurrency.py tests/test_standard_processor_iterations.py tests/test_standard_processor_state_machine.py tests/test_standard_processor.py tests/test_standard_review_contract.py tests/test_standard_reviewer_state.py tests/test_standard_reviewer.py` → 751 passed (728 at `49e858c`).
+- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 136 files already formatted; 1635 passed (1612 at `49e858c`).
+
 **Blocker:** —  
-**Execution Notes:** —
+**Execution Notes:**
+
+- Base `49e858c`; IMPLEMENTING mark `1d7dd5f`; implementation `a4243ba`.
+- Changed: `src/sdlc/standard_prompt.py` (instructions and docstring; `build_analysis_prompt` and its context unchanged); `src/sdlc/standard_analysis.py` (`IMPLEMENTATION_LEAKAGE` member, docstring); `src/sdlc/review_prompt.py` (self-kind list only); `docs/specs/Standard-Requirement-Process-Spec-v0.1.md` (amendment line, §3.1, §6 finding list and note); `tests/test_finding_reference_contract.py`; new `tests/test_standard_process_abstraction.py`.
+- `standard_processor.py` (frozen Affected Area) inspected and left unchanged: findings travel as validated data, so carrying the new kind needed no protocol change.
+- Review compatibility only: `FindingKind` is shared, so the Review parser now also accepts `IMPLEMENTATION_LEAKAGE` as a self new finding under the unchanged strict rule, and the Review prompt's self-kind list names it so both prompts stay mechanically consistent with the parser. No Review abstraction instruction, verdict, or severity logic was added; that remains RW-R04.
+- Deterministic contract: only the closed finding vocabulary grew. Unknown-field rejection, self/cross validation, single-line title, reserved H1/H2, missing-information text and rendering are unchanged; no prose classifier was added.
+- The tests use bounded fake-model outputs through the real `process_standard_requirement`; they prove the prompt rules and the deterministic pipeline, not what a live model decides.
+- Prompt grew from 3,317 to 9,896 characters (about 2.5% of the 400,000-character assembled-input bound); budget and refusal behavior unchanged.
+- Not changed: `raw_prompt.py`, RAW processing, Ready/Apply, lifecycle and state-transition ownership, Processing Status, worker routing, bootstrap, Fibery schema/live state, model runtime/auth, A1–A11 hardening, the AMR dogfood corpus.
+- No Proposed Change Request.
 
 ### Verification Record
 
