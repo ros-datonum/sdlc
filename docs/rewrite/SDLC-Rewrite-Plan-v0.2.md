@@ -1262,7 +1262,7 @@ Exact module/file location must be the one frozen in `RW-C04` before this item b
 
 ## RW-O03 — Implement state-change trigger entrypoint
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-O02`
 
