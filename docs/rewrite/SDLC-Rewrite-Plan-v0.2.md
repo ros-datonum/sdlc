@@ -1183,7 +1183,7 @@ At minimum inspect/change as required:
 
 ## RW-O02 — Implement bounded Requirement worker dispatcher
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-C04`, `RW-O01`
 
