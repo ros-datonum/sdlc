@@ -78,6 +78,11 @@ Fields:
 - Revision — Integer
 - Documents — Fibery Documents field; exactly one directly associated Root Document
 - Source Fingerprint — Text, used by deterministic RAW ingest duplicate detection
+- Processing Status — Single Select: Not Processed | Processing | Succeeded | Failed;
+  default Not Processed. What happened in the machine-processing cycle of the
+  current State; it is not lifecycle State
+  (`docs/architecture/Requirement-State-Worker-Contract-v0.1.md` section 4).
+  Only `sdlc worker run` requires it; every other command works without it
 
 Relations:
 - Project — N:1 Project
@@ -111,6 +116,15 @@ navigation is a workspace-level Smart Folder over Projects with mirrored
 context views RAW / Draft / Approved using those filters; SDLC runtime neither
 creates nor requires it. The Project Text Field `Documents Root Folder ID` is
 legacy: unused by runtime, kept for manual cleanup.
+
+Processing Status reset (added 2026-09-11 for `RW-O03`): one workspace-global
+Requirement automation, triggered when State changes, sets Processing Status to
+`Not Processed` for exactly Raw + Process, Standard + Process, Standard + Review
+and Standard + Apply, and for no other Type/State combination. Neither SDLC
+runtime nor project bootstrap creates it. Setup and the verification checklist
+are in `docs/fibery/Worker-Runner-Setup-v0.1.md`. The runner validates the
+field/options, but supported runtime code does not prove or create the Fibery
+automation. The operator must verify that rule before production use.
 
 ## Milestone
 

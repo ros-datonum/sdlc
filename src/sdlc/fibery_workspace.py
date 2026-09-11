@@ -7,6 +7,7 @@ workspace.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -42,6 +43,10 @@ class RequirementRecord:
     # from the existing Fibery Field. None means the Field is unset or absent
     # from the schema; it is never inferred from Type, ID or Title.
     category: str | None = None
+    # The Processing Status option name (RW-C04 section 4), read from the
+    # single-select Field when the workspace has one. None means the Field is
+    # unset, absent, or not a single-select; only the worker runner needs it.
+    processing_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -355,3 +360,33 @@ class DispatchWorkspace(Protocol):
 
     def set_requirement_state(self, entity_id: str, state: str) -> None:
         """Move the Requirement's workflow State."""
+
+
+class RunnerWorkspace(DispatchWorkspace, Protocol):
+    """Operations the `sdlc worker run` runner performs against Fibery.
+
+    The dispatcher's operations, plus the runner's own Processing Status
+    operations: validate the Field, find the eligible work, write one status.
+    `read_requirement` carries the status back, which is the read-back every
+    status write is confirmed by. It creates, deletes and relates nothing,
+    never touches a Document, and writes no Field but Processing Status and
+    the dispatcher's inherited candidate State.
+    """
+
+    @property
+    def lock_scope(self) -> str:
+        """Stable identity of the workspace, for the runner's execution lock."""
+
+    def validate_processing_status_field(self, options: Sequence[str]) -> None:
+        """Raise FiberyError unless Processing Status is a single-select with
+        exactly these option names."""
+
+    def find_eligible_requirements(
+        self, routes: Sequence[tuple[str, str]], status: str
+    ) -> list[RequirementRecord]:
+        """Requirements in every Project whose `(Type, State)` is one of
+        `routes` and whose Processing Status is `status`, in
+        `fibery/public-id` ascending order, bounded to one page."""
+
+    def set_processing_status(self, entity_id: str, status: str) -> None:
+        """Set the Processing Status single-select by option name."""

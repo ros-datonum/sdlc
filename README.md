@@ -54,13 +54,29 @@ verdict, `BLOCKING` included, is evidence for the human at `Ready`, never a
 decision. `State = Apply` is the only approval signal Apply consumes, and Apply
 revalidates the reviewed evidence however that State was reached.
 
-State-driven execution of the machine-owned stages is not wired yet. `RW-O01`
-fixed the authority contract, and `RW-O02` added the dispatcher
-(`src/sdlc/requirement_dispatcher.py`) that routes one Requirement to its one
-worker; nothing invokes it automatically until the `sdlc worker run` trigger of
-`RW-O03` (`docs/architecture/Requirement-State-Worker-Contract-v0.1.md`). Until then,
-the machine-owned stages are run by hand, including the inherited Standard
-`Draft -> Process` move; afterwards the same commands stay available for
+State-driven execution of the machine-owned stages is available through
+`sdlc worker run` (`RW-O03`, `docs/architecture/Requirement-State-Worker-Contract-v0.1.md`),
+but only once the `Processing Status` field and its reset automation have been
+configured and verified in the Fibery workspace
+(`docs/fibery/Worker-Runner-Setup-v0.1.md`).
+
+The runner is one foreground process per workspace. It polls every Project for
+Requirements at a machine route (`Raw + Process`, `Standard + Process`,
+`Standard + Review`, `Standard + Apply`) whose Processing Status is
+`Not Processed`, and runs the `RW-O02` dispatcher
+(`src/sdlc/requirement_dispatcher.py`) for one of them at a time.
+
+The runner validates the field/options, but supported runtime code does not
+prove or create the Fibery automation. The operator must verify that rule before
+production use. The complete end-to-end lifecycle proof belongs to `RW-O04` and
+is not claimed here.
+
+```text
+sdlc worker run [--poll-interval-seconds N]   default 5, minimum 1; Ctrl-C stops
+```
+
+Without the runner, the machine-owned stages are run by hand, including the
+inherited Standard `Draft -> Process` move. The same commands stay available for
 development, diagnosis, recovery and explicit admin use:
 
 ```text
