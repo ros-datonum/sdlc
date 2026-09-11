@@ -36,6 +36,12 @@ candidates each with an assigned key, the findings, and any
 Database. It carries no chain-of-thought: the model output contract rejects any
 field it does not define.
 
+Which obligations become candidates, and how many, is decided under the
+decomposition level in `RAW-Requirement-Processor-Decision-v0.1.md` section 2
+(amended by `RW-R02`). This document defines only how a validated decomposition
+is persisted, identified, and resumed. Candidate keys, order, and counts here
+are execution facts, not rules for what a Standard Requirement is.
+
 The processor skips this document when reading the RAW document tree, so its own
 output is never fed back as requirement source material.
 

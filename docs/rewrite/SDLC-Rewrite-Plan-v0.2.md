@@ -739,7 +739,7 @@ At minimum:
 
 ## RW-R02 — Correct RAW decomposition contract
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R01`
 
@@ -799,10 +799,31 @@ At minimum inspect/change as required:
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
+**Implementation Commit:** `ce76831b8196b73b4413faecdfa8b6c21ec6f402`  
+**Implementation Evidence:**
+
+- AC1 — `raw_prompt.INSTRUCTIONS` "Decomposition" + "Anti-implementation-leakage rule": one capability described with many technical details of one proposed implementation is one candidate; the details are facets, not candidates. `test_one_capability_with_many_implementation_details_is_one_candidate`: a source carrying `run_model()`, watchdog/SIGKILL, `ModelRequest.deadline` and `ExecutionStatus.TIMEOUT` yields exactly one FR candidate whose Root Document holds none of them, while all remain in the model context and the RAW source is unchanged. Also `test_an_implementation_suggestion_does_not_become_a_candidate` (Redis queue / polling suggestion) and `test_a_field_without_independent_meaning_is_no_standalone_candidate` (`request_id: UUID` on `ModelRequest`).
+- AC2 — the prompt separates obligations that can be accepted/rejected, change, differ in outcome, or be owned independently, and forbids merging them because they share a paragraph, section or implementation. `test_two_independent_obligations_in_one_paragraph_stay_two_candidates`: CSV export and export auditing in one paragraph → two candidates, distinct IDs, each Derived From the RAW.
+- AC3 — prompt "Source-mandated mechanisms": an exact mechanism only when the source explicitly mandates it, then possibly a CONSTRAINT; an example, current implementation, background, existing architecture or suggestion is no mandate; an unclear mandate goes to `open_questions`; includes the abstraction contract's shell-outcome vs argv-mandate contrast. `test_an_explicitly_mandated_mechanism_remains_a_constraint` ("must use argv and must never use a shell" → `SDLC-CON-*`, Requirement section verbatim, so no deterministic filter strips mechanism words); `test_an_unmandated_mechanism_leaves_only_the_outcome`; `test_a_legitimate_system_constraint_stays_requirement_level`; `test_a_legitimate_non_functional_requirement_stays_requirement_level`.
+- AC4 — prompt `open_questions` + source-preservation rules: preserve each product question and never answer it; architecture-only questions stay out unless they could change product intent. `test_an_unresolved_source_decision_stays_open_and_is_not_answered`: the override question renders verbatim under `## Open Questions`, unestablished sections render `Not specified in source.`, and the queue-library architecture question is absent. Zero candidates: `test_no_candidate_warranted_is_zero_candidates_with_a_reason`.
+- AC5 — findings/peer rules kept; `FindingKind`, finding parsing and processor unchanged. `test_a_finding_about_a_non_applied_peer_stays_an_observation` (Ready peer: finding reported; peer record, Root Document content, Derived From and Produces unchanged; peer present in context) plus existing `test_findings_are_reported_without_mutating_existing_requirements`, `test_existing_standards_are_offered_to_the_model_as_context`, and the comparison-context and finding-reference suites.
+- AC6 — `git diff df21567 ce76831 -- src/` changes only `raw_prompt.py`; `raw_processing.py`, `raw_processor.py`, `processing_result.py`, comparison context and the RAW lock are untouched. Green: `test_raw_processor_resume.py`, `test_empty_result_recovery.py`, `test_processing_result.py`, `test_raw_single_writer.py`, `test_raw_processor_cross_stage.py`, `test_raw_processor_validation.py`, `test_raw_source.py`, `test_raw_source_fences.py`. Every RW-R02 case asserts the RAW Root Document is byte-identical after processing.
+- AC7 — `INSTRUCTIONS` section "Anti-implementation-leakage rule:" lists every abstraction-contract §5 trigger. `test_the_prompt_states_the_anti_implementation_leakage_rule`; also `test_the_prompt_encodes_no_candidate_count`, `test_the_prompt_keeps_structured_output_without_reasoning`, `test_the_prompt_states_the_document_structure_rules`, `test_the_prompt_shape_lists_exactly_the_candidate_contract_fields`.
+- Red check: run against the `df21567` source, 15 of the 17 new tests fail (all on the new prompt rules); the 2 preservation tests (non-Applied peer finding, output shape) pass on both.
+- Targeted: `uv run pytest -q tests/test_raw_decomposition_contract.py tests/test_raw_processing.py tests/test_raw_processor.py tests/test_raw_processor_resume.py tests/test_raw_processor_validation.py tests/test_raw_processor_cross_stage.py tests/test_raw_single_writer.py tests/test_raw_source.py tests/test_raw_source_fences.py tests/test_processing_result.py tests/test_empty_result_recovery.py tests/test_comparison_context.py tests/test_finding_reference_contract.py tests/test_standard_analysis.py tests/test_normative_tree.py tests/test_fingerprint_versioning.py` → 630 passed (613 at `df21567`); includes the RW-R01 schema suites.
+- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 134 files already formatted; 1612 passed (1595 at `df21567`).
+
 **Blocker:** —  
-**Execution Notes:** —
+**Execution Notes:**
+
+- Base `df21567`; IMPLEMENTING mark `b3e0bf1`; implementation `ce76831`.
+- Changed: `src/sdlc/raw_prompt.py` (instructions and docstring only; `build_prompt` and its context unchanged); `docs/specs/RAW-Requirement-Processor-Decision-v0.1.md` (§2 "Decomposition level", §5 peer-evidence sentence, §7 flow labels); `docs/specs/RAW-Processor-Processing-Result-v0.1.md` (§2 pointer: keys, order and counts are execution facts, not candidate semantics); new `tests/test_raw_decomposition_contract.py`.
+- Deterministic output contract unchanged. The semantic items of Required Change are carried by the model instructions; `raw_processing.py` already enforces the closed shape, categories, operation-free findings, zero-with-reason, reserved H1/H2 and the single-line title. No regex/keyword prose classifier was added.
+- The tests use bounded fake-model decompositions: they prove the prompt carries each rule and that deterministic code never splits, merges, completes or counts candidates. They do not prove what a live model decides.
+- Prompt grew from 2,197 to 8,447 characters (about 1.6% of the 400,000-character assembled-input bound); budget and refusal behavior and their tests unchanged.
+- The prompt now tells the model the existing structural rules (single-line title, no level-1/2 heading in section content); enforcement remains the unchanged parser.
+- Not changed: `standard_prompt.py`, `review_prompt.py`, Fibery schema/live state, lifecycle and state-transition ownership, model runtime/auth, Ready/Apply, A1–A11 hardening, the AMR dogfood corpus.
+- No Proposed Change Request.
 
 ### Verification Record
 

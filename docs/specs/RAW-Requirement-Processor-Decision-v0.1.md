@@ -1,7 +1,10 @@
 # RAW Requirement Processor — Decision Note v0.1
 
 **Status:** Approved design decision  
-**Purpose:** Freeze the current boundary for RAW Requirement processing before designing Standard Requirement revision/change semantics.
+**Purpose:** Freeze the current boundary for RAW Requirement processing before designing Standard Requirement revision/change semantics.  
+**Amended by:** `RW-R02` (SDLC Rewrite v0.2), fixing the decomposition level in
+section 2. The amendment's status is tracked in
+`docs/rewrite/SDLC-Rewrite-Plan-v0.2.md`.
 
 ## 1. Current Requirement Relations
 
@@ -58,6 +61,39 @@ the RAW Requirement Processor may:
 - identify possible duplication, conflict, overlap, or change to existing Standard Requirements;
 - record such cases as findings for Review.
 
+### Decomposition level
+
+Candidates are Requirement-level obligations as defined by
+`Standard-Requirement-Abstraction-v0.2.md` (sections 2–7 and 12), rendered under
+`Standard-Requirement-Document-Schema-v0.1.md`:
+
+- one candidate is one independently meaningful product/system obligation — a
+  capability, required outcome, observable behavior, business or system
+  constraint, or invariant — not one sentence, source bullet, field, parameter,
+  error case, or implementation decision;
+- one capability described together with many technical details of one proposed
+  implementation is one candidate; genuinely independent obligations stay
+  separate even when they share a paragraph, a source section, or an
+  implementation;
+- technical detail in the RAW source (abstraction contract, section 5) stays
+  source context for later Architecture and is never by itself a candidate;
+- a technical mechanism is candidate content only when the source explicitly
+  mandates that exact mechanism, and it may then remain a Constraint; a
+  mechanism seen only in an example, the current implementation, background
+  discussion, an existing architecture, or a suggested approach is not
+  mandated, and an unclear mandate is an Open Question;
+- Acceptance / Verification describes observable satisfaction, never test
+  implementation;
+- source gaps and product-level open questions are preserved, never answered;
+  architecture-only questions stay downstream;
+- candidate count is an outcome of source semantics: zero, one, and many are
+  all valid, and there is no target.
+
+This is a semantic decision the model makes under the RAW decomposition prompt
+(`raw_prompt.py`). Deterministic code validates only the bounded output shape
+and the document structure (`raw_processing.py`; schema section 5). It does not
+classify prose, split or merge candidates, or check their number.
+
 ## 3. No `Target Requirement` Relation
 
 Do **not** add a `Target Requirement` field/relation to the `Requirement` Database at this stage.
@@ -94,6 +130,10 @@ Those decisions must be designed separately before introducing fields that encod
 ## 5. Existing Standard Requirement Impact
 
 If the RAW Processor detects that a candidate may affect an existing Standard Requirement, it records a finding rather than mutating or formally linking the existing Requirement.
+
+The existing Standard Requirements are comparison evidence, not authority: they
+never override what the RAW source states, and one that is not `Applied` is a
+candidate under review, not approved truth.
 
 Examples:
 
@@ -139,9 +179,9 @@ For RAW processing v0:
 ```text
 RAW + Process
         ↓
-normalize / decompose
+normalize / decompose at Requirement level (section 2)
         ↓
-0..N Standard Requirement candidates
+0..N Standard Requirement candidates (no target count)
         ↓
 State = Draft
         ↓
