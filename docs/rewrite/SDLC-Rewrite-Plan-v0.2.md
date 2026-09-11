@@ -925,7 +925,7 @@ At minimum:
 
 ## RW-R04 — Correct Standard Review abstraction checks
 
-**Status:** IMPLEMENTING  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R03`
 
@@ -980,10 +980,31 @@ At minimum:
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
+**Implementation Commit:** `ef918f2e9b0b766236dc760d96bc9db91c1b5fe1`  
+**Implementation Evidence:**
+
+- AC1 — `review_prompt.INSTRUCTIONS` "Defects to flag": `IMPLEMENTATION_LEAKAGE` for downstream HOW presented as Requirement truth, including Task/test mechanics disguised as Acceptance / Verification; `INCONSISTENT` for source invention, stated as unsupported by or inconsistent with the originating source; `INCOMPLETE` for unjustified fragmentation of one source obligation; `NON_ATOMIC` only for the opposite shape. Tests: `test_review_confirms_a_process_leakage_finding`, `test_review_reports_leakage_the_process_missed`, `test_test_mechanics_in_acceptance_are_reported_as_leakage`, `test_review_rejects_a_leakage_claim_when_the_source_mandates_it`, `test_source_invention_is_reported_as_inconsistent_with_the_source`, `test_a_fragment_of_one_source_obligation_is_incomplete_not_non_atomic`, `test_independent_product_obligations_are_still_non_atomic`. No finding kind added: `test_the_finding_vocabulary_is_unchanged`.
+- AC2 — prompt "Not defects": missing downstream design is not `INCOMPLETE`/`MISSING_CONSTRAINT`/`MISSING_EDGE_CASE`/`NOT_TESTABLE`; no test design needed to pass; a mandated mechanism, an open product decision and an unanswered architecture question are not defects. `test_a_valid_high_level_requirement_is_not_penalized_and_passes` (no finding, `PASS`), `test_a_source_mandated_constraint_is_not_flagged`, `test_an_open_product_question_is_not_a_defect_merely_for_being_open`, `test_a_missing_architecture_decision_is_not_incomplete`, `test_a_requirement_without_raw_ancestry_is_still_reviewable` (`(none)` section, `PASS`).
+- AC3 — the reviewer now receives the originating RAW source (`standard_reviewer._raw_ancestry`, under `# Originating RAW requirement source`). `test_genuine_source_gaps_and_contradictions_are_still_caught` (`MISSING_CONSTRAINT` WARNING + `INCONSISTENT` BLOCKING → `BLOCKING`, still reaches `Ready`); the source-invention test asserts the `<!-- RAW SDLC-RAW-0007 -->` source text is in the reviewer context; `test_peer_comparison_findings_are_verified_and_reported_without_mutation`; `test_relation_verifications_stay_evidence_and_are_never_written`.
+- AC4 — `tests/test_finding_reference_contract.py` unchanged and green: both prompts' self-kind lists still equal the parser's partition, the examples parse, and self/cross references stay strict in Process and Review.
+- AC5 — `standard_review.py`, `review_result.py` and `results.py` unchanged: the closed output contract, exact finding and relation coverage, severity rule, derived verdict and persisted bindings are as before. `test_a_raw_source_read_failure_refuses_before_the_model_and_any_write` (`FIBERY_READ_FAILED`, model not invoked, zero mutations, no Review Result, State `Review`); every successful case asserts that only the Review Result create/write and `Review -> Ready` occurred, the Root is byte-identical, and peers, Revision and relations are unchanged; `test_a_no_change_review_neither_reads_nor_binds_the_raw_source` (`NO_CHANGES_TO_REVIEW` with no `derived_from` call; RAW text not persisted). Existing reviewer, reviewer-state, review-contract, Review Result, CLI review, Process→Review chain, Ready/Apply, normative-tree, fingerprint, comparison-context and empty-result recovery suites green.
+- Red check against the `4a6c067` source: 15 of the 20 new tests fail; the 5 preservation tests (confirmed Process leakage, peer comparison, relation verification, no-change without a RAW read, unchanged vocabulary) pass on both trees.
+- Targeted: `uv run pytest -q tests/test_standard_review_abstraction.py tests/test_standard_review_contract.py tests/test_standard_reviewer.py tests/test_standard_reviewer_state.py tests/test_finding_reference_contract.py tests/test_standard_process_review_chain.py tests/test_review_result.py tests/test_cli_review.py tests/test_ready_decision.py tests/test_ready_decision_validation.py tests/test_cli_ready.py tests/test_requirement_apply.py tests/test_requirement_apply_resume.py tests/test_requirement_apply_validation.py tests/test_cli_apply.py tests/test_normative_tree.py tests/test_normative_tree_stages.py tests/test_fingerprint_versioning.py tests/test_comparison_context.py tests/test_empty_result_recovery.py tests/test_standard_process_abstraction.py tests/test_standard_analysis.py tests/test_raw_decomposition_contract.py tests/test_raw_processing.py` → 907 passed (887 at `4a6c067`).
+- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 138 files already formatted; 1655 passed (1635 at `4a6c067`).
+
 **Blocker:** —  
-**Execution Notes:** —
+**Execution Notes:**
+
+- Base `4a6c067`; IMPLEMENTING mark `d2ab348`; implementation `ef918f2`.
+- Changed: `src/sdlc/review_prompt.py` (docstring, instructions, `raw_ancestry` parameter and its context section); `src/sdlc/standard_reviewer.py` (`_verify` reads the RAW source; new `_raw_ancestry`); `docs/specs/Standard-Requirement-Review-Spec-v0.1.md` (amendment line, §3.1, §5 input and RAW paragraph, §20 abstraction tests); new `tests/test_standard_review_abstraction.py`.
+- `standard_review.py` (frozen Affected Area) inspected and left unchanged: the existing closed vocabulary and output contract express every RW-R04 judgement.
+- RAW ancestry is a reviewer-local mirror of Standard Process `_read_raw_ancestry` (same `Derived From` → attached Root boundary, `<!-- RAW id -->` marker and join). It was not extracted into a shared helper so `standard_processor.py` stays byte-identical; this is the second occurrence. It is read in `_verify` after the comparison context, so existing comparison refusals keep precedence, and only on paths that invoke the model (a new review, explicit empty-result recovery), never on no-change. The final whole-input budget covers it automatically.
+- No new Fibery read or write pattern: it uses `derived_from`, `documents_attached_to_requirement` and `read_document_content`, already verified for Process, so the fake needed no change. Cost is one attached-document read per RAW ancestor, normally one.
+- The RAW source is evidence, not reviewed input: it is neither bound nor persisted, so Review Result format, version and bindings are unchanged. Consequently an edit to the RAW alone does not make an existing Review Result stale.
+- The tests use bounded fake-model outputs through the real `review_standard_requirement`; they prove the prompt contract and the deterministic Review boundary, not what a live model decides.
+- Review prompt grew from 3,957 to 8,530 characters (about 2.1% of the 400,000-character assembled-input bound).
+- Not changed: Standard Process code and prompt, `standard_analysis.py`, verdict derivation, Ready/Apply, lifecycle and state-transition ownership, Processing Status, worker routing, bootstrap, Fibery schema/live state, model runtime/auth, A1–A11 hardening, the AMR dogfood corpus.
+- No new finding kind; no Proposed Change Request.
 
 ### Verification Record
 
