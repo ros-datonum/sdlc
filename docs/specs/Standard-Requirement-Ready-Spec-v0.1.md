@@ -1,8 +1,44 @@
 # Standard Requirement Ready Decision Specification v0.1
 
-**Status:** APPROVED. Frozen contract for implementation. No implementation exists yet.
+**Status:** APPROVED. Frozen contract for implementation. No implementation exists yet.  
+**Amended by:** `RW-O01` (SDLC Rewrite v0.2) under
+`Requirement-Lifecycle-Ownership-v0.2` (`RW-C02`): the human State transition is
+the decision, and the commands below are an admin/compatibility surface
+(section 0). The amendment's status is tracked in
+`docs/rewrite/SDLC-Rewrite-Plan-v0.2.md`.
 
 Design for `Requirement.Type = Standard` + `Requirement.State = Ready`.
+
+## 0. Normal decision path and the admin compatibility command
+
+Where this specification conflicts with `Requirement-Lifecycle-Ownership-v0.2`
+(`RW-C02`), `RW-C02` governs.
+
+The two human decisions at `Ready` **are** Requirement State transitions:
+
+```text
+Ready -> Apply     APPROVE
+Ready -> Process   REWORK
+```
+
+**Normal product path.** The human makes the transition directly in Fibery, or
+an authorized assistant makes it on the human's explicit instruction. No
+command is required and nothing else is written: no approval or rework
+artifact, flag, field or ledger exists. `State = Apply` is the only durable
+approval signal Apply consumes. `State = Process` reached from `Ready` is the
+durable rework signal for the next Standard Process cycle.
+
+**Admin/compatibility path.** The `approve` and `rework` commands of this
+specification remain available. On explicit invocation they make the same
+transition; `approve` first runs the validation of sections 6–10, including
+the verdict acknowledgement of section 9. Those checks belong to the command
+only. They are stricter than a direct transition, which is acceptable because
+the command is optional, but they create no different kind of approval: a
+direct `Ready -> Apply` carries no acknowledgement, and the command cannot make
+stale or invalid evidence safe, because Apply revalidates the reviewed bindings
+however the Requirement reached `Apply` (section 18).
+
+Everything below describes that command unless it says otherwise.
 
 ## 1. Lifecycle position
 
@@ -23,13 +59,14 @@ Apply     human-approved application begins    deterministic
 ```
 
 `Ready` is **not another autonomous stage**. It is the boundary where the system
-stops deciding and a person does. Ready Decision performs no AI reasoning. It
-records an explicit human decision through an existing workflow transition, after
+stops deciding and a person does. The human decision is the workflow transition
+itself (section 0). This admin/compatibility capability performs no AI
+reasoning; on explicit request it makes that transition, after
 deterministically validating that the decision applies to the Requirement state
 that was actually reviewed.
 
 Its entire job is one state transition plus the checks that make that transition
-honest.
+honest when it is made through this command.
 
 ## 3. Entry condition
 
@@ -54,7 +91,9 @@ additional decision types: no `Rejected`, `Archived`, `Withdrawn` or `Cancelled`
 A Requirement that should not exist is one the human declines to approve, and
 disposing of it is outside this capability.
 
-Proposed commands, following the existing one-verb-per-command convention:
+Admin/compatibility commands (section 0), following the existing
+one-verb-per-command convention. Neither is required in the normal lifecycle,
+where the human makes the same transition directly in Fibery:
 
 ```text
 sdlc project requirement approve --requirement <entity id>
@@ -132,9 +171,11 @@ command, which revalidates.
 
 ## 6. APPROVE preconditions
 
-`Ready -> Apply` is permitted only when all of the following hold. They are
-checked in order, and **no mutation occurs until every required precondition has
-passed**.
+The `approve` command performs `Ready -> Apply` only when all of the following
+hold. They are checked in order, and **no mutation occurs until every required
+precondition has passed**. A direct human transition in Fibery is not subject to
+these command checks; Apply revalidates the same reviewed bindings itself before
+any normative mutation (section 18).
 
 ```text
 1.  the Requirement exists
@@ -235,8 +276,11 @@ or `BLOCKING` does not by itself forbid approval. Making Review able to refuse a
 human would turn `Ready` into a quality gate, which the frozen Review
 specification section 10 explicitly says it is not.
 
-Approval at a non-`PASS` verdict instead requires an explicit acknowledgement
-**naming the current derived verdict**:
+Through the `approve` command, approval at a non-`PASS` verdict instead requires
+an explicit acknowledgement **naming the current derived verdict**. The
+acknowledgement is a safety check of this command, not approval authority: a
+human who moves the Requirement `Ready -> Apply` directly in Fibery gives none
+and needs none, at any verdict, and Apply never consults one:
 
 ```text
 PASS         approve --requirement <id>
@@ -334,6 +378,11 @@ means: *a human has decided this needs another processing iteration before it ca
 be approved.* The transition performs no analysis and asserts nothing about the
 content.
 
+In the normal path the human makes this transition directly in Fibery, and the
+resulting `State = Process` is the durable rework signal for the next Standard
+Process cycle; no command is required (section 0). The `rework` command makes
+the same transition on explicit request and nothing else.
+
 **REWORK intentionally does not require a valid or non-stale Review Result.** A
 stale Requirement is itself a valid reason to send it back for work. This is a
 deliberate asymmetry: only `APPROVE` validates bindings.
@@ -353,7 +402,9 @@ unchanged as the record of why rework was needed.
 What happens next is already frozen behaviour: once the content is edited, the
 Standard Processor sees a changed fingerprint and starts a new iteration; if
 nothing was edited it returns `NO_CHANGES_TO_PROCESS` and stays in `Process`. Both
-outcomes are correct. **Ready Decision does not solve editing.**
+outcomes are correct. **Ready Decision does not solve editing.** How the
+state-driven dispatcher of `RW-O02`/`RW-O03` handles an unedited rework is left
+to those items.
 
 ## 12. Editing order — not enforced
 
@@ -456,6 +507,10 @@ is introduced in v0.1 to resolve it.** The mitigation is structural rather than
 recorded — `Apply` revalidates the reviewed bindings before any normative
 mutation, so a Requirement that arrived in `Apply` by any route is still checked
 before anything is applied.
+
+Since `RW-O01` the direct transition is the normal path rather than a tolerated
+exception, and no route is privileged: the `approve` command adds checks of its
+own, but the approval it records is the same `State = Apply`.
 
 ## 17. Concurrency — the validate-then-write race
 

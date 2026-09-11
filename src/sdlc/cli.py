@@ -66,6 +66,43 @@ PROGRAM_NAME = "sdlc"
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 
+# The normal lifecycle is driven by Requirement State in Fibery
+# (Requirement-Lifecycle-Ownership-v0.2); no command here creates authority.
+REQUIREMENT_LIFECYCLE_NOTE = (
+    "Human lifecycle decisions are Requirement State transitions made in Fibery: "
+    "RAW Draft -> Process starts processing, Standard Ready -> Apply approves and "
+    "Standard Ready -> Process requests rework. The worker commands (process, "
+    "normalize, review, apply) run one stage manually for development, "
+    "diagnosis, recovery or explicit admin use. approve and rework are "
+    "admin/compatibility shortcuts for the two Ready transitions and create no "
+    "other kind of approval or rework."
+)
+MANUAL_WORKER = "Manual worker (development, diagnosis, recovery, admin):"
+ADMIN_DECISION = "Admin/compatibility; the normal path is the Fibery State change:"
+APPROVE_DESCRIPTION = (
+    "Admin/compatibility command. In the normal lifecycle a human approves by "
+    "moving the Requirement Ready -> Apply in Fibery; this command is not "
+    "required and records no other kind of approval. On explicit request it "
+    "makes that same State transition, after checking that the latest Review "
+    "Result still binds the current content, and it asks for a non-PASS verdict "
+    "to be acknowledged by name. The acknowledgement is a safety check of this "
+    "command only: a direct Ready -> Apply needs none, and Apply revalidates the "
+    "reviewed evidence however the Requirement reached Apply."
+)
+REWORK_DESCRIPTION = (
+    "Admin/compatibility command. In the normal lifecycle a human requests "
+    "rework by moving the Requirement Ready -> Process in Fibery; this command "
+    "is not required and records no other kind of rework decision. It makes "
+    "only that State transition and leaves every Process and Review Result in "
+    "place."
+)
+APPLY_DESCRIPTION = (
+    "Apply revalidates the reviewed evidence and applies the exact reviewed "
+    "state, however the Requirement reached Apply: a direct human State change "
+    "in Fibery, an assistant acting on the human's explicit instruction, or the "
+    "approve command. It takes no verdict acknowledgement."
+)
+
 NEXT_STEP_HINT = "Use:\nsdlc project requirement add\nto add requirements."
 
 
@@ -87,7 +124,9 @@ def build_parser() -> argparse.ArgumentParser:
     init.set_defaults(handler=_run_project_init)
 
     requirement = project_commands.add_parser(
-        "requirement", help="Requirement level commands."
+        "requirement",
+        help="Requirement level commands.",
+        description=REQUIREMENT_LIFECYCLE_NOTE,
     )
     requirement_commands = requirement.add_subparsers(dest="action", required=True)
     add = requirement_commands.add_parser(
@@ -100,7 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
     add.set_defaults(handler=_run_requirement_add)
 
     process = requirement_commands.add_parser(
-        "process", help="Decompose a RAW Requirement into Standard candidates."
+        "process",
+        help=f"{MANUAL_WORKER} decompose a RAW Requirement in Process into "
+        "Standard candidates.",
     )
     process.add_argument(
         "--requirement", required=True, help="RAW Requirement entity id."
@@ -112,7 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     normalize = requirement_commands.add_parser(
         "normalize",
-        help="Normalize and analyze a Standard Requirement in Process.",
+        help=f"{MANUAL_WORKER} normalize and analyze a Standard Requirement in "
+        "Process.",
     )
     normalize.add_argument(
         "--requirement", required=True, help="Standard Requirement entity id."
@@ -145,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = requirement_commands.add_parser(
         "review",
-        help="Independently review a Standard Requirement in Review.",
+        help=f"{MANUAL_WORKER} independently review a Standard Requirement in Review.",
     )
     review.add_argument(
         "--requirement", required=True, help="Standard Requirement entity id."
@@ -157,7 +199,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     approve = requirement_commands.add_parser(
         "approve",
-        help="Record a human approval of a Standard Requirement in Ready.",
+        help=f"{ADMIN_DECISION} Ready -> Apply after checking the reviewed evidence.",
+        description=APPROVE_DESCRIPTION,
     )
     approve.add_argument(
         "--requirement", required=True, help="Standard Requirement entity id."
@@ -167,14 +210,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[verdict.value for verdict in ReviewVerdict],
         help=(
             "Name the current Review verdict being approved despite. Required "
-            "for NEEDS_WORK and BLOCKING; never for PASS."
+            "by this command for NEEDS_WORK and BLOCKING, never for PASS. A "
+            "safety check of this command only: not approval authority, and not "
+            "needed for a direct Ready -> Apply."
         ),
     )
     approve.set_defaults(handler=_run_requirement_approve)
 
     rework = requirement_commands.add_parser(
         "rework",
-        help="Send a Standard Requirement in Ready back to Process.",
+        help=f"{ADMIN_DECISION} Ready -> Process.",
+        description=REWORK_DESCRIPTION,
     )
     rework.add_argument(
         "--requirement", required=True, help="Standard Requirement entity id."
@@ -183,7 +229,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     apply = requirement_commands.add_parser(
         "apply",
-        help="Deterministically apply an approved Standard Requirement in Apply.",
+        help=f"{MANUAL_WORKER} deterministically apply a Standard Requirement in "
+        "Apply.",
+        description=APPLY_DESCRIPTION,
     )
     apply.add_argument(
         "--requirement", required=True, help="Standard Requirement entity id."
@@ -382,7 +430,7 @@ def _run_standard_review(
 def _run_requirement_approve(
     arguments: argparse.Namespace, out: TextIO, error_out: TextIO
 ) -> int:
-    """A human decision. No model runtime is configured, selected or invoked."""
+    """The admin/compatibility approval. No model runtime is configured or invoked."""
     try:
         settings = load_fibery_settings()
     except ConfigurationError as error:
@@ -404,7 +452,7 @@ def _run_requirement_approve(
 def _run_requirement_rework(
     arguments: argparse.Namespace, out: TextIO, error_out: TextIO
 ) -> int:
-    """A human decision. No model runtime is configured, selected or invoked."""
+    """The admin/compatibility rework. No model runtime is configured or invoked."""
     try:
         settings = load_fibery_settings()
     except ConfigurationError as error:

@@ -2,6 +2,8 @@
 
 **Status:** APPROVED. Frozen contract, implemented. Amended 2026-09-09: the
 Root Document move (former section 10) is retired; Apply writes no Document.
+Amended by `RW-O01` (SDLC Rewrite v0.2): `State = Apply` is the approval signal
+whichever control surface set it (section 4).
 
 Design for `Requirement.Type = Standard` + `Requirement.State = Apply`.
 
@@ -79,12 +81,21 @@ is sufficient durable evidence that a human approval transition was recorded.
 It is **not** evidence that the current content is still what was reviewed,
 because the Root Document can be edited in Fibery at any moment.
 
+`State = Apply` is the approval signal whichever control surface set it: the
+human directly in Fibery (the normal path under
+`Requirement-Lifecycle-Ownership-v0.2`), an authorized assistant acting on the
+human's explicit instruction, or the admin/compatibility `approve` command.
+Apply does not know, and does not need to know, which one was used; it
+revalidates identically in every case and does not assume that the `approve`
+command's checks ran.
+
 Apply therefore never asks whether the Requirement should be approved. It does
 not re-run or re-read the `PASS` / `NEEDS_WORK` / `BLOCKING` acknowledgement,
 does not reinterpret findings, and does not refuse a Requirement because its
-verdict was not `PASS`. A human may have explicitly approved any of the three
-verdicts under the frozen acknowledgement semantics; Apply executes that
-decision.
+verdict was not `PASS`. A human may approve at any of the three verdicts, and a
+verdict never overrides that decision; the `approve` command's verdict
+acknowledgement is a safety check of that command, which Apply neither requires
+nor reads. Apply executes the decision.
 
 What Apply does do is **revalidate the exact reviewed binding before any
 normative mutation** (section 6). That is the interface invariant Ready
@@ -99,7 +110,7 @@ everything Apply needs.
 The Root Document's `Open Questions` section is **not** required to be empty
 before `Applied`, and no other content condition is imposed. The frozen
 Document Schema left that possibility open; the Review verdict plus the human
-Ready Decision already form the quality and authority boundary, and Apply must
+`Ready -> Apply` decision already form the quality and authority boundary, and Apply must
 not silently add another one behind them.
 
 ## 5. Inputs, and the only relation source of truth
@@ -475,8 +486,9 @@ Requirement a human placed in `Applied` by hand looks the same as one Apply
 completed. Automatically repairing it would mean writing relations and moving
 Documents on the strength of a State nobody validated, so v0.1 does not.
 
-The same boundary applies on entry: State `Apply` cannot distinguish a
-validated approval from a manual transition. Apply's answer is the strongest
+The same boundary applies on entry: State `Apply` does not say which control
+surface set it, and under `Requirement-Lifecycle-Ownership-v0.2` a direct human
+transition is the normal path (section 4). Apply's answer is the strongest
 one available from current state — require `Apply`, require a valid current
 reviewed binding, write only what the latest valid Review Result confirmed. No
 approval ledger is introduced to close the remaining gap.
