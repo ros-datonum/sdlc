@@ -783,17 +783,21 @@ def _verify(
 ) -> ReviewOutput:
     """One reviewer invocation, validated against the review contract.
 
-    The comparison corpus is read here, once a new invocation is certain,
-    and every peer the Process claims refer to must be in it with content.
+    The comparison corpus and the originating RAW source are read here, once
+    a new invocation is certain, so a no-change result never depends on
+    either; every peer the Process claims refer to must be in the corpus with
+    content.
     """
+    comparison = _comparison_context(workspace, context)
     prompt, model_context = build_review_prompt(
         requirement=context.requirement,
         project_name=context.project.name,
         root_content=context.root_content,
         child_content=render_descendants(context.tree),
+        raw_ancestry=_raw_ancestry(workspace, context.requirement),
         process_result=context.process_result,
         relations=context.relations,
-        comparison=_comparison_context(workspace, context),
+        comparison=comparison,
     )
     try:
         require_input_within_budget("Standard Review", prompt, model_context)
@@ -875,6 +879,33 @@ def _comparison_context(
             tuple(unresolved),
         )
     return comparison
+
+
+def _raw_ancestry(
+    workspace: RawProcessorWorkspace, requirement: RequirementRecord
+) -> str:
+    """The originating RAW source: read-only evidence, never reviewed input.
+
+    The boundary Standard Process reads: every `Derived From` RAW
+    Requirement's attached Root Document, each behind an identity marker. A
+    Requirement need not come from a RAW, so none is an empty section rather
+    than an error. A failed read refuses the run before the reviewer runs.
+    """
+    try:
+        sections = [
+            f"<!-- RAW {raw.requirement_id} -->\n"
+            + workspace.read_document_content(document.secret or "")
+            for raw in workspace.derived_from(requirement.id)
+            for document in workspace.documents_attached_to_requirement(raw.public_id)
+        ]
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardReviewResultCode.FIBERY_READ_FAILED,
+            "Could not read the originating RAW Requirement; the reviewer was not "
+            "invoked and nothing was written.",
+            (str(error),),
+        ) from error
+    return "\n\n".join(sections)
 
 
 def _read_body(workspace: RawProcessorWorkspace, node: DocumentNode) -> str:
