@@ -1183,7 +1183,7 @@ At minimum inspect/change as required:
 
 ## RW-O02 — Implement bounded Requirement worker dispatcher
 
-**Status:** IMPLEMENTING  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-C04`, `RW-O01`
 
@@ -1226,10 +1226,31 @@ Exact module/file location must be the one frozen in `RW-C04` before this item b
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
+**Implementation Commit:** `a1ee1fb849d668222ebbf0213c97e8076eef03df`  
+**Implementation Evidence:**
+
+- AC1 — `src/sdlc/requirement_dispatcher.py` `ROUTES` holds exactly the RW-C04 table: Raw+Process → RAW Processor, Standard+Process → Standard Process, Standard+Review → Standard Review, Standard+Apply → Standard Apply, each at `Not Processed`. `tests/test_requirement_dispatcher.py`: `test_the_route_table_is_closed_to_the_four_rw_c04_routes`; `test_each_authorized_route_runs_exactly_its_one_worker` (each route calls its one worker once, and completes only on its postcondition Review/Review/Ready/Applied); `test_only_standard_process_is_invoked_as_an_authorized_new_cycle`. The real workers run through the dispatcher in the RAW progression, CR-002, Review and Apply tests. Workers are the existing capabilities injected already bound (`RequirementWorkers`); no processor, review, evidence or Apply logic is duplicated.
+- AC2 — `test_no_worker_runs_outside_the_four_routes`: Raw Draft and Standard Ready are `HUMAN_BOUNDARY`; Raw Review, Standard Draft and Standard Applied are `NO_MACHINE_WORK`; Raw Ready/Apply/Applied and unknown Type or State are `UNSUPPORTED_STATE`, at every Processing Status, with no worker call, no mutation and nothing repaired. `test_the_ready_verdict_plays_no_part_in_route_selection` (PASS, NEEDS_WORK, BLOCKING at Ready all stop). `test_a_stale_selection_runs_no_worker_and_corrects_nothing` (human State change, Type change, identity change, deleted entity). A generic Standard Draft never progresses: the unrelated Draft in `test_the_exact_candidates_of_a_successful_raw_result_move_to_process` and `test_a_standard_merely_derived_from_the_raw_is_not_progressed`.
+- AC3 — `test_redispatching_a_completed_raw_duplicates_nothing`, `test_after_standard_process_only_a_new_review_cycle_is_selectable`, `test_review_stops_at_ready_and_ready_selects_no_worker`, `test_an_applied_requirement_selects_no_worker_and_is_not_reapplied`: after a worker-owned transition, selection from the current State never selects the same worker again; the old selection replays as `STALE_ROUTE`; Documents, contents and Requirements are unchanged. `test_a_claimed_completed_or_failed_cycle_runs_no_worker` (Processing, Succeeded, Failed × four routes) and `test_only_a_not_processed_cycle_can_request_a_new_iteration`. No dispatcher ledger exists.
+- AC4 — `test_a_failed_worker_never_advances_the_lifecycle` (four routes: `WORKER_FAILED`, zero dispatcher writes, State unchanged); `test_a_normal_result_that_leaves_the_state_is_not_a_completed_cycle` (four routes: `POSTCONDITION_NOT_REACHED`); `test_no_changes_to_process_in_process_is_not_a_completed_cycle`; `test_no_changes_to_review_in_review_is_not_a_completed_cycle` (real reviewer); `test_a_failed_raw_worker_progresses_no_candidate`; `test_a_failed_revalidation_read_runs_no_worker`; progression failures: `test_a_preflight_conflict_progresses_no_candidate_and_demotes_nothing` (already past Draft, wrong Type, missing provenance, ambiguous ID: zero writes, valid peers untouched, nothing demoted), `test_a_failed_first_progression_write_is_reported_and_nothing_moves`, `test_a_later_progression_write_failure_is_partial_and_never_rolled_back`.
+- AC5 — `tests/test_requirement_dispatcher.py` (103 tests) covers every selection branch (4 routes; 12 status-gated route cases; 11 no-worker states at all four statuses), stale selection, and every `DispatchOutcome`: `ROUTE_COMPLETED`, `NO_ROUTE`, `STALE_ROUTE`, `WORKER_FAILED`, `POSTCONDITION_NOT_REACHED`, `CANDIDATE_PROGRESSION_CONFLICT`, `CANDIDATE_PROGRESSION_FAILED`, `PARTIAL_CANDIDATE_PROGRESSION`, `FIBERY_READ_FAILED`.
+- CR-002 — `test_an_ordinary_call_over_the_unchanged_tree_still_reports_no_changes`; `test_the_dispatcher_turns_an_unedited_rework_into_the_next_iteration` (iteration 2, model called once, Process and Review history byte-identical, State Review); `test_an_edited_rework_keeps_the_existing_new_iteration_behavior`; `test_the_input_equality_ambiguity_is_not_bypassed` (through the dispatcher and a direct call with the keyword: `PROCESSING_STATE_CONFLICT`, no model call, no mutation); `test_the_new_cycle_entry_takes_no_explicit_option_and_has_no_cli_flag`. The RW-O01 lifecycle test still pins the ordinary call at `NO_CHANGES_TO_PROCESS`.
+- Focused: `uv run pytest -q tests/test_requirement_dispatcher.py tests/test_raw_processor.py tests/test_raw_processor_resume.py tests/test_raw_processor_cross_stage.py tests/test_raw_single_writer.py tests/test_empty_result_recovery.py tests/test_standard_processor.py tests/test_standard_processor_state_machine.py tests/test_standard_processor_iterations.py tests/test_standard_process_explicit_resume.py tests/test_standard_processor_concurrency.py tests/test_standard_process_review_chain.py tests/test_standard_reviewer.py tests/test_standard_reviewer_state.py tests/test_requirement_apply.py tests/test_requirement_apply_resume.py tests/test_requirement_apply_validation.py tests/test_lifecycle_control.py tests/test_ready_decision.py tests/test_cli.py tests/test_cli_ready.py tests/test_cli_apply.py` → 690 passed.
+- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 147 files already formatted; 1834 passed (1731 at `c7609fb`).
+
 **Blocker:** —  
-**Execution Notes:** —
+**Execution Notes:**
+
+- Base `c7609fb`; IMPLEMENTING mark `3af90e6`; implementation `a1ee1fb`.
+- Changed: new `src/sdlc/requirement_dispatcher.py`; `src/sdlc/standard_processor.py` (keyword-only `authorized_new_cycle`, its exclusivity with the three explicit options, and one condition on the no-change branch); `src/sdlc/fibery_workspace.py` (`DispatchWorkspace` protocol); new `tests/test_requirement_dispatcher.py`; docs: Process spec (header and §11 "Authorized new machine cycle"), Ready spec §11 (one paragraph), README (lifecycle paragraph), and one docstring in `tests/test_lifecycle_control.py`.
+- Interface: `select_route(requirement, status) -> RouteSelection` (pure); `dispatch(workspace, workers, selection) -> DispatchResult`. `ProcessingStatus` models the RW-C04 vocabulary for route input only. `results.py` is unchanged: `DispatchOutcome` and `DispatchResult` live in the dispatcher module, which avoids a results → dispatcher dependency.
+- `DispatchWorkspace` needs only `read_requirement`, `find_requirements_by_requirement_id` (count-aware uniqueness), `derived_from` and `set_requirement_state`, all already implemented by `FiberyRawProcessorWorkspace`; no HTTP code changed.
+- The dispatcher validates each worker's postcondition by re-reading State and writes no worker-owned transition. RAW candidate progression runs only after `RAW_REQUIREMENT_PROCESSED` with the RAW read back in Review, over exactly the Requirement IDs in that result. Cost: one lookup and at most one provenance read per candidate, then one write and read-back each, bounded by one RAW result. There is no compare-and-set, so a change landing between preflight and a write is not detected; an unconfirmed write is reported as such.
+- CR-002 closed at O02 level: the dispatcher's Standard+Process route invokes Standard Process with `authorized_new_cycle=True`, which turns an unchanged tree into the next iteration. Ordinary and manual calls, A11 ambiguity, empty shells and all checks are unchanged, and no CLI flag exposes it. Automatic invocation still needs the RW-O03 runner, whose Processing Status claim keeps one authorized cycle from being requested twice.
+- An exception raised by a worker, rather than a typed result, propagates unhandled; the workers already convert their failures into typed results.
+- No red check: the dispatcher module and the keyword did not exist at the base.
+- Not implemented, by design (RW-O03): `sdlc worker run`, polling, sleep, the runner lock, Processing Status field reads and writes, the reset automation, the eligible-Requirement query, CLI composition of real workers.
+- No Proposed Change Request.
 
 ### Verification Record
 
@@ -1874,6 +1895,13 @@ Review decision (independent review of RW-O01, CHANGES_REQUIRED):
     current tree when that cycle was authorized by the human rework
     transition, and it must not become a general force or bypass mechanism.
     RW-O01 designs no dispatcher or processor interface for it.
+O02 implementation note (RW-O02, `a1ee1fb`): the dispatcher's
+  Standard + Process + Not Processed route invokes Standard Process with the
+  keyword-only `authorized_new_cycle`, which processes a tree equal to the
+  latest current-format output as the next iteration. The A11 ambiguity,
+  empty shells and all checks are unchanged; ordinary and manual calls still
+  return NO_CHANGES_TO_PROCESS; no CLI flag exposes it. Automatic invocation
+  awaits the RW-O03 runner and its Processing Status claim.
 Blocking: NO
 Status: PROPOSED
 ```
