@@ -702,7 +702,7 @@ At minimum:
 
 ### Implementation Record
 
-**Implementation Commit:** `07a4e0c8e5863651d57f0b95eab3e881a5f4aa23`  
+**Implementation Commit:** `22f00894c05b5d5281adf428486a5d41e65c7ffd`  
 **Implementation Evidence:**
 
 - AC1 — `Standard-Requirement-Document-Schema-v0.1.md` §1 states Requirement = WHAT / Architecture = HOW / Delivery Planning / Task, implementation independence as default, and the source-mandated mechanism exception; every §3 section definition is bounded by it.
@@ -710,13 +710,14 @@ At minimum:
 - AC3 — Schema §3 `Detailed Behavior` lists allowed WHAT clarifications and forbids architecture, algorithm, module/function design, worker/process topology, implementation sequence/steps, test implementation, deployment mechanics; source-mandated mechanisms go to `Requirement`/`Constraints & Edge Cases`, never here. Schema §5 + `raw_processing.reserved_heading`: section content adding a level-1/2 heading outside a fence is `INVALID_MODEL_OUTPUT` in both RAW decomposition and Standard Process parsing.
 - AC4 — Renderer, headings, order, fixed texts and title line unchanged. `test_a_schema_rendered_product_level_root_binds_as_a_valid_tree`: Fibery-reserialized schema document is read by `read_normative_tree`, fingerprints as `document_fingerprint(document)`, manifest round-trips, Process Result output tree equals the observed tree and round-trips. Existing normative-tree, fingerprint-versioning, processor and review suites green.
 - AC5 — Valid: product-level timeout Requirement (abstraction contract example 5) renders exactly. Rejected: `test_an_implementation_leaking_section_is_rejected` (architecture section in Detailed Behavior, Task steps as H1 in Acceptance, setext test-code section in Constraints, indented deployment section in Requirement), `test_no_section_can_add_a_document_section`, `test_normalization_cannot_add_an_architecture_section`. Still content: `test_subheadings_fences_and_spaced_rules_remain_section_content`.
-- Targeted: `uv run pytest -q tests/test_raw_processing.py tests/test_standard_analysis.py tests/test_normative_tree.py tests/test_fingerprint_versioning.py` → 188 passed.
-- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 132 files already formatted; 1579 passed (baseline 1556 at `1919850`).
+- Review correction (independent review `CHANGES_REQUIRED`: multiline-title bypass of the closed section set) — `22f0089`: `raw_processing.is_single_line` + `MULTILINE_TITLE_MESSAGE`, applied by `_read_title` in `raw_processing` (RAW candidate `title`) and `standard_analysis` (`normalized_requirement.title`). A title that still contains `\n` or `\r` after the existing surrounding-whitespace trim is `INVALID_MODEL_OUTPUT`. Schema §5 states the rule. Tests: `test_a_multiline_title_is_rejected`, `test_a_multiline_normalized_title_is_rejected` (`"T\n## Architecture"`, `"T\r## Architecture"`, CRLF, CR inside prose); `test_a_single_line_title_renders_exactly_as_before` (padded title → exact golden `PRODUCT_LEVEL_DOCUMENT` and document name), `test_a_single_line_normalized_title_renders_exactly_as_before`; `test_a_title_cannot_add_document_structure`, `test_a_normalized_title_cannot_add_document_structure` (level-1/2 headings = title line + the seven fixed sections). The 8 rejection cases fail against `07a4e0c` and pass at `22f0089`; on `07a4e0c` both parsers rendered an extra `## Architecture` for `"T\n## Architecture"` and `"T\r## Architecture"`. A valid title renders byte-identically at both commits.
+- Targeted: `uv run pytest -q tests/test_raw_processing.py tests/test_standard_analysis.py tests/test_normative_tree.py tests/test_fingerprint_versioning.py` → 204 passed (188 at `07a4e0c`).
+- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 132 files already formatted; 1595 passed (1579 at `07a4e0c`; baseline 1556 at `1919850`).
 
 **Blocker:** —  
 **Execution Notes:**
 
-- Base `1919850`; IMPLEMENTING mark `370d62a`; implementation `07a4e0c`.
+- Base `1919850`; IMPLEMENTING mark `370d62a`; implementation `07a4e0c`; first evidence `2ce7956`; review correction `22f0089` (the Implementation Commit: complete implemented tree).
 - `Detailed Behavior` retained under its existing heading/key and redefined; renaming or dropping headings would stop existing Root Documents matching persisted evidence (`content_equivalent` recovery checks).
 - "Omit" is implemented as omitted content rendered with the fixed text; headings are always present (deterministic structure preserved).
 - The structural check runs only on new model output (`parse_model_output`, `parse_analysis_output`). Persisted Processing/Process Results build `Candidate`/`NormalizedRequirement` directly and are neither re-validated nor migrated.
@@ -725,7 +726,8 @@ At minimum:
 - Existing structural fixtures (`FULL_CANDIDATE`, `standard_fake.normalized()`) still carry mechanism-flavoured Detailed Behavior text; left unchanged.
 - No Fibery schema/live state, lifecycle, model-runtime, decomposition or Review semantics changed.
 - Environment: `.python-version` is `3.12.13` (global default `3.12.14`); repository has no Dockerfile or CI config. Reported, not changed.
-- Out-of-scope discovery recorded as `CR-001` (section 11).
+- Out-of-scope discovery recorded as `CR-001` (section 11). Independent review rejected its deferral to RW-R02/RW-R03; the defect is fixed within RW-R01 by `22f0089`. The `CR-001` entry text was not edited.
+- Review correction scope: title parsing only. The line-break check runs after the existing trim, so a leading or trailing line ending is still normalized away as before; only `\n`/`\r` are refused, with no wider character set. Reserved-heading logic unchanged. No change to prompts (`raw_prompt.py`, `standard_prompt.py`, `review_prompt.py`), Requirement ID format, lifecycle, Fibery schema/state, model runtime, decomposition/Standard Process/Review semantics, normative-tree format, fingerprints, or persisted evidence contracts; persisted Processing/Process Results are not re-validated against the title rule.
 
 ### Verification Record
 
