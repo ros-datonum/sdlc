@@ -925,7 +925,7 @@ At minimum:
 
 ## RW-R04 — Correct Standard Review abstraction checks
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R03`
 
