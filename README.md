@@ -54,10 +54,11 @@ verdict, `BLOCKING` included, is evidence for the human at `Ready`, never a
 decision. `State = Apply` is the only approval signal Apply consumes, and Apply
 revalidates the reviewed evidence however that State was reached.
 
-State-driven execution of the machine-owned stages is not implemented yet.
-`RW-O01` fixes the authority contract; the dispatcher and the `sdlc worker run`
-trigger follow in `RW-O02` and `RW-O03`
-(`docs/architecture/Requirement-State-Worker-Contract-v0.1.md`). Until then,
+State-driven execution of the machine-owned stages is not wired yet. `RW-O01`
+fixed the authority contract, and `RW-O02` added the dispatcher
+(`src/sdlc/requirement_dispatcher.py`) that routes one Requirement to its one
+worker; nothing invokes it automatically until the `sdlc worker run` trigger of
+`RW-O03` (`docs/architecture/Requirement-State-Worker-Contract-v0.1.md`). Until then,
 the machine-owned stages are run by hand, including the inherited Standard
 `Draft -> Process` move; afterwards the same commands stay available for
 development, diagnosis, recovery and explicit admin use:

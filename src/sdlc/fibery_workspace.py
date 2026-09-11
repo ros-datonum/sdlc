@@ -331,3 +331,27 @@ class ApplyWorkspace(Protocol):
 
     def set_requirement_state(self, entity_id: str, state: str) -> None:
         """Move the Requirement's workflow State."""
+
+
+class DispatchWorkspace(Protocol):
+    """Operations the Requirement dispatcher performs against Fibery.
+
+    Reads that revalidate a selected route and preflight the Standard
+    candidates of a successful RAW result, and one write: the inherited
+    candidate `Draft -> Process` State. It creates, deletes and relates
+    nothing, and never touches a Document.
+    """
+
+    def read_requirement(self, entity_id: str) -> RequirementRecord | None:
+        """Read one Requirement entity by id."""
+
+    def find_requirements_by_requirement_id(
+        self, requirement_id: str
+    ) -> list[RequirementRecord]:
+        """Every Requirement carrying this Requirement ID, bounded to two."""
+
+    def derived_from(self, entity_id: str) -> list[RequirementRecord]:
+        """The Requirements this one derives from, through Derived From."""
+
+    def set_requirement_state(self, entity_id: str, state: str) -> None:
+        """Move the Requirement's workflow State."""

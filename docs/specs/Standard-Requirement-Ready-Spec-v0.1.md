@@ -418,6 +418,12 @@ normative tree:
   iteration over the current tree when a human rework authorized the cycle,
   without that becoming a general force or bypass.
 
+`RW-O02` supplies that bounded entry: its dispatcher runs Standard Process as
+an authorized new machine cycle, which processes an unchanged tree as the next
+iteration (Standard-Requirement-Process-Spec-v0.1 section 11). The runner that
+invokes the dispatcher automatically arrives with `RW-O03`; until then an
+ordinary or manual run keeps returning `NO_CHANGES_TO_PROCESS` for it.
+
 Ready Decision itself still does not run Process and does not decide how a
 worker starts the new iteration.
 

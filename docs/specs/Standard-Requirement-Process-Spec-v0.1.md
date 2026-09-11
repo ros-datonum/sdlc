@@ -3,7 +3,8 @@
 **Status:** Approved contract. Not yet implemented.  
 **Amended by:** `RW-R03` (SDLC Rewrite v0.2): normalization and analysis at the
 Requirement level (section 3.1) and the `IMPLEMENTATION_LEAKAGE` finding
-(section 6). The amendment's status is tracked in
+(section 6); `RW-O02` adds the authorized new machine cycle (section 11). The
+amendments' status is tracked in
 `docs/rewrite/SDLC-Rewrite-Plan-v0.2.md`.
 
 Defines `Requirement.Type = Standard` + `Requirement.State = Process`.
@@ -455,6 +456,25 @@ There is no automatic repair.
 Producing a genuinely new iteration therefore requires the Draft to change
 through an allowed human or future editing path. That editing capability is not
 designed here; this spec only defines how Process *detects* a new input.
+
+### Authorized new machine cycle (RW-O02, CR-002)
+
+A human `Ready -> Process` authorizes a new cycle even over an unchanged tree
+(`Requirement-Lifecycle-Ownership-v0.2` section 9). The Requirement dispatcher
+therefore invokes Process with an internal authorized-new-cycle entry, and
+only for its `Standard + Process + Not Processed` route. Under that entry, and
+only when the current tree equals the latest current-format output, Process
+produces the next iteration over the current tree instead of
+`NO_CHANGES_TO_PROCESS`: the model runs once, earlier Process and Review
+Results stay as history, and Process performs `Process -> Review` as usual.
+
+Nothing else changes. The input-equality ambiguity of section 9 still
+refuses; empty shells, history, entry and fresh-input checks still apply; the
+entry takes none of the explicit options, and no command exposes it. An
+ordinary or manual run keeps the no-change behaviour described above. What
+keeps one authorized cycle from being requested twice is the runner's
+Processing Status claim (`RW-O03`): `Processing`, `Succeeded` and `Failed` are
+never routed again automatically.
 
 ## 12. Relations — proposed, not written
 
