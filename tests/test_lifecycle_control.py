@@ -192,15 +192,16 @@ def test_an_edited_rework_already_completes_a_new_process_iteration():
 
 
 def test_an_unedited_rework_is_authorized_but_not_yet_processed_known_gap():
-    """The known orchestration gap owned by RW-O02/RW-O03 (CR-002).
+    """The ordinary call over an unedited rework (CR-002).
 
     A human Ready -> Process with no edit is valid rework authority and owes a
-    new Standard Process cycle. Today's processor sees its latest output as the
-    current tree, returns NO_CHANGES_TO_PROCESS and stays in Process with no
-    model call and no new iteration. That is NOT a correct completion of the
-    rework cycle: it pins current behavior until the state-driven worker path
-    can start a new iteration over the unchanged tree, at which point this test
-    is expected to change. RW-O01 changes no Standard Process semantics.
+    new Standard Process cycle. An ordinary or manual call sees its latest
+    output as the current tree, returns NO_CHANGES_TO_PROCESS and stays in
+    Process with no model call and no new iteration; that is NOT a completion
+    of the rework cycle. RW-O02 adds the bounded dispatcher entry that starts
+    the new iteration (tests/test_requirement_dispatcher.py); this ordinary
+    behaviour is unchanged by design, and the runner that invokes the
+    dispatcher automatically arrives with RW-O03.
     """
     ws, requirement, _root, _ = build_ready_workspace()
     human_moves(ws, requirement, "Process")

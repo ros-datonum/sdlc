@@ -176,6 +176,8 @@ def process_standard_requirement(
     recover_empty_result: str | None = None,
     resume_result: str | None = None,
     new_iteration_after: str | None = None,
+    *,
+    authorized_new_cycle: bool = False,
 ) -> StandardProcessResult:
     """Normalize and analyze one Standard Requirement in Process.
 
@@ -191,10 +193,24 @@ def process_standard_requirement(
     processes the current tree as the next iteration. Neither is a general
     bypass: every entry, history and fresh-input check still applies. The
     three options are mutually exclusive.
+
+    `authorized_new_cycle` is set only by the Requirement dispatcher for its
+    `Standard + Process + Not Processed` route, whose State authorized a new
+    machine cycle (CR-002: a human Ready -> Process needs no edit). It changes
+    one case: a tree that still equals the latest current-format output is
+    processed as the next iteration instead of reporting no changes. The
+    input-equality ambiguity (audit A11), empty shells and every entry,
+    history and fresh-input check behave as in an ordinary call; it takes
+    none of the three options, and no command sets it.
     """
     journal = _Journal()
     try:
-        _require_one_option(recover_empty_result, resume_result, new_iteration_after)
+        _require_one_option(
+            recover_empty_result,
+            resume_result,
+            new_iteration_after,
+            authorized_new_cycle=authorized_new_cycle,
+        )
         context = _load_context(workspace, entity_id, recover_empty_result)
 
         resumable = _resumable_result(context)
@@ -203,7 +219,7 @@ def process_standard_requirement(
         elif new_iteration_after is not None:
             _require_new_iteration_anchor(context, new_iteration_after)
             result = _produce_result(workspace, model, context, journal)
-        elif resumable is None and _is_unchanged(context):
+        elif resumable is None and _is_unchanged(context) and not authorized_new_cycle:
             return _no_changes_result(context)
         elif context.shell is not None:
             if resumable is not None:
@@ -254,13 +270,22 @@ def process_standard_requirement(
     )
 
 
-def _require_one_option(*options: str | None) -> None:
+def _require_one_option(
+    *options: str | None, authorized_new_cycle: bool = False
+) -> None:
     """The explicit options select one precise action; two contradict."""
     if sum(option is not None for option in options) > 1:
         raise _StageFailed(
             StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
             f"{RECOVERY_OPTION}, {RESUME_OPTION} and {NEW_ITERATION_OPTION} are "
             "mutually exclusive; nothing was read or written.",
+        )
+    if authorized_new_cycle and any(option is not None for option in options):
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"An authorized new machine cycle takes none of {RECOVERY_OPTION}, "
+            f"{RESUME_OPTION} or {NEW_ITERATION_OPTION}; nothing was read or "
+            "written.",
         )
 
 
