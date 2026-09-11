@@ -1,6 +1,10 @@
 # Standard Requirement Process Specification v0.1
 
-**Status:** Approved contract. Not yet implemented.
+**Status:** Approved contract. Not yet implemented.  
+**Amended by:** `RW-R03` (SDLC Rewrite v0.2): normalization and analysis at the
+Requirement level (section 3.1) and the `IMPLEMENTATION_LEAKAGE` finding
+(section 6). The amendment's status is tracked in
+`docs/rewrite/SDLC-Rewrite-Plan-v0.2.md`.
 
 Defines `Requirement.Type = Standard` + `Requirement.State = Process`.
 
@@ -64,6 +68,57 @@ Process -> Review
 **regardless of whether the analysis produced findings.** A Requirement whose
 analysis is unflattering still moves to `Review` carrying that analysis; the
 independent Review stage decides whether it is acceptable.
+
+### 3.1 Normalization and analysis at the Requirement level
+
+Process works under `Standard-Requirement-Abstraction-v0.2` and the document
+boundary of `Standard-Requirement-Document-Schema-v0.1`: the Requirement states
+WHAT must be true; Technical Solution Architecture, Delivery Planning and Tasks
+own HOW.
+
+Normalization expresses the same source-established Requirement-level
+obligation more clearly. It is not "make this look complete at any cost":
+
+- a valid high-level Requirement stays high-level: wording improves only where
+  source meaning is unchanged, and no technical design is added to make it
+  more concrete;
+- where a valid obligation also carries downstream HOW the source does not
+  mandate, the WHAT is kept, the HOW is removed or omitted from the normalized
+  sections where that does not change source-established intent, and an
+  `IMPLEMENTATION_LEAKAGE` finding describes the leaked material. The HOW is
+  neither moved to another section nor turned into a new product constraint;
+- where the Requirement is itself essentially architecture, implementation,
+  Task, test or deployment work and the originating RAW establishes no
+  independently meaningful obligation behind it, Process reports
+  `IMPLEMENTATION_LEAKAGE` and invents no higher-level Requirement to rescue
+  it. The normalized sections stay faithful to what the Requirement states,
+  so it may remain semantically defective and moves to `Review` carrying the
+  finding. Process is not required to turn every input into a valid
+  Requirement;
+- a technical mechanism the source explicitly mandates remains legitimate
+  Requirement content and is not leakage. One seen only in the current
+  implementation, an example, background discussion, an existing
+  architecture or a suggested solution is not mandated; an unclear mandate
+  that changes WHAT is an open question;
+- Acceptance / Verification keeps the observable satisfaction the source
+  establishes. Test mechanics are never normalized into it; when nothing else
+  is available the section is left missing rather than invented;
+- unresolved product decisions stay open and unanswered. A missing
+  architecture decision is not missing Requirement content unless the source
+  makes that decision part of WHAT.
+
+Analysis is at the same level. Completeness, atomicity and testability are not
+failed merely because downstream design (architecture, algorithms, components,
+data structures, persistence, topology, deployment, exact tests) is not yet
+chosen. `INCOMPLETE`, `MISSING_CONSTRAINT` and `MISSING_EDGE_CASE` concern
+source-established product/system obligations, boundaries and cases.
+`NON_ATOMIC` means more than one independently meaningful obligation, never
+technical facets of one. `NOT_TESTABLE` means satisfaction cannot be observed
+or evaluated at the Requirement level, not that no test has been designed.
+
+This is semantic work the model performs under the Process prompt
+(`standard_prompt.py`). Deterministic code validates the closed output contract
+and the document structure; it does not classify prose.
 
 ## 4. Entry condition
 
@@ -175,7 +230,8 @@ proposed_relations:
 
 findings:
   - kind: INCOMPLETE | AMBIGUOUS | NON_ATOMIC | INCONSISTENT | NOT_TESTABLE
-          | MISSING_CONSTRAINT | MISSING_EDGE_CASE        (about this Requirement)
+          | MISSING_CONSTRAINT | MISSING_EDGE_CASE
+          | IMPLEMENTATION_LEAKAGE                        (about this Requirement)
           | POSSIBLE_DUPLICATE | POSSIBLE_CONFLICT | POSSIBLE_CHANGE
           | POSSIBLE_SUPERSESSION                         (about another one)
     requirement_id      required for the kinds about another Requirement,
@@ -190,6 +246,12 @@ findings:
 `normalized_requirement` reuses the sections of
 `Standard-Requirement-Document-Schema-v0.1` exactly, so the document is still
 rendered deterministically by code.
+
+`IMPLEMENTATION_LEAKAGE` (added by `RW-R03`) is a finding about this
+Requirement, so it carries no `requirement_id`: downstream HOW inside the
+Requirement, or a Requirement that is itself HOW (section 3.1). Its detail names
+which case applies and the leaked material. Process assigns no severity;
+Review does.
 
 ## 7. Permitted Fibery mutations
 

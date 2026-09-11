@@ -38,6 +38,10 @@ class FindingKind(StrEnum):
     Quality findings describe the requirement itself; comparison findings
     describe its relationship to an existing Standard Requirement. Neither ever
     mutates anything: Review decides what they mean.
+
+    IMPLEMENTATION_LEAKAGE is a quality finding: downstream HOW inside the
+    Requirement, or a Requirement that is itself architecture, Task, test or
+    deployment work (Standard-Requirement-Process-Spec-v0.1 section 3.1).
     """
 
     INCOMPLETE = "INCOMPLETE"
@@ -47,6 +51,7 @@ class FindingKind(StrEnum):
     NOT_TESTABLE = "NOT_TESTABLE"
     MISSING_CONSTRAINT = "MISSING_CONSTRAINT"
     MISSING_EDGE_CASE = "MISSING_EDGE_CASE"
+    IMPLEMENTATION_LEAKAGE = "IMPLEMENTATION_LEAKAGE"
     POSSIBLE_DUPLICATE = "POSSIBLE_DUPLICATE"
     POSSIBLE_CONFLICT = "POSSIBLE_CONFLICT"
     POSSIBLE_CHANGE = "POSSIBLE_CHANGE"

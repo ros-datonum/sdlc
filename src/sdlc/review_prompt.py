@@ -85,8 +85,9 @@ Rules:
   severity. Two classes of new finding exist, and `requirement_id` separates
   them:
   * A finding ABOUT THIS Requirement (INCOMPLETE, AMBIGUOUS, NON_ATOMIC,
-    INCONSISTENT, NOT_TESTABLE, MISSING_CONSTRAINT, MISSING_EDGE_CASE) carries
-    no `requirement_id`: omit the key or set it to null. When another
+    INCONSISTENT, NOT_TESTABLE, MISSING_CONSTRAINT, MISSING_EDGE_CASE,
+    IMPLEMENTATION_LEAKAGE) carries no `requirement_id`: omit the key or set it
+    to null. When another
     Requirement is only evidence or context for the point, name it inside
     `detail`, never in `requirement_id`. A finding of one of these kinds that
     carries a `requirement_id` is rejected as a whole, together with the rest
