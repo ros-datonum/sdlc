@@ -1102,7 +1102,7 @@ No code item in this block starts before `RW-C02` and `RW-C04` are `VERIFIED`.
 
 ## RW-O01 — Separate normal lifecycle control from admin CLI invocation
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-C02`
 
@@ -1147,10 +1147,31 @@ At minimum inspect/change as required:
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
+**Implementation Commit:** `5433c3c676a9326a31621ba1493367dd4d562cb3`  
+**Implementation Evidence:**
+
+- Review correction (independent review `CHANGES_REQUIRED`: the Ready spec called an unedited rework that stays in Process a correct outcome) — `5433c3c`: Ready spec §11 now states that `Ready -> Process` always authorizes a new Standard Process cycle, edited or not (`RW-C02` §9); that with a changed tree today's processor already completes it; and that the unchanged-tree `NO_CHANGES_TO_PROCESS` is a known gap of the current worker path for RW-O02/RW-O03 (`CR-002`), not a completed rework. Ready Decision still neither runs Process nor decides how a worker starts the iteration. §12 keeps both edit orders and adds rework with no edit (Flow C) as equally valid. "Require an edit before rework" is rejected; the review decision is recorded in `CR-002`.
+- AC1 — `tests/test_lifecycle_control.py`: `test_a_direct_ready_to_apply_is_applied_without_the_approve_command` (PASS, NEEDS_WORK and BLOCKING: the human State write is the only mutation before Apply, and the real `apply_standard_requirement` returns `REQUIREMENT_APPLIED` with State `Applied`); `test_a_direct_ready_to_apply_is_still_refused_on_stale_reviewed_content` (all three verdicts: `REVIEW_RESULT_STALE`, zero writes, State stays `Apply`); `test_apply_takes_no_verdict_acknowledgement` (signature `(workspace, entity_id)`; `apply --acknowledge-verdict` is rejected by the parser); `test_the_admin_approve_leads_to_the_same_apply_as_a_direct_transition` (the admin command yields an identical Requirement record and the same Apply outcome). Apply logic unchanged; docstring only.
+- AC2 — `test_ready_is_a_human_boundary_standard_process_does_not_start_from` (at Ready: `REQUIREMENT_NOT_IN_PROCESS`, no model call, zero mutations); `test_a_direct_ready_to_process_is_the_rework_authority_edited_or_not` (edited and unedited: the human State write alone, with no rework command, artifact or marker, puts the Requirement into Standard Process's stage with a normal result, and Process/Review history stays byte-identical); `test_an_edited_rework_already_completes_a_new_process_iteration` (`REQUIREMENT_PROCESSED` iteration 2, model invoked, State `Review`, Review Result set unchanged); `test_an_unedited_rework_is_authorized_but_not_yet_processed_known_gap` (`NO_CHANGES_TO_PROCESS`, no model call, zero mutations, State stays `Process`, no new iteration; pinned as the known RW-O02/RW-O03 gap of `CR-002`, not as a completed rework). Ready spec §0, §11 and §12 and the README state that `State = Process` reached from Ready is the durable rework signal whether or not the content was edited.
+- AC3 — `cli.py`: `REQUIREMENT_LIFECYCLE_NOTE` on the requirement group; the `MANUAL_WORKER` label on process, normalize, review and apply; the `ADMIN_DECISION` label and admin/compatibility descriptions on approve and rework; the `--acknowledge-verdict` help describes a safety check of the command, not approval authority. Tests: `test_the_requirement_commands_state_the_normal_lifecycle`, `test_approve_and_rework_remain_available_as_admin_commands`, `test_the_acknowledgement_is_a_safety_check_of_the_command_only` (the command still returns `VERDICT_ACKNOWLEDGEMENT_REQUIRED` at BLOCKING with zero mutations, while a direct `Ready -> Apply` at BLOCKING is applied), `test_the_admin_approve_cannot_bypass_the_evidence_checks` (`REVIEW_RESULT_STALE`, zero mutations, State stays Ready), `test_the_admin_rework_makes_only_the_state_transition`. Ready spec §0 scopes §§6–10 to the command; Apply spec §4 and §16 no longer assume the command's checks ran.
+- AC4 — `ready_decision.py` and `requirement_apply.py` changed only in docstrings, so the validation logic is reused unchanged. Existing suites green: `test_ready_decision.py`, `test_ready_decision_validation.py`, `test_cli_ready.py`, `test_requirement_apply.py`, `test_requirement_apply_resume.py`, `test_requirement_apply_validation.py`, `test_cli_apply.py` (stale refusal, tree and fingerprint binding, malformed or ambiguous evidence, no false State write, no peer or relation mutation, independent Apply revalidation).
+- Red check, run at `33104cc` against the `849e3da` source (scratch copy with a `getattr` fallback for the two new description constants): the 13 AC1/AC2 behavior tests of that version passed, because Apply already consumed `State = Apply` and Standard Process already entered on `State = Process`; the 4 AC3 contract and help tests failed. It was not re-run after the review correction.
+- Targeted: `uv run pytest -q tests/test_lifecycle_control.py tests/test_ready_decision.py tests/test_ready_decision_validation.py tests/test_cli_ready.py tests/test_requirement_apply.py tests/test_requirement_apply_resume.py tests/test_requirement_apply_validation.py tests/test_cli_apply.py tests/test_cli.py tests/test_cli_review.py tests/test_cli_end_to_end.py tests/test_standard_processor.py tests/test_standard_processor_state_machine.py tests/test_standard_processor_iterations.py tests/test_standard_process_review_chain.py` → 344 passed (325 at `849e3da`).
+- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 143 files already formatted; 1731 passed (1712 at `849e3da`).
+
 **Blocker:** —  
-**Execution Notes:** —
+**Execution Notes:**
+
+- Base `849e3da`; IMPLEMENTING mark `e58c479`; implementation `33104cc`; first evidence `5c5e142`; review correction `5433c3c` (the Implementation Commit: complete implemented tree), which changed only Ready spec §§11–12 and `tests/test_lifecycle_control.py` (`git diff 33104cc 5433c3c -- src config` is empty).
+- Changed: `src/sdlc/cli.py` (help text, descriptions and their constants, handler docstrings); `src/sdlc/ready_decision.py` and `src/sdlc/requirement_apply.py` (module docstrings only); `docs/specs/Standard-Requirement-Ready-Spec-v0.1.md` (amendment line, new §0, §§2, 4, 6, 9, 11, 16); `docs/specs/Standard-Requirement-Apply-Spec-v0.1.md` (amendment line, §4, §16); `README.md` (Requirement lifecycle control section); new `tests/test_lifecycle_control.py`.
+- Direct transitions needed no code change: Apply's entry already required only `State = Apply` plus evidence revalidation, and Standard Process's entry is `State = Process`. RW-O01 changes contract text, CLI help, docstrings and tests, not Ready, Apply or Process logic.
+- The `approve` command keeps every check, including `--acknowledge-verdict`, as optional admin UX, and records the same `State = Apply`. No approval or rework artifact, flag, field or ledger was added.
+- The README says state-driven execution is not implemented yet; the dispatcher and trigger belong to RW-O02 and RW-O03.
+- Not implemented, by design: `sdlc worker run`, Type+State routing, Processing Status, the Fibery reset automation, polling or other triggers, the inherited Standard `Draft -> Process` progression.
+- Unedited rework: a human `Ready -> Process` authorizes a new Standard Process cycle even when the tree is unchanged. Today's processor returns `NO_CHANGES_TO_PROCESS` for it, stays in Process and runs no model, and no existing Process mode forces a new cycle. The Ready spec and the tests present this as the known gap, not as correct fulfilment. Independent review rejected requiring an edit before rework and assigned a bounded, non-bypass way to start that iteration to RW-O02/RW-O03; recorded in `CR-002`. RW-O01 designs no dispatcher or processor interface and changes no Standard Process semantics.
+- The Ready spec's "No implementation exists yet" status line is historical and was left as is.
+- Not changed: Standard Process, Review and RAW code, `results.py`, the Fibery workspace and schema, model runtime/auth, bootstrap, A1–A11 hardening, the AMR dogfood corpus.
+- Proposed Change Request: `CR-002`, with the independent-review decision recorded; its status stays `PROPOSED` until the human updates the plan.
 
 ### Verification Record
 
@@ -1814,6 +1835,45 @@ Why current item cannot/should not absorb it: RW-R01 must preserve Requirement
 Proposed decision: Reject a model-supplied title containing a line break as
   invalid model output, with tests, in the items that own those output
   contracts (RW-R02 for RAW decomposition, RW-R03 for Standard Process).
+Blocking: NO
+Status: PROPOSED
+```
+
+```text
+CR-002
+Discovered In: RW-O01
+Observation: After a completed Process -> Review -> Ready cycle the current
+  normative tree equals the latest Process Result's output tree. A human
+  Ready -> Process without an edit therefore reaches Standard Process as
+  NO_CHANGES_TO_PROCESS, a normal outcome: no model call, no new iteration,
+  State stays Process. --new-iteration-after cannot force a new cycle either,
+  because it requires the tree to equal the latest Result's input and differ
+  from its output. So the RW-C02 section 9 chain "Process -> Review -> Ready"
+  after rework is not reachable for an unedited rework through any existing
+  Standard Process mode (pinned by
+  test_an_unedited_direct_rework_currently_finds_nothing_to_process).
+Why current item cannot/should not absorb it: RW-O01 fixes the authority
+  contract only and must not change Standard Process semantics, dispatcher
+  routing or Processing Status. The frozen owners are RW-O02 (dispatcher and
+  typed result handling) and RW-O03 (runner); RW-O04 proves rework end to end.
+Proposed decision: Before RW-O02 fixes its typed-result handling, the human
+  decides what an unedited rework means. Options include requiring an edit
+  before rework, with the dispatcher reporting NO_CHANGES_TO_PROCESS after a
+  rework as a visible non-advancing outcome, or adding an explicit Standard
+  Process mode that reprocesses the current tree as a new iteration when it
+  is entered from a Ready rework.
+Review decision (independent review of RW-O01, CHANGES_REQUIRED):
+  Rejected option: require an edit before rework. It contradicts RW-C02
+    section 9, under which Ready -> Process means "start a new Standard
+    Process cycle using the current Requirement content and preserved
+    history"; an edit is not a prerequisite of that authorization.
+  Accepted semantic requirement: a human Ready -> Process authorizes a new
+    Standard Process cycle even when the normative tree is unchanged.
+  Implementation owner: RW-O02/RW-O03. They must provide a bounded way for
+    the state-driven worker path to start a new Process iteration over the
+    current tree when that cycle was authorized by the human rework
+    transition, and it must not become a general force or bypass mechanism.
+    RW-O01 designs no dispatcher or processor interface for it.
 Blocking: NO
 Status: PROPOSED
 ```

@@ -1,10 +1,14 @@
-"""`STANDARD Requirement + Ready Decision` — record a human decision, honestly.
+"""`STANDARD Requirement + Ready Decision` — the admin/compatibility decision surface.
 
-Implements Standard-Requirement-Ready-Spec-v0.1. Ready is the boundary where
-the system stops deciding and a person does. This capability performs no AI
-reasoning and invokes no model: it records an explicit human decision through
-one existing workflow transition, after deterministically validating that the
-decision applies to the Requirement state that was actually reviewed.
+Implements Standard-Requirement-Ready-Spec-v0.1 as amended by RW-O01. Under
+Requirement-Lifecycle-Ownership-v0.2 the human decision at Ready *is* the
+Requirement State transition: `Ready -> Apply` approves and `Ready -> Process`
+requests rework, made directly in Fibery or by an assistant on the human's
+explicit instruction. Nothing here is required for that. This module is the
+optional admin/compatibility way to make the same two transitions on explicit
+request; it creates no other kind of approval or rework, and the State it
+writes is the only durable signal. It performs no AI reasoning and invokes no
+model.
 
 Two decisions exist, and they are deliberately asymmetric:
 
@@ -14,7 +18,10 @@ Two decisions exist, and they are deliberately asymmetric:
   the latest valid Review Result — document fingerprint, Process iteration and
   Process output fingerprint. Any drift is `REVIEW_RESULT_STALE` with nothing
   mutated. A non-PASS verdict must be acknowledged by name; there is no
-  `--force`.
+  `--force`. That acknowledgement is a safety check of this command only: a
+  direct `Ready -> Apply` carries none, and Apply revalidates the reviewed
+  bindings however the Requirement reached Apply, so this command cannot make
+  stale evidence applicable.
 - **REWORK** (`Ready -> Process`) certifies nothing. A stale or badly reviewed
   Requirement is exactly one that ought to go back, so REWORK validates only
   the entry state.

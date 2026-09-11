@@ -14,6 +14,12 @@ The Root Document is never written or moved: it stays the same contained
 Document, and `Applied` on the Requirement is the only approved-placement
 signal. A successful Apply issues zero Document writes.
 
+`State = Apply` is the approval (Requirement-Lifecycle-Ownership-v0.2),
+whether a human set it directly in Fibery, an assistant set it on the human's
+explicit instruction, or the admin `approve` command did. Apply cannot tell
+which and does not need to: it takes no verdict acknowledgement and
+revalidates the reviewed evidence identically every time.
+
 Two invariants shape the code:
 
 - **nothing normative is written until every predictable check has passed**:

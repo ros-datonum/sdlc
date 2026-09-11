@@ -34,6 +34,49 @@ Do not expand the implementation scope unless a current approved specification, 
   normative child Documents reach Process and Review and are bound by Review,
   Ready and Apply; legacy Root-only evidence is never replayed or certified)
 
+## Requirement lifecycle control
+
+Lifecycle decisions are Requirement State transitions in Fibery
+(`docs/architecture/Requirement-Lifecycle-Ownership-v0.2.md`). The human, or an
+authorized assistant acting on the human's explicit instruction, makes exactly
+these:
+
+```text
+RAW       Draft -> Process    start processing this RAW source
+Standard  Ready -> Process    rework: start a new Standard Process cycle
+Standard  Ready -> Apply      approve: apply the exact reviewed state
+```
+
+Every other normal transition is machine-owned: RAW `Process -> Review`, the
+inherited Standard `Draft -> Process` for candidates of an authorized RAW cycle,
+Standard `Process -> Review -> Ready`, and `Apply -> Applied`. A Review
+verdict, `BLOCKING` included, is evidence for the human at `Ready`, never a
+decision. `State = Apply` is the only approval signal Apply consumes, and Apply
+revalidates the reviewed evidence however that State was reached.
+
+State-driven execution of the machine-owned stages is not implemented yet.
+`RW-O01` fixes the authority contract; the dispatcher and the `sdlc worker run`
+trigger follow in `RW-O02` and `RW-O03`
+(`docs/architecture/Requirement-State-Worker-Contract-v0.1.md`). Until then,
+the machine-owned stages are run by hand, including the inherited Standard
+`Draft -> Process` move; afterwards the same commands stay available for
+development, diagnosis, recovery and explicit admin use:
+
+```text
+sdlc project requirement process   --requirement <RAW id>        RAW in Process
+sdlc project requirement normalize --requirement <Standard id>   Standard in Process
+sdlc project requirement review    --requirement <Standard id>   Standard in Review
+sdlc project requirement apply     --requirement <Standard id>   Standard in Apply
+```
+
+`sdlc project requirement approve` and `rework` are admin/compatibility
+shortcuts for the two Ready transitions. Neither is required: a direct
+`Ready -> Apply` or `Ready -> Process` in Fibery means the same thing and needs
+no command. `approve` checks the reviewed evidence first and requires
+`--acknowledge-verdict` for a `NEEDS_WORK` or `BLOCKING` verdict; that is a
+safety check of the command, not approval authority, and it cannot make stale
+evidence applicable.
+
 ## Running `sdlc project init`
 
 ```bash
