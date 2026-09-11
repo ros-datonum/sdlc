@@ -835,7 +835,7 @@ At minimum inspect/change as required:
 
 ## RW-R03 — Correct Standard Process normalization and analysis
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R01`, `RW-R02`
 
