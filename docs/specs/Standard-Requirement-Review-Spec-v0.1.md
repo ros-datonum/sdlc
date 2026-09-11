@@ -1,6 +1,9 @@
 # Standard Requirement Review Specification v0.1
 
-**Status:** APPROVED. Frozen contract for implementation. No implementation exists yet.
+**Status:** APPROVED. Frozen contract for implementation. No implementation exists yet.  
+**Amended by:** `RW-R04` (SDLC Rewrite v0.2): review at the Requirement level
+(section 3.1) and the originating RAW source as read-only evidence (section 5).
+The amendment's status is tracked in `docs/rewrite/SDLC-Rewrite-Plan-v0.2.md`.
 
 Design for `Requirement.Type = Standard` + `Requirement.State = Review`.
 
@@ -45,6 +48,51 @@ Review **never** normalizes, **never** rewrites, and **never** repairs the
 Requirement Root Document. A problem becomes a finding, never a silent fix.
 `Process = writer, Review = verifier` is a hard boundary (section 12).
 
+### 3.1 Review at the Requirement level
+
+Review judges the Requirement under `Standard-Requirement-Abstraction-v0.2`:
+the Requirement states WHAT must be true; Technical Solution Architecture,
+Delivery Planning and Tasks own HOW. It checks every Process claim
+independently and looks for what Process missed, using the originating RAW
+source (section 5) as read-only evidence. The existing finding vocabulary
+carries every judgement; no kind is added:
+
+| Defect | Finding |
+|---|---|
+| downstream HOW presented as Requirement truth: architecture, algorithms, components, internal data structures or fields, topology, triggers, persistence, implementation sequence, test or deployment mechanics, including Task/test mechanics disguised as Acceptance / Verification | `IMPLEMENTATION_LEAKAGE` |
+| source invention: normative content the originating source does not establish or contradicts; the detail says so | `INCONSISTENT` |
+| unjustified fragmentation: the Requirement is only part of one source-established obligation; the detail names the larger obligation | `INCOMPLETE`, plus `IMPLEMENTATION_LEAKAGE` when implementation facets were promoted |
+| more than one genuinely independent obligation in one Requirement | `NON_ATOMIC` |
+| a genuine Requirement-level gap in, or contradiction of, the source | `INCOMPLETE`, `MISSING_CONSTRAINT`, `MISSING_EDGE_CASE`, `AMBIGUOUS`, `INCONSISTENT` |
+
+All of these are findings about this Requirement and carry no
+`requirement_id`; a peer cited as evidence is named in `detail`.
+
+Not defects:
+
+- missing downstream design. A valid Requirement is not `INCOMPLETE`,
+  `MISSING_CONSTRAINT`, `MISSING_EDGE_CASE` or `NOT_TESTABLE` merely because it
+  lacks architecture, algorithms, component design, data structures,
+  persistence, topology, deployment design or exact tests, and no technical
+  design is required for `PASS`;
+- a technical mechanism the source explicitly mandates. One seen only in the
+  current implementation or a suggested approach is not a mandate;
+- a source-established product decision that is still open. An unanswered
+  architecture question is not missing Requirement content;
+- a paraphrase that keeps the source's meaning. Without source evidence, no
+  source-invention or fragmentation conclusion is drawn from its absence.
+
+Acceptance is judged as observable satisfaction; test design is not required.
+`NON_ATOMIC` never demands one Requirement per sentence, field, parameter,
+error case, status or technical detail.
+
+These are semantic judgements the reviewer makes under the Review prompt
+(`review_prompt.py`). Deterministic code validates only the closed output
+contract, exact coverage of Process findings and relation proposals, the
+self/cross reference rule, severities, the derived verdict and the persisted
+bindings. Verdict derivation, the Ready boundary (section 10) and the mutation
+boundary (section 12) are unchanged.
+
 ## 4. Entry condition
 
 ```text
@@ -66,6 +114,8 @@ other Standard Requirements in the Project, as comparison material: for
 each, Requirement ID, Title, Type, State, Category and its complete current
 normative tree (see the comparison scope below)
 the Requirement's existing real Depends On / Affects relations
+the RAW Requirement(s) it is Derived From and each one's attached Root
+  Document, as read-only source evidence (section 3.1)
 ```
 
 The latest Process Result must be current-format (0.3, manifest v2) and its intended output
@@ -76,7 +126,7 @@ certifies Process evidence about the tree it sees, and there is none.
 The comparison corpus follows the same scope, labelling, limits and refusal
 rules as the Standard Requirement Process specification, including the
 400,000-character bound on the complete assembled reviewer input, which here
-includes the persisted Process claims. In addition, every
+includes the persisted Process claims and the RAW source. In addition, every
 Requirement named by a Process comparison finding or proposed relation must
 resolve unambiguously to an included same-Project Standard with actual Root
 content; a Requirement ID that merely looks valid is not evidence, and an
@@ -85,6 +135,14 @@ before the reviewer runs.
 
 Earlier Process Result iterations are history and are not sent. Previous Review
 Results are not sent either: a reviewer must not anchor on its own prior verdict.
+
+The RAW source is read over the same boundary Standard Process uses, and only
+once a new reviewer invocation is certain, together with the comparison
+corpus: a no-change result never reads it. A Requirement with no `Derived From`
+RAW is reviewed with an empty `(none)` section. A failed read refuses the run
+with `FIBERY_READ_FAILED` before the reviewer runs and before any write. The
+RAW source is evidence, not reviewed input: it is not part of the Review
+Result bindings (section 13), and nothing about it is persisted.
 
 ## 6. Independence
 
@@ -581,6 +639,17 @@ a Process finding can remain UNRESOLVED
 Review can discover a new finding Process did not report
 the Root Document remains semantically unchanged on every path
 earlier Process Results and prior Review Results are excluded from context
+```
+
+### Abstraction (RW-R04)
+
+```text
+the originating RAW source is in the reviewer context; (none) without one
+a RAW read failure refuses before the model and before any write
+a no-change result never reads the RAW source
+IMPLEMENTATION_LEAKAGE, source invention (INCONSISTENT) and fragmentation
+  (INCOMPLETE) can be confirmed or newly reported; NON_ATOMIC stays distinct
+a valid high-level Requirement can PASS without technical design
 ```
 
 ### Review Result

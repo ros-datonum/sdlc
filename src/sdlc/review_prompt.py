@@ -1,10 +1,17 @@
 """The bounded prompt for independent Standard Requirement review.
 
-Context is the Requirement, its current Root Document, the persisted claims of
-the latest Process Result, the relations it already has, and the Project's
-other Standard Requirements as comparison material (entity metadata plus each
-one's complete current Root Document). No Milestones, Epics, Stories, Tasks or
-Project Phases, and no earlier iteration of anything.
+Context is the Requirement, its current Root Document, the originating RAW
+source as read-only evidence, the persisted claims of the latest Process
+Result, the relations it already has, and the Project's other Standard
+Requirements as comparison material (entity metadata plus each one's complete
+current Root Document). No Milestones, Epics, Stories, Tasks or Project
+Phases, and no earlier iteration of anything.
+
+The instructions carry the Requirement-level review rules
+(Standard-Requirement-Abstraction-v0.2; Standard-Requirement-Review-Spec-v0.1
+section 3.1). Judging WHAT against HOW, source fidelity and fragmentation is
+the reviewer's semantic work; deterministic code validates only the closed
+output contract and derives the verdict.
 
 Two exclusions carry the independence of this stage:
 
@@ -69,6 +76,83 @@ Shape:
   }
 }
 
+What a Standard Requirement is:
+
+- A Standard Requirement states WHAT must be true. HOW it will be satisfied is
+  Technical Solution Architecture; decomposing that solution into executable
+  work is Delivery Planning; concrete code, configuration, test and deployment
+  work is a Task. Review the Requirement at that level.
+- It is one independently meaningful product/system obligation: a capability,
+  a required outcome, an observable behavior, a business or system constraint,
+  or an invariant.
+
+Evidence:
+
+- The originating RAW requirement source is read-only evidence of what the
+  source actually established. Compare the Requirement's normative content
+  against it: whether each statement is source-established, whether a
+  technical mechanism is mandated or merely suggested, whether the earlier
+  analysis invented product semantics, whether an open decision is
+  product-level or architecture-only, and whether one source obligation was
+  fragmented.
+- When no RAW source is supplied, reach no source-fidelity conclusion from its
+  absence: do not report source invention or fragmentation because evidence is
+  missing.
+- The earlier analysis is a set of claims, not a conclusion. Check each claim
+  independently, do not simply agree with it, and look for what it missed.
+
+Defects to flag, using the existing finding kinds:
+
+- IMPLEMENTATION_LEAKAGE: downstream HOW presented as Requirement truth:
+  architecture; algorithm choice; classes, functions, modules, libraries or
+  frameworks; internal data structures or fields without independent product
+  meaning; worker or process topology; queue, poll, webhook or scheduler
+  choices; persistence, storage or serialization mechanics; implementation
+  sequences; exact test mechanics; deployment mechanics. This includes Task or
+  test mechanics disguised as Acceptance / Verification: test commands, mocks,
+  fixtures, internal function calls, an exact technical verification path or
+  implementation-specific assertions.
+- A technical mechanism the source explicitly mandates is legitimate
+  Requirement content, not leakage: "Provider execution must use argv and must
+  never use a shell" may stay when the source says so. "Current implementation
+  uses argv" or "Suggested approach: use argv" does not make argv Requirement
+  truth.
+- INCONSISTENT for source invention: normative content (an obligation,
+  constraint, rationale, acceptance condition or other normative fact) that
+  the originating source does not establish or that contradicts it. Say in the
+  detail that the statement is unsupported by, or inconsistent with, the
+  originating source. A paraphrase that keeps the source's meaning is not
+  invention.
+- INCOMPLETE for unjustified fragmentation: the Requirement is only a fragment
+  of one source-established obligation, so it does not represent that
+  obligation at the Requirement level. Name the fragmentation and the larger
+  source obligation in the detail; a peer holding the rest may be cited there,
+  never in `requirement_id`. When the fragment exists because implementation
+  facets became separate Requirements, IMPLEMENTATION_LEAKAGE may also apply.
+- NON_ATOMIC only for the opposite shape: more than one genuinely independent
+  product/system obligation in one Requirement. Never use it for a fragment,
+  and never demand one Requirement per sentence, field, parameter, error case,
+  status or technical detail.
+- Genuine source gaps and contradictions: when the source establishes
+  product/system content the Requirement lost, blurred or contradicts, report
+  INCOMPLETE, MISSING_CONSTRAINT, MISSING_EDGE_CASE, AMBIGUOUS or INCONSISTENT
+  as appropriate. A gap must be a Requirement-level gap, not an undecided HOW.
+
+Not defects:
+
+- Missing downstream design is not a defect. A valid Requirement is never
+  INCOMPLETE, MISSING_CONSTRAINT, MISSING_EDGE_CASE or NOT_TESTABLE merely
+  because it lacks architecture, an algorithm, module, class or function
+  design, data structures, a persistence mechanism, worker topology,
+  deployment design or exact tests. A valid high-level Requirement may deserve
+  no finding at all.
+- Acceptance is judged at the observable-outcome level. Do not require test
+  design for a Requirement to pass.
+- A source-established product decision that is still unresolved may
+  legitimately stay open; do not report it merely because it is unresolved.
+  An unanswered architecture question is not missing Requirement content:
+  leave HOW to Technical Solution Architecture.
+
 Rules:
 
 - Verify every listed Process finding exactly once, by its index. Do not skip
@@ -105,7 +189,8 @@ Rules:
 - Do not state an overall verdict, score or recommendation. There is no field
   for one: it is derived from the severities you assign.
 - Do not propose changes, rewrites, updates, retirement or supersession of any
-  Requirement, and do not describe an action to take. You are reporting, not
+  Requirement, do not describe an action to take, and do not recommend an
+  implementation, a design or replacement wording. You are reporting, not
   instructing.
 - Every other Standard Requirement named by a claim is supplied with its full
   Root Document; verify comparison claims against that text, not the title.
@@ -120,6 +205,7 @@ def build_review_prompt(
     project_name: str,
     root_content: str,
     child_content: str,
+    raw_ancestry: str,
     process_result: ProcessResult,
     relations: RequirementRelations,
     comparison: ComparisonContext,
@@ -138,6 +224,8 @@ def build_review_prompt(
             root_content or "(empty)",
             "",
             _section("Normative child documents", child_content),
+            "",
+            _section("Originating RAW requirement source", raw_ancestry),
             "",
             _findings_section(process_result),
             "",
