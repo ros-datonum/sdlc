@@ -93,6 +93,12 @@ RESERVED_HEADING_MESSAGE = (
     "reserved for the document title and its fixed sections."
 )
 
+# The title is rendered into the level-1 title line and the Root Document name.
+# A Markdown line ending inside it would close the title line and let the rest
+# of the title become document structure, such as a level-2 section.
+LINE_ENDINGS = ("\n", "\r")
+MULTILINE_TITLE_MESSAGE = "{where} contains a line break; a title is a single line."
+
 CANDIDATE_KEYS = frozenset({"category", "title", *SECTION_KEYS})
 REQUIRED_CANDIDATE_KEYS = frozenset({"category", "title", "requirement"})
 FINDING_KEYS = frozenset({"kind", "requirement_id", "detail"})
@@ -163,6 +169,11 @@ def reserved_heading(text: str) -> str | None:
                 return previous
             previous = line
     return None
+
+
+def is_single_line(text: str) -> bool:
+    """Whether `text` holds no Markdown line ending."""
+    return not any(ending in text for ending in LINE_ENDINGS)
 
 
 def parse_model_output(text: str) -> DecompositionResult:
@@ -239,7 +250,7 @@ def _read_candidate(entry: object, index: int) -> Candidate:
         raise InvalidModelOutput(f"{where} is missing: " + ", ".join(missing))
 
     category = _read_category(entry["category"], where)
-    title = _read_text(entry["title"], f"{where} title")
+    title = _read_title(entry["title"], f"{where} title")
     sections = {
         key: _section_text(entry.get(key), key, f"{where} {key}")
         for key in SECTION_KEYS
@@ -261,6 +272,13 @@ def _read_text(value: object, where: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidModelOutput(f"{where} must be a non-empty string.")
     return value.strip()
+
+
+def _read_title(value: object, where: str) -> str:
+    title = _read_text(value, where)
+    if not is_single_line(title):
+        raise InvalidModelOutput(MULTILINE_TITLE_MESSAGE.format(where=where))
+    return title
 
 
 def _section_text(value: object, key: str, where: str) -> str:

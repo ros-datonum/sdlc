@@ -18,11 +18,13 @@ from enum import StrEnum
 from sdlc.raw_processing import (
     DOCUMENT_SECTIONS,
     MISSING_INFORMATION,
+    MULTILINE_TITLE_MESSAGE,
     NO_OPEN_QUESTIONS,
     OPEN_QUESTIONS_KEY,
     RESERVED_HEADING_MESSAGE,
     SECTION_KEYS,
     TITLE_SEPARATOR,
+    is_single_line,
     reserved_heading,
 )
 
@@ -213,7 +215,7 @@ def _read_normalized(entry: dict[str, object]) -> NormalizedRequirement:
         for key in SECTION_KEYS
     }
     return NormalizedRequirement(
-        title=_read_text(entry["title"], "normalized_requirement title"), **sections
+        title=_read_title(entry["title"], "normalized_requirement title"), **sections
     )
 
 
@@ -234,6 +236,13 @@ def _read_text(value: object, where: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidAnalysisOutput(f"{where} must be a non-empty string.")
     return value.strip()
+
+
+def _read_title(value: object, where: str) -> str:
+    title = _read_text(value, where)
+    if not is_single_line(title):
+        raise InvalidAnalysisOutput(MULTILINE_TITLE_MESSAGE.format(where=where))
+    return title
 
 
 def _section_text(value: object, key: str, where: str) -> str:

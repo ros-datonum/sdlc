@@ -4,14 +4,20 @@ import json
 
 import pytest
 
-from sdlc.raw_processing import MISSING_INFORMATION, NO_OPEN_QUESTIONS, SECTION_KEYS
+from sdlc.raw_processing import (
+    DOCUMENT_SECTIONS,
+    MISSING_INFORMATION,
+    NO_OPEN_QUESTIONS,
+    RESERVED_ATX_HEADING_PATTERN,
+    SECTION_KEYS,
+)
 from sdlc.standard_analysis import (
     FindingKind,
     InvalidAnalysisOutput,
     RelationKind,
     parse_analysis_output,
 )
-from standard_fake import analysis_output, normalized
+from standard_fake import analysis_output, normalized, rendered_document
 
 
 def test_parses_a_conforming_response():
@@ -210,3 +216,46 @@ def test_normalization_cannot_add_an_architecture_section(key):
         match=f"normalized_requirement {key} contains the heading '## Architecture'",
     ):
         parse_analysis_output(analysis_output(normalized_changes={key: leaking}))
+
+
+# -- title line -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        pytest.param("T\n## Architecture", id="line-feed"),
+        pytest.param("T\r## Architecture", id="carriage-return"),
+        pytest.param("T\r\n## Architecture", id="crlf"),
+        pytest.param("Reject unauthenticated\rmodel execution", id="cr-in-prose"),
+    ],
+)
+def test_a_multiline_normalized_title_is_rejected(title):
+    with pytest.raises(
+        InvalidAnalysisOutput,
+        match="normalized_requirement title contains a line break",
+    ):
+        parse_analysis_output(analysis_output(normalized_changes={"title": title}))
+
+
+def test_a_single_line_normalized_title_renders_exactly_as_before():
+    """Surrounding whitespace, a trailing line ending included, is still trimmed."""
+    padded = {"title": "  Reject unauthenticated model execution \n"}
+
+    result = parse_analysis_output(analysis_output(normalized_changes=padded))
+
+    assert result.normalized.title == normalized()["title"]
+    assert result.normalized.document("SDLC-FR-9") == rendered_document("SDLC-FR-9")
+
+
+@pytest.mark.parametrize("title", ["## Architecture", "# Implementation Steps", "==="])
+def test_a_normalized_title_cannot_add_document_structure(title):
+    """Heading markup in an accepted title stays inside the title line."""
+    result = parse_analysis_output(analysis_output(normalized_changes={"title": title}))
+    document = result.normalized.document("SDLC-FR-9")
+    lines = document.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+    assert [line for line in lines if RESERVED_ATX_HEADING_PATTERN.match(line)] == [
+        f"# SDLC-FR-9 — {title}",
+        *(f"## {heading}" for _, heading in DOCUMENT_SECTIONS),
+    ]

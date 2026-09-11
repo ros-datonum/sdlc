@@ -8,6 +8,7 @@ from sdlc.raw_processing import (
     DOCUMENT_SECTIONS,
     MISSING_INFORMATION,
     NO_OPEN_QUESTIONS,
+    RESERVED_ATX_HEADING_PATTERN,
     SECTION_KEYS,
     Candidate,
     Category,
@@ -428,4 +429,56 @@ def test_subheadings_fences_and_spaced_rules_remain_section_content():
     outside_fences = "".join(FENCED_BLOCK_PATTERN.split(document)[::2])
     assert [line for line in outside_fences.splitlines() if line.startswith("## ")] == [
         f"## {heading}" for _, heading in DOCUMENT_SECTIONS
+    ]
+
+
+# -- title line -------------------------------------------------------------
+
+# A line ending inside the title would close the level-1 title line, and the
+# rest of the title would render as a document section.
+MULTILINE_TITLES = [
+    pytest.param("T\n## Architecture", id="line-feed"),
+    pytest.param("T\r## Architecture", id="carriage-return"),
+    pytest.param("T\r\n## Architecture", id="crlf"),
+    pytest.param("Bound provider\rexecution time", id="carriage-return-in-prose"),
+]
+
+
+def document_headings(document: str) -> list[str]:
+    """Every level-1 and level-2 ATX heading line, on Markdown line endings."""
+    lines = document.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return [line for line in lines if RESERVED_ATX_HEADING_PATTERN.match(line)]
+
+
+@pytest.mark.parametrize("title", MULTILINE_TITLES)
+def test_a_multiline_title_is_rejected(title):
+    candidate = {**PRODUCT_LEVEL_CANDIDATE, "title": title}
+
+    with pytest.raises(
+        InvalidModelOutput, match="candidate 0 title contains a line break"
+    ):
+        parse_model_output(output(candidates=[candidate]))
+
+
+def test_a_single_line_title_renders_exactly_as_before():
+    """Surrounding whitespace, a trailing line ending included, is still trimmed."""
+    padded = {**PRODUCT_LEVEL_CANDIDATE, "title": "  Bound provider execution time \n"}
+
+    [candidate] = parse_model_output(output(candidates=[padded])).candidates
+
+    assert candidate.title == "Bound provider execution time"
+    assert candidate.document("SDLC-FR-0040") == PRODUCT_LEVEL_DOCUMENT
+    assert candidate.document_name("SDLC-FR-0040") == (
+        "SDLC-FR-0040 — Bound provider execution time"
+    )
+
+
+@pytest.mark.parametrize("title", ["## Architecture", "# Implementation Steps", "==="])
+def test_a_title_cannot_add_document_structure(title):
+    """Heading markup in an accepted title stays inside the title line."""
+    document = candidate_of(title=title).document("SDLC-FR-0031")
+
+    assert document_headings(document) == [
+        f"# SDLC-FR-0031 — {title}",
+        *(f"## {heading}" for _, heading in DOCUMENT_SECTIONS),
     ]

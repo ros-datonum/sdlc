@@ -210,6 +210,12 @@ Level-3 and deeper headings are allowed as structure within a section. A fenced
 code block (the backtick fence grammar that `raw_source` uses to decide document
 structure) is literal example text, so a heading quoted inside one is content.
 
+The title is model output from the same two producers and is rendered into the
+level-1 title line and the Root Document name. After its surrounding whitespace
+is trimmed, it must be exactly one line: a title containing a line feed (`\n`)
+or a carriage return (`\r`) is invalid (`INVALID_MODEL_OUTPUT`), because the
+rest of it would render as document structure, such as a level-2 section.
+
 This keeps a Requirement document from gaining an architecture,
 implementation-steps, Task, or test-code section.
 
