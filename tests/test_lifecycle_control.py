@@ -151,10 +151,33 @@ def test_ready_is_a_human_boundary_standard_process_does_not_start_from():
     assert mutations_since(ws, before) == []
 
 
-def test_a_direct_ready_to_process_is_the_rework_authority_for_standard_process():
+@pytest.mark.parametrize("edited", [True, False], ids=["edited", "unedited"])
+def test_a_direct_ready_to_process_is_the_rework_authority_edited_or_not(edited):
+    """RW-C02 section 9: an edit is not a precondition of rework.
+
+    The human State write alone, with no rework command, artifact or marker,
+    puts the Requirement into Standard Process's stage, and its history
+    survives either way.
+    """
     ws, requirement, root, _ = build_ready_workspace(verdict="NEEDS_WORK")
     history = [*process_result_nodes(ws), *review_result_nodes(ws)]
     evidence = {node.secret: ws.content[node.secret] for node in history}
+    human_moves(ws, requirement, "Process")
+    if edited:
+        edit_root(ws, root, "The human narrowed the scope for this rework.")
+
+    result = process_standard_requirement(
+        ws, FakeModelRuntime([analysis_output()]), requirement.id
+    )
+
+    assert result.code is not StandardProcessResultCode.REQUIREMENT_NOT_IN_PROCESS
+    assert result.is_normal, result
+    assert {secret: ws.content[secret] for secret in evidence} == evidence
+
+
+def test_an_edited_rework_already_completes_a_new_process_iteration():
+    ws, requirement, root, _ = build_ready_workspace(verdict="NEEDS_WORK")
+    reviews = review_result_nodes(ws)
     human_moves(ws, requirement, "Process")
     edit_root(ws, root, "The human narrowed the scope for this rework.")
     model = FakeModelRuntime([analysis_output()])
@@ -164,20 +187,20 @@ def test_a_direct_ready_to_process_is_the_rework_authority_for_standard_process(
     assert result.code is StandardProcessResultCode.REQUIREMENT_PROCESSED, result
     assert result.iteration == 2 and model.was_invoked
     assert ws.requirements[requirement.id].state == "Review"
-    assert {secret: ws.content[secret] for secret in evidence} == evidence
     assert len(process_result_nodes(ws)) == 2
-    assert review_result_nodes(ws) == [
-        node for node in history if "Review Result" in node.name
-    ]
+    assert review_result_nodes(ws) == reviews
 
 
-def test_an_unedited_direct_rework_currently_finds_nothing_to_process():
-    """Pinned for RW-O02/RW-O03, not solved here.
+def test_an_unedited_rework_is_authorized_but_not_yet_processed_known_gap():
+    """The known orchestration gap owned by RW-O02/RW-O03 (CR-002).
 
-    Standard Process sees its latest output as the current tree and returns
-    NO_CHANGES_TO_PROCESS, staying in Process with no model call. How the
-    state-driven dispatcher turns an unedited rework into a new cycle is left
-    to those items; Standard Process semantics are unchanged by RW-O01.
+    A human Ready -> Process with no edit is valid rework authority and owes a
+    new Standard Process cycle. Today's processor sees its latest output as the
+    current tree, returns NO_CHANGES_TO_PROCESS and stays in Process with no
+    model call and no new iteration. That is NOT a correct completion of the
+    rework cycle: it pins current behavior until the state-driven worker path
+    can start a new iteration over the unchanged tree, at which point this test
+    is expected to change. RW-O01 changes no Standard Process semantics.
     """
     ws, requirement, _root, _ = build_ready_workspace()
     human_moves(ws, requirement, "Process")
@@ -189,7 +212,8 @@ def test_an_unedited_direct_rework_currently_finds_nothing_to_process():
     assert result.code is StandardProcessResultCode.NO_CHANGES_TO_PROCESS
     assert not model.was_invoked
     assert mutations_since(ws, before) == []
-    assert ws.requirements[requirement.id].state == "Process"
+    assert ws.requirements[requirement.id].state == "Process", "the gap: no Review"
+    assert len(process_result_nodes(ws)) == 1, "the gap: no new iteration yet"
 
 
 # -- AC3: approve and rework are admin/compatibility only ------------------------

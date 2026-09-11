@@ -399,27 +399,45 @@ zero model calls, zero Root Document writes, zero Process Result or Review Resul
 writes, zero `Revision` writes and zero relation writes. Previous artifacts remain
 unchanged as the record of why rework was needed.
 
-What happens next is already frozen behaviour: once the content is edited, the
-Standard Processor sees a changed fingerprint and starts a new iteration; if
-nothing was edited it returns `NO_CHANGES_TO_PROCESS` and stays in `Process`. Both
-outcomes are correct. **Ready Decision does not solve editing.** How the
-state-driven dispatcher of `RW-O02`/`RW-O03` handles an unedited rework is left
-to those items.
+`Ready -> Process` always authorizes a new Standard Process cycle over the
+current Requirement content and preserved history, whether or not the Root
+Document or a normative child was edited (`RW-C02` section 9). An edit is not a
+precondition of rework.
+
+What today's Standard Processor does with that authorization depends on the
+normative tree:
+
+- **tree changed** since the latest Process Result's output: it starts a new
+  iteration, which already completes the rework cycle
+  `Process -> Review -> Ready`;
+- **tree unchanged**: it returns `NO_CHANGES_TO_PROCESS` and the Requirement
+  stays in `Process`. This does **not** yet satisfy the rework chain that
+  `RW-C02` requires. It is a known gap of the current worker path, not a
+  correct completed outcome. Closing it belongs to state-driven orchestration
+  (`RW-O02`/`RW-O03`, `CR-002`): the worker path must be able to start a new
+  iteration over the current tree when a human rework authorized the cycle,
+  without that becoming a general force or bypass.
+
+Ready Decision itself still does not run Process and does not decide how a
+worker starts the new iteration.
 
 ## 12. Editing order — not enforced
 
 ```text
 Flow A   Ready -> REWORK -> human edits -> Standard Process
 Flow B   Ready -> human edits -> REWORK -> Standard Process
+Flow C   Ready -> REWORK (no edit)      -> Standard Process
 ```
 
-Both are permitted. No artificial ordering is imposed between editing the Root
-Document and recording the REWORK decision, unless implementation later finds a
-concrete correctness requirement.
+All three are permitted. No artificial ordering is imposed between editing the
+Root Document and recording the REWORK decision, and an edit is not required at
+all: a human may send the Requirement back unchanged, and that REWORK is as
+valid as the other two. Each authorizes a new Standard Process cycle
+(section 11).
 
-Fibery allows editing in any workflow state, and the Standard Processor's
-canonical fingerprints already determine whether a real new processing input
-exists. This capability only records the decision.
+Fibery allows editing in any workflow state. Whether the tree changed decides
+how today's Standard Processor behaves (section 11), never whether the rework
+was authorized. This capability only records the decision.
 
 ## 13. `Ready -> Review` — excluded
 
