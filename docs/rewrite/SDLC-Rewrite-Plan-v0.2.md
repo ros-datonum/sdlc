@@ -739,7 +739,7 @@ At minimum:
 
 ## RW-R02 — Correct RAW decomposition contract
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R01`
 
