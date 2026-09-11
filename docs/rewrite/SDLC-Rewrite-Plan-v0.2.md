@@ -1016,7 +1016,7 @@ At minimum:
 
 ## RW-R05 — Build Requirement abstraction regression corpus
 
-**Status:** PLANNED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R02`, `RW-R03`, `RW-R04`
 
