@@ -1016,7 +1016,7 @@ At minimum:
 
 ## RW-R05 — Build Requirement abstraction regression corpus
 
-**Status:** IMPLEMENTING  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R02`, `RW-R03`, `RW-R04`
 
@@ -1061,10 +1061,29 @@ Tests/fixtures only, plus supporting documentation if needed.
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
+**Implementation Commit:** `c60ac7b7444cfb36c63539f6b09441841deeb25c`  
+**Implementation Evidence:**
+
+- AC1 — `tests/abstraction_corpus.py` `CORPUS`: ten `AbstractionCase`s whose `abstraction_class` is the frozen class text verbatim (`test_the_corpus_covers_exactly_the_ten_frozen_classes`). Each states its source obligations (identifying concepts plus `Category`) and at least one WHAT/HOW property (`test_every_case_states_its_classification_and_boundary_properties`): C01 one FR plus six implementation markers; C02 two independent FRs; C03 a `CONSTRAINT` with mandated `argv`/`shell` that must never draw `IMPLEMENTATION_LEAKAGE`; C04 one FR with Redis/queue/poll suggestion markers; C05 observable-acceptance markers and six test-mechanics markers, where a leaky Root must draw `IMPLEMENTATION_LEAKAGE` in Process and Review; C06 the `override` open question and forbidden answers; C07 the `cancellation mechanism` architecture question, never `INCOMPLETE`/`MISSING_*`/`NOT_TESTABLE`; C08 field markers; C09 an NFR; C10 a system `CONSTRAINT`. Reference outputs satisfy every property through the real stages: `test_the_reference_decomposition_satisfies_the_case` (all ten), `test_the_reference_normalization_satisfies_the_case` (C03, C05, C06, C07), `test_the_reference_review_satisfies_the_case` (C03, C05, C06, C07, C09, C10).
+- AC2 — `test_promoting_implementation_detail_is_caught`: the C01 watchdog and C08 field as standalone candidates (`implementation-detail-as-requirement`, `candidate-without-source-obligation`), the C04 Redis suggestion as a constraint (`implementation-detail-as-requirement`), and C05 test mechanics as acceptance (`test-mechanics-as-acceptance`); `test_normalization_that_keeps_test_mechanics_unreported_is_caught` (`test-mechanics-as-acceptance`, `expected-finding-missing`). Every defective output first passes the real stage, so detection is semantic, not structural.
+- AC3 — `test_a_decomposition_that_drops_the_mandate_is_caught` and `test_a_normalization_that_drops_the_mandate_is_caught` (`mandated-mechanism-dropped`; the latter also `unwarranted-finding` for leakage on the mandate); `test_a_review_that_confirms_leakage_on_the_mandate_is_caught` (`unwarranted-finding`).
+- AC4 — `test_a_decomposition_that_answers_the_open_question_is_caught` and `test_a_normalization_that_answers_the_open_question_is_caught` (`open-product-question-closed`, `open-product-question-answered`).
+- AC5 — the module docstring states purpose, what is and is not proven, and how to apply a case to any validated output. Cases are plain data with descriptive ids and cardinality notes. Checks return named `Violation`s, and the module imports no prompt. `test_a_bare_model_output_can_be_checked_without_running_a_stage` (all ten via `parse_model_output`), `test_an_analysis_output_can_be_checked_without_running_a_stage`; paraphrase controls `test_a_paraphrase_that_keeps_the_meaning_passes` and `test_a_reworded_open_question_still_counts_as_open` show that prose is not the pass criterion.
+- Corpus: `uv run pytest -q tests/test_abstraction_corpus.py` → 54 passed, including 10 negative controls.
+- R01–R04 abstraction suites and the stage suites the corpus drives: `uv run pytest -q tests/test_abstraction_corpus.py tests/test_raw_processing.py tests/test_raw_decomposition_contract.py tests/test_standard_analysis.py tests/test_standard_process_abstraction.py tests/test_standard_review_abstraction.py tests/test_finding_reference_contract.py tests/test_normative_tree.py tests/test_fingerprint_versioning.py tests/test_raw_processor.py tests/test_standard_processor.py tests/test_standard_reviewer.py` → 444 passed (390 at `542372b` without the corpus).
+- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 141 files already formatted; 1709 passed (1655 at `542372b`).
+
 **Blocker:** —  
-**Execution Notes:** —
+**Execution Notes:**
+
+- Base `542372b`; IMPLEMENTING mark `be0ca1f`; implementation `c60ac7b`.
+- Changed: new `tests/abstraction_corpus.py` (cases, reference outputs, checks) and new `tests/test_abstraction_corpus.py` (stage runners on the Fibery fakes, reference and negative controls). `git diff 542372b c60ac7b -- src config` is empty: no prompt, parser, processor, reviewer, persistence, lifecycle or runtime change.
+- The data-and-checks module is separate from the stage runners so it can be applied to live output without the fakes. The reviewer guide lives in its docstring rather than a separate document, next to the data it describes.
+- Properties are concept markers chosen for these synthetic sources, not a general classifier. A valid paraphrase that avoids a marker word would be flagged; the case, not the output, should then be revisited.
+- Cardinality is exact per case only from fixture semantics (one capability; two independent obligations). No global or ideal count exists, and no historical AMR count is encoded.
+- No live AMR, live Fibery or live model is used; the fixtures are repository-owned synthetic text.
+- The corpus exposed no defect in the verified R02–R04 behavior. Deterministic fixtures do not prove live-model semantic quality; that remains dogfood evidence (RW-V02).
+- No Proposed Change Request.
 
 ### Verification Record
 
