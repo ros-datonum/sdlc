@@ -18,10 +18,14 @@ from enum import StrEnum
 from sdlc.raw_processing import (
     DOCUMENT_SECTIONS,
     MISSING_INFORMATION,
+    MULTILINE_TITLE_MESSAGE,
     NO_OPEN_QUESTIONS,
     OPEN_QUESTIONS_KEY,
+    RESERVED_HEADING_MESSAGE,
     SECTION_KEYS,
     TITLE_SEPARATOR,
+    is_single_line,
+    reserved_heading,
 )
 
 # `<CODE>-<FR|NFR|CON|RAW>-<digits>`; the processor never invents one.
@@ -211,7 +215,7 @@ def _read_normalized(entry: dict[str, object]) -> NormalizedRequirement:
         for key in SECTION_KEYS
     }
     return NormalizedRequirement(
-        title=_read_text(entry["title"], "normalized_requirement title"), **sections
+        title=_read_title(entry["title"], "normalized_requirement title"), **sections
     )
 
 
@@ -234,13 +238,26 @@ def _read_text(value: object, where: str) -> str:
     return value.strip()
 
 
+def _read_title(value: object, where: str) -> str:
+    title = _read_text(value, where)
+    if not is_single_line(title):
+        raise InvalidAnalysisOutput(MULTILINE_TITLE_MESSAGE.format(where=where))
+    return title
+
+
 def _section_text(value: object, key: str, where: str) -> str:
     """A section's content, with the approved schema's fixed text when absent."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return NO_OPEN_QUESTIONS if key == OPEN_QUESTIONS_KEY else MISSING_INFORMATION
     if not isinstance(value, str):
         raise InvalidAnalysisOutput(f"{where} must be a string.")
-    return value.strip()
+    text = value.strip()
+    heading = reserved_heading(text)
+    if heading is not None:
+        raise InvalidAnalysisOutput(
+            RESERVED_HEADING_MESSAGE.format(where=where, heading=heading)
+        )
+    return text
 
 
 def _read_finding(entry: object, index: int) -> Finding:

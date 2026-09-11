@@ -12,8 +12,11 @@ not define is a validation error.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from enum import StrEnum
+
+from sdlc.raw_source import FENCED_BLOCK_PATTERN
 
 MISSING_INFORMATION = "Not specified in source."
 NO_OPEN_QUESTIONS = "None."
@@ -76,6 +79,26 @@ DOCUMENT_SECTIONS = (
 SECTION_KEYS = tuple(key for key, _ in DOCUMENT_SECTIONS)
 OPEN_QUESTIONS_KEY = "open_questions"
 
+# Heading levels 1 and 2 are the document's own structure: the title and the
+# fixed sections. Section content holding one would add a section the schema
+# does not define, such as an architecture or implementation-steps section.
+# Both Markdown forms count: an ATX `#`/`##` line, and a line of `=` or `-`
+# directly below a text line (refused even where a list above would make it a
+# thematic break). Fenced content is literal example text, on the same boundary
+# raw_source uses to decide document structure.
+RESERVED_ATX_HEADING_PATTERN = re.compile(r"^ {0,3}#{1,2}(?:[ \t]|$)")
+SETEXT_UNDERLINE_PATTERN = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+RESERVED_HEADING_MESSAGE = (
+    "{where} contains the heading {heading!r}; heading levels 1 and 2 are "
+    "reserved for the document title and its fixed sections."
+)
+
+# The title is rendered into the level-1 title line and the Root Document name.
+# A Markdown line ending inside it would close the title line and let the rest
+# of the title become document structure, such as a level-2 section.
+LINE_ENDINGS = ("\n", "\r")
+MULTILINE_TITLE_MESSAGE = "{where} contains a line break; a title is a single line."
+
 CANDIDATE_KEYS = frozenset({"category", "title", *SECTION_KEYS})
 REQUIRED_CANDIDATE_KEYS = frozenset({"category", "title", "requirement"})
 FINDING_KEYS = frozenset({"kind", "requirement_id", "detail"})
@@ -128,6 +151,29 @@ class DecompositionResult:
     @property
     def is_empty(self) -> bool:
         return not self.candidates
+
+
+def reserved_heading(text: str) -> str | None:
+    """The first heading of level 1 or 2 in `text` outside a fenced block.
+
+    Returns the heading's text line, or None when section content adds no
+    document structure. Only structure is examined, never meaning.
+    """
+    unified = text.replace("\r\n", "\n").replace("\r", "\n")
+    for prose in FENCED_BLOCK_PATTERN.split(unified)[::2]:
+        previous = ""
+        for line in prose.split("\n"):
+            if RESERVED_ATX_HEADING_PATTERN.match(line):
+                return line
+            if previous.strip() and SETEXT_UNDERLINE_PATTERN.match(line):
+                return previous
+            previous = line
+    return None
+
+
+def is_single_line(text: str) -> bool:
+    """Whether `text` holds no Markdown line ending."""
+    return not any(ending in text for ending in LINE_ENDINGS)
 
 
 def parse_model_output(text: str) -> DecompositionResult:
@@ -204,7 +250,7 @@ def _read_candidate(entry: object, index: int) -> Candidate:
         raise InvalidModelOutput(f"{where} is missing: " + ", ".join(missing))
 
     category = _read_category(entry["category"], where)
-    title = _read_text(entry["title"], f"{where} title")
+    title = _read_title(entry["title"], f"{where} title")
     sections = {
         key: _section_text(entry.get(key), key, f"{where} {key}")
         for key in SECTION_KEYS
@@ -228,13 +274,26 @@ def _read_text(value: object, where: str) -> str:
     return value.strip()
 
 
+def _read_title(value: object, where: str) -> str:
+    title = _read_text(value, where)
+    if not is_single_line(title):
+        raise InvalidModelOutput(MULTILINE_TITLE_MESSAGE.format(where=where))
+    return title
+
+
 def _section_text(value: object, key: str, where: str) -> str:
     """A section's content, with the schema's fixed text when absent."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return NO_OPEN_QUESTIONS if key == OPEN_QUESTIONS_KEY else MISSING_INFORMATION
     if not isinstance(value, str):
         raise InvalidModelOutput(f"{where} must be a string.")
-    return value.strip()
+    text = value.strip()
+    heading = reserved_heading(text)
+    if heading is not None:
+        raise InvalidModelOutput(
+            RESERVED_HEADING_MESSAGE.format(where=where, heading=heading)
+        )
+    return text
 
 
 def _read_finding(entry: object, index: int) -> Finding:

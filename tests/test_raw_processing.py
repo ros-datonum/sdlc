@@ -5,14 +5,18 @@ import json
 import pytest
 
 from sdlc.raw_processing import (
+    DOCUMENT_SECTIONS,
     MISSING_INFORMATION,
     NO_OPEN_QUESTIONS,
+    RESERVED_ATX_HEADING_PATTERN,
+    SECTION_KEYS,
     Candidate,
     Category,
     FindingKind,
     InvalidModelOutput,
     parse_model_output,
 )
+from sdlc.raw_source import FENCED_BLOCK_PATTERN
 
 FULL_CANDIDATE = {
     "category": "FUNCTIONAL",
@@ -282,3 +286,199 @@ def test_the_document_name_matches_the_root_document_convention():
 
 def test_rendering_is_deterministic():
     assert candidate_of().document("SDLC-FR-1") == candidate_of().document("SDLC-FR-1")
+
+
+# -- abstraction boundary ---------------------------------------------------
+
+# Abstraction contract example 5: the obligation and its observable evidence,
+# no mechanism. Sections the source does not establish are omitted.
+PRODUCT_LEVEL_CANDIDATE = {
+    "category": "FUNCTIONAL",
+    "title": "Bound provider execution time",
+    "requirement": (
+        "Provider execution must stop within the configured execution time "
+        "limit and report the timeout outcome to the caller."
+    ),
+    "detailed_behavior": (
+        "The limit applies to each execution attempt. When it is reached, the "
+        "caller receives a timeout outcome instead of a result."
+    ),
+    "acceptance_verification": (
+        "An execution that exceeds the configured limit ends, and its caller "
+        "observes a timeout outcome for that request."
+    ),
+}
+
+PRODUCT_LEVEL_DOCUMENT = """\
+# SDLC-FR-0040 — Bound provider execution time
+
+## Requirement
+
+Provider execution must stop within the configured execution time limit and report the timeout outcome to the caller.
+
+## Detailed Behavior
+
+The limit applies to each execution attempt. When it is reached, the caller receives a timeout outcome instead of a result.
+
+## Rationale
+
+Not specified in source.
+
+## Acceptance / Verification
+
+An execution that exceeds the configured limit ends, and its caller observes a timeout outcome for that request.
+
+## Constraints & Edge Cases
+
+Not specified in source.
+
+## Non-Goals
+
+Not specified in source.
+
+## Open Questions
+
+None.
+"""
+
+
+def test_a_product_level_requirement_renders_under_the_schema():
+    """Omitted sections keep their heading and take the fixed text."""
+    [candidate] = parse_model_output(
+        output(candidates=[PRODUCT_LEVEL_CANDIDATE])
+    ).candidates
+
+    assert candidate.document("SDLC-FR-0040") == PRODUCT_LEVEL_DOCUMENT
+
+
+def test_every_section_but_the_requirement_may_be_omitted():
+    sparse = {"category": "CONSTRAINT", "title": "T", "requirement": "R"}
+
+    candidate = parse_model_output(output(candidates=[sparse])).candidates[0]
+
+    assert {key: getattr(candidate, key) for key in SECTION_KEYS} == {
+        "requirement": "R",
+        "detailed_behavior": MISSING_INFORMATION,
+        "rationale": MISSING_INFORMATION,
+        "acceptance_verification": MISSING_INFORMATION,
+        "constraints_edge_cases": MISSING_INFORMATION,
+        "non_goals": MISSING_INFORMATION,
+        "open_questions": NO_OPEN_QUESTIONS,
+    }
+
+
+# Implementation leakage shaped as document structure: each would add an
+# architecture, Task, test-code or deployment section the schema does not have.
+LEAKING_SECTIONS = [
+    pytest.param(
+        "detailed_behavior",
+        "The limit applies per attempt.\n\n## Architecture\n\n"
+        "A watchdog thread kills the provider process group.",
+        "## Architecture",
+        id="architecture-section",
+    ),
+    pytest.param(
+        "acceptance_verification",
+        "# Implementation Steps\n\n1. Add a timeout argument to run_model().",
+        "# Implementation Steps",
+        id="task-steps-as-title",
+    ),
+    pytest.param(
+        "constraints_edge_cases",
+        "Test Code\n---------\nassert run(timeout=1).status == 'TIMEOUT'",
+        "Test Code",
+        id="test-code-setext-section",
+    ),
+    pytest.param(
+        "requirement",
+        "Execution is bounded.\n   ## Deployment\nRestart the worker service.",
+        "   ## Deployment",
+        id="indented-deployment-section",
+    ),
+]
+
+
+@pytest.mark.parametrize(("key", "content", "heading"), LEAKING_SECTIONS)
+def test_an_implementation_leaking_section_is_rejected(key, content, heading):
+    leaking = {**PRODUCT_LEVEL_CANDIDATE, key: content}
+
+    with pytest.raises(InvalidModelOutput, match="reserved") as error:
+        parse_model_output(output(candidates=[leaking]))
+
+    assert f"candidate 0 {key} contains the heading {heading!r}" in str(error.value)
+
+
+@pytest.mark.parametrize("key", SECTION_KEYS)
+def test_no_section_can_add_a_document_section(key):
+    injected = {**PRODUCT_LEVEL_CANDIDATE, key: "Text.\n\n## Rationale\n\nMore."}
+
+    with pytest.raises(InvalidModelOutput, match=f"candidate 0 {key} contains"):
+        parse_model_output(output(candidates=[injected]))
+
+
+def test_subheadings_fences_and_spaced_rules_remain_section_content():
+    content = (
+        "### Success\n\nThe caller receives the result.\n\n---\n\n"
+        "```markdown\n## Requirement\nQuoted source example.\n```"
+    )
+
+    candidate = candidate_of(detailed_behavior=content)
+    document = candidate.document("SDLC-FR-0031")
+
+    assert candidate.detailed_behavior == content
+    outside_fences = "".join(FENCED_BLOCK_PATTERN.split(document)[::2])
+    assert [line for line in outside_fences.splitlines() if line.startswith("## ")] == [
+        f"## {heading}" for _, heading in DOCUMENT_SECTIONS
+    ]
+
+
+# -- title line -------------------------------------------------------------
+
+# A line ending inside the title would close the level-1 title line, and the
+# rest of the title would render as a document section.
+MULTILINE_TITLES = [
+    pytest.param("T\n## Architecture", id="line-feed"),
+    pytest.param("T\r## Architecture", id="carriage-return"),
+    pytest.param("T\r\n## Architecture", id="crlf"),
+    pytest.param("Bound provider\rexecution time", id="carriage-return-in-prose"),
+]
+
+
+def document_headings(document: str) -> list[str]:
+    """Every level-1 and level-2 ATX heading line, on Markdown line endings."""
+    lines = document.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return [line for line in lines if RESERVED_ATX_HEADING_PATTERN.match(line)]
+
+
+@pytest.mark.parametrize("title", MULTILINE_TITLES)
+def test_a_multiline_title_is_rejected(title):
+    candidate = {**PRODUCT_LEVEL_CANDIDATE, "title": title}
+
+    with pytest.raises(
+        InvalidModelOutput, match="candidate 0 title contains a line break"
+    ):
+        parse_model_output(output(candidates=[candidate]))
+
+
+def test_a_single_line_title_renders_exactly_as_before():
+    """Surrounding whitespace, a trailing line ending included, is still trimmed."""
+    padded = {**PRODUCT_LEVEL_CANDIDATE, "title": "  Bound provider execution time \n"}
+
+    [candidate] = parse_model_output(output(candidates=[padded])).candidates
+
+    assert candidate.title == "Bound provider execution time"
+    assert candidate.document("SDLC-FR-0040") == PRODUCT_LEVEL_DOCUMENT
+    assert candidate.document_name("SDLC-FR-0040") == (
+        "SDLC-FR-0040 — Bound provider execution time"
+    )
+
+
+@pytest.mark.parametrize("title", ["## Architecture", "# Implementation Steps", "==="])
+def test_a_title_cannot_add_document_structure(title):
+    """Heading markup in an accepted title stays inside the title line."""
+    document = candidate_of(title=title).document("SDLC-FR-0031")
+
+    assert document_headings(document) == [
+        f"# SDLC-FR-0031 — {title}",
+        *(f"## {heading}" for _, heading in DOCUMENT_SECTIONS),
+    ]

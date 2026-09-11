@@ -4,13 +4,20 @@ import json
 
 import pytest
 
+from sdlc.raw_processing import (
+    DOCUMENT_SECTIONS,
+    MISSING_INFORMATION,
+    NO_OPEN_QUESTIONS,
+    RESERVED_ATX_HEADING_PATTERN,
+    SECTION_KEYS,
+)
 from sdlc.standard_analysis import (
     FindingKind,
     InvalidAnalysisOutput,
     RelationKind,
     parse_analysis_output,
 )
-from standard_fake import analysis_output, normalized
+from standard_fake import analysis_output, normalized, rendered_document
 
 
 def test_parses_a_conforming_response():
@@ -167,3 +174,88 @@ def test_the_rendered_document_follows_the_approved_schema():
     ]
     assert "Provenance" not in document
     assert document.splitlines()[0] == f"# SDLC-FR-9 — {normalized()['title']}"
+
+
+# -- abstraction boundary ---------------------------------------------------
+
+
+def test_a_product_level_requirement_may_omit_unestablished_sections():
+    product_level = {
+        "title": "Bound provider execution time",
+        "requirement": (
+            "Provider execution must stop within the configured execution time "
+            "limit and report the timeout outcome to the caller."
+        ),
+        "acceptance_verification": (
+            "An execution that exceeds the configured limit ends, and its caller "
+            "observes a timeout outcome for that request."
+        ),
+    }
+
+    result = parse_analysis_output(
+        json.dumps({"normalized_requirement": product_level})
+    )
+
+    assert {key: getattr(result.normalized, key) for key in SECTION_KEYS} == {
+        "requirement": product_level["requirement"],
+        "detailed_behavior": MISSING_INFORMATION,
+        "rationale": MISSING_INFORMATION,
+        "acceptance_verification": product_level["acceptance_verification"],
+        "constraints_edge_cases": MISSING_INFORMATION,
+        "non_goals": MISSING_INFORMATION,
+        "open_questions": NO_OPEN_QUESTIONS,
+    }
+
+
+@pytest.mark.parametrize("key", SECTION_KEYS)
+def test_normalization_cannot_add_an_architecture_section(key):
+    leaking = "Text.\n\n## Architecture\n\nA watchdog thread kills the process."
+
+    with pytest.raises(
+        InvalidAnalysisOutput,
+        match=f"normalized_requirement {key} contains the heading '## Architecture'",
+    ):
+        parse_analysis_output(analysis_output(normalized_changes={key: leaking}))
+
+
+# -- title line -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        pytest.param("T\n## Architecture", id="line-feed"),
+        pytest.param("T\r## Architecture", id="carriage-return"),
+        pytest.param("T\r\n## Architecture", id="crlf"),
+        pytest.param("Reject unauthenticated\rmodel execution", id="cr-in-prose"),
+    ],
+)
+def test_a_multiline_normalized_title_is_rejected(title):
+    with pytest.raises(
+        InvalidAnalysisOutput,
+        match="normalized_requirement title contains a line break",
+    ):
+        parse_analysis_output(analysis_output(normalized_changes={"title": title}))
+
+
+def test_a_single_line_normalized_title_renders_exactly_as_before():
+    """Surrounding whitespace, a trailing line ending included, is still trimmed."""
+    padded = {"title": "  Reject unauthenticated model execution \n"}
+
+    result = parse_analysis_output(analysis_output(normalized_changes=padded))
+
+    assert result.normalized.title == normalized()["title"]
+    assert result.normalized.document("SDLC-FR-9") == rendered_document("SDLC-FR-9")
+
+
+@pytest.mark.parametrize("title", ["## Architecture", "# Implementation Steps", "==="])
+def test_a_normalized_title_cannot_add_document_structure(title):
+    """Heading markup in an accepted title stays inside the title line."""
+    result = parse_analysis_output(analysis_output(normalized_changes={"title": title}))
+    document = result.normalized.document("SDLC-FR-9")
+    lines = document.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+    assert [line for line in lines if RESERVED_ATX_HEADING_PATTERN.match(line)] == [
+        f"# SDLC-FR-9 — {title}",
+        *(f"## {heading}" for _, heading in DOCUMENT_SECTIONS),
+    ]
