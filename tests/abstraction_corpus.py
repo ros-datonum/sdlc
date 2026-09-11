@@ -1,34 +1,46 @@
 """Requirement abstraction regression corpus (RW-R05).
 
 Ten synthetic cases, one per frozen abstraction class, each pairing a RAW
-source with the semantic properties a correct Requirement-level
-interpretation of it must have:
+source with what a correct Requirement-level interpretation of it must keep
+or avoid:
 
     Requirement                     = WHAT must be true
     Technical Solution Architecture = HOW it will be satisfied
     Delivery Planning               = executable decomposition
     Task                            = implementation, test, deployment work
 
-What is checked is meaning, marked by explicit concepts, never prose. A case
-names the words that identify each source obligation and its category, the
-technical detail that must not become Requirement truth, the mandated
-mechanism that must survive, the open product question that must stay open
-and the answers that must not appear, the architecture question that must
-stay downstream, the observable acceptance, and the test mechanics that are
-not acceptance. Any paraphrase that keeps those properties passes. Exact
-wording is required only where identity is the point: a mandated mechanism.
+This is a deterministic, case-specific semantic proxy, not a general semantic
+or NLP classifier. Each case records, for its own synthetic source:
+
+- meaning as `Concept`s. A concept is a bounded list of equivalent
+  expressions chosen for that source and is present when any one of them
+  appears. An obligation may need several concepts, and all of them must be
+  present. Concepts identify each source obligation, the observable
+  acceptance, the open product question and the answers to it, and the
+  architecture question;
+- identity as exact strings, and only where identity is itself the property:
+  a source-mandated mechanism (`argv`, `shell`) and the implementation or test
+  identifiers that must never become Requirement content (`ModelRequest`,
+  `request_id`, `pytest`, ...).
+
+Whole model sentences are never golden output. The reference outputs are one
+valid example per stage, and any output whose wording stays within a case's
+configured equivalents passes. A novel valid paraphrase outside those
+equivalents can still be flagged: that calls for reviewer judgement and,
+where the meaning truly is equivalent, an explicit update to the case's
+concept alternatives. Such a flag is not by itself evidence that the product
+behavior is wrong.
 
 Cardinality is stated only where the synthetic source fixes it: one
 capability, or two genuinely independent obligations. There is no global or
 ideal candidate count, and no count from the historical AMR corpus is a
 target anywhere here.
 
-Each case carries reference outputs: one valid structured answer for each
-stage where the case's property matters (RAW decomposition for all ten;
-Standard Process and Standard Review where the property is theirs). They are
-examples that satisfy the properties, not golden output. The checks take the
-parsed structured output of any run, so an independent reviewer or a
-dogfood harness can apply the same case to a live model's validated output:
+Reference outputs cover each stage where the case's property matters (RAW
+decomposition for all ten; Standard Process and Standard Review where the
+property is theirs). The checks take the parsed structured output of any run,
+so an independent reviewer or a dogfood harness can apply the same case to a
+live model's validated output:
 
     decomposition_violations(case, parse_model_output(text).candidates)
     analysis = parse_analysis_output(text)
@@ -37,15 +49,16 @@ dogfood harness can apply the same case to a live model's validated output:
 
 An empty list means every property holds; otherwise each Violation names the
 case, the property it breaks, and why. The checks show whether one output
-respects the boundary. They do not show that a live model will produce such
-output; that is dogfood evidence. No live model, live Fibery or AMR state is
-used, and this module imports no prompt, so prompt wording can change freely.
+respects the boundary as this proxy models it. They do not show that a live
+model will produce such output; that is dogfood evidence. No live model, live
+Fibery or AMR state is used, and this module imports no prompt, so prompt
+wording can change freely.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sdlc.raw_processing import Candidate, Category
 from sdlc.standard_analysis import Finding, FindingKind, NormalizedRequirement
@@ -95,15 +108,42 @@ class Violation:
 
 
 @dataclass(frozen=True)
-class Obligation:
-    """One source-established obligation and the concepts that identify it."""
+class Concept:
+    """One meaning, present when any of its accepted expressions appears.
 
-    concepts: tuple[str, ...]
+    The alternatives are a bounded list of equivalents for one synthetic
+    source, compared case-insensitively as substrings; they are not a general
+    synonym model.
+    """
+
+    alternatives: tuple[str, ...]
+
+    @property
+    def label(self) -> str:
+        return self.alternatives[0]
+
+    def is_in(self, text: str) -> bool:
+        return any(alternative.lower() in text for alternative in self.alternatives)
+
+
+def any_of(*alternatives: str) -> Concept:
+    return Concept(alternatives)
+
+
+@dataclass(frozen=True)
+class Obligation:
+    """One source-established obligation: every concept it needs, and its category."""
+
+    concepts: tuple[Concept, ...]
     category: Category
 
     def is_carried_by(self, statement: Statement) -> bool:
         text = _text(statement, STATEMENT_SECTIONS)
-        return all(concept.lower() in text for concept in self.concepts)
+        return all(concept.is_in(text) for concept in self.concepts)
+
+    @property
+    def label(self) -> str:
+        return " + ".join(concept.label for concept in self.concepts)
 
 
 @dataclass(frozen=True)
@@ -136,6 +176,8 @@ class AbstractionCase:
 
     `obligations` lists every obligation the source establishes; when
     `cardinality_is_exact`, a decomposition has exactly that many candidates.
+    `implementation_detail`, `mandated` and `test_mechanics` are identities
+    matched exactly; the Concept fields are meanings.
     """
 
     case_id: str
@@ -146,15 +188,15 @@ class AbstractionCase:
     cardinality_is_exact: bool = True
     implementation_detail: tuple[str, ...] = ()
     mandated: tuple[str, ...] = ()
-    open_question: str | None = None
-    invented_answers: tuple[str, ...] = ()
-    architecture_question: str | None = None
-    acceptance: tuple[str, ...] = ()
+    open_question: Concept | None = None
+    invented_answer: Concept | None = None
+    architecture_question: Concept | None = None
+    acceptance: tuple[Concept, ...] = ()
     test_mechanics: tuple[str, ...] = ()
     never_findings: frozenset[FindingKind] = frozenset()
     process: ProcessScenario | None = None
     review: ReviewScenario | None = None
-    notes: tuple[str, ...] = field(default=())
+    notes: tuple[str, ...] = ()
 
     def violation(self, rule: str, detail: str) -> Violation:
         return Violation(self.case_id, rule, detail)
@@ -184,7 +226,7 @@ def decomposition_violations(
             found.append(
                 case.violation(
                     OBLIGATIONS_MERGED if merged else OBLIGATION_LOST,
-                    f"no candidate of its own states {obligation.concepts}",
+                    f"no candidate of its own states {obligation.label!r}",
                 )
             )
             continue
@@ -280,38 +322,40 @@ def _content_violations(
         for term in case.mandated
         if term.lower() not in mandates
     ]
-    if case.open_question:
-        marker = case.open_question.lower()
-        if marker not in questions:
+    question = case.open_question
+    if question is not None:
+        if not question.is_in(questions):
             found.append(
                 case.violation(
-                    QUESTION_CLOSED, f"{marker!r} is no longer an open question"
+                    QUESTION_CLOSED, f"{question.label!r} is no longer an open question"
                 )
             )
-        if marker in deciding:
+        if question.is_in(deciding):
             found.append(
                 case.violation(
-                    ANSWER_INVENTED, f"{marker!r} is settled outside Open Questions"
+                    ANSWER_INVENTED,
+                    f"{question.label!r} is settled outside Open Questions",
                 )
             )
-    found += [
-        case.violation(ANSWER_INVENTED, f"{answer!r} answers the open product question")
-        for answer in case.invented_answers
-        if answer.lower() in deciding
-    ]
-    if case.architecture_question and (
-        case.architecture_question.lower() in f"{what} {questions}"
-    ):
+    if case.invented_answer is not None and case.invented_answer.is_in(deciding):
+        found.append(
+            case.violation(
+                ANSWER_INVENTED,
+                f"{case.invented_answer.label!r} answers the open product question",
+            )
+        )
+    architecture = case.architecture_question
+    if architecture is not None and architecture.is_in(f"{what} {questions}"):
         found.append(
             case.violation(
                 ARCHITECTURE_UPSTREAM,
-                f"{case.architecture_question!r} is carried as Requirement content",
+                f"{architecture.label!r} is carried as Requirement content",
             )
         )
     found += [
-        case.violation(ACCEPTANCE_LOST, f"acceptance no longer shows {marker!r}")
-        for marker in case.acceptance
-        if marker.lower() not in acceptance
+        case.violation(ACCEPTANCE_LOST, f"acceptance no longer shows {concept.label!r}")
+        for concept in case.acceptance
+        if not concept.is_in(acceptance)
     ]
     found += [
         case.violation(TEST_MECHANICS, f"{mechanic!r} is stated as Requirement content")
@@ -368,7 +412,25 @@ TIMEOUT_ACCEPTANCE = (
     "An execution that exceeds the configured limit ends, and its caller "
     "observes a timeout outcome for that request."
 )
-TIMEOUT_OBLIGATION = Obligation(("time limit", "timeout"), Category.FUNCTIONAL)
+TIMEOUT_OBLIGATION = Obligation(
+    (
+        any_of(
+            "time limit",
+            "maximum duration",
+            "duration limit",
+            "bounded duration",
+            "execution limit",
+        ),
+        any_of(
+            "timeout",
+            "timed out",
+            "deadline exceeded",
+            "deadline-exceeded",
+            "over-duration",
+        ),
+    ),
+    Category.FUNCTIONAL,
+)
 
 ARGV = "Provider execution must use argv and must never use a shell."
 ARGV_TITLE = "Execute providers through argv without a shell"
@@ -480,8 +542,11 @@ recorded in the audit log with the requesting user and the time of export.
 Both are implemented by the shared `ExportService`.
 """,
         obligations=(
-            Obligation(("export", "csv"), Category.FUNCTIONAL),
-            Obligation(("audit",), Category.FUNCTIONAL),
+            Obligation(
+                (any_of("export", "download"), any_of("csv", "comma-separated")),
+                Category.FUNCTIONAL,
+            ),
+            Obligation((any_of("audit"),), Category.FUNCTIONAL),
         ),
         implementation_detail=("ExportService",),
         notes=(
@@ -515,7 +580,10 @@ Both are implemented by the shared `ExportService`.
 
 - Provider execution must use argv and must never use a shell.
 """,
-        obligations=(Obligation(("argv", "shell"), Category.CONSTRAINT),),
+        # The mandate is an identity: its concepts are the mechanism words.
+        obligations=(
+            Obligation((any_of("argv"), any_of("shell")), Category.CONSTRAINT),
+        ),
         mandated=("argv", "shell"),
         never_findings=frozenset({FindingKind.IMPLEMENTATION_LEAKAGE}),
         decomposition=_decomposition(
@@ -566,7 +634,15 @@ Both are implemented by the shared `ExportService`.
 Suggested approach: push failures onto a Redis queue consumed by a notifier
 worker, or poll the job table every 30 seconds.
 """,
-        obligations=(Obligation(("notified", "fails"), Category.FUNCTIONAL),),
+        obligations=(
+            Obligation(
+                (
+                    any_of("notified", "notification", "alerted", "informed"),
+                    any_of("fails", "failure", "failed"),
+                ),
+                Category.FUNCTIONAL,
+            ),
+        ),
         implementation_detail=(
             "redis",
             "queue",
@@ -604,8 +680,26 @@ the previous outcome is not shown as the new cycle's result.
 
 {REWORK_TEST_MECHANICS}
 """,
-        obligations=(Obligation(("rework", "outcome"), Category.FUNCTIONAL),),
-        acceptance=("new cycle", "success or failure"),
+        obligations=(
+            Obligation(
+                (
+                    any_of("rework", "sent back", "returned for more work"),
+                    any_of("outcome", "result"),
+                ),
+                Category.FUNCTIONAL,
+            ),
+        ),
+        acceptance=(
+            any_of(
+                "new cycle", "next cycle", "new processing cycle", "following cycle"
+            ),
+            any_of(
+                "success or failure",
+                "succeeded or failed",
+                "succeeds or fails",
+                "whether it succeeded",
+            ),
+        ),
         test_mechanics=(
             "ready_requirement",
             "FiberyAdapter",
@@ -675,9 +769,17 @@ the previous outcome is not shown as the new cycle's result.
 
 - May an operator override a failed Review decision? Not decided yet.
 """,
-        obligations=(Obligation(("failed review", "human"), Category.FUNCTIONAL),),
-        open_question="override",
-        invented_answers=(
+        obligations=(
+            Obligation(
+                (
+                    any_of("failed review", "review fails", "rejected review"),
+                    any_of("human", "person"),
+                ),
+                Category.FUNCTIONAL,
+            ),
+        ),
+        open_question=any_of("override", "overrule", "bypass", "set aside"),
+        invented_answer=any_of(
             "an operator can override",
             "operators can override",
             "an operator cannot override",
@@ -686,6 +788,10 @@ the previous outcome is not shown as the new cycle's result.
             "override is not allowed",
             "can be overridden",
             "cannot be overridden",
+            "an operator can bypass",
+            "an operator cannot bypass",
+            "can be bypassed",
+            "cannot be bypassed",
         ),
         never_findings=frozenset({FindingKind.INCOMPLETE}),
         decomposition=_decomposition(
@@ -735,7 +841,13 @@ report the timeout outcome to the caller.
 - Which cancellation mechanism enforces the limit is left to the architects.
 """,
         obligations=(TIMEOUT_OBLIGATION,),
-        architecture_question="cancellation mechanism",
+        architecture_question=any_of(
+            "cancellation mechanism",
+            "cancellation strategy",
+            "enforcement mechanism",
+            "how the limit is enforced",
+            "which mechanism enforces",
+        ),
         never_findings=NOT_A_REQUIREMENT_DEFECT,
         decomposition=_decomposition(
             _candidate(
@@ -784,7 +896,15 @@ Suggested/current implementation: `ModelRequest.request_id: UUID`, set by
 `build_request()`.
 """,
         obligations=(
-            Obligation(("traceable", "originating request"), Category.FUNCTIONAL),
+            Obligation(
+                (
+                    any_of("traceable", "trace", "correlate"),
+                    any_of(
+                        "originating request", "original request", "initiating request"
+                    ),
+                ),
+                Category.FUNCTIONAL,
+            ),
         ),
         implementation_detail=("request_id", "ModelRequest", "UUID", "build_request"),
         decomposition=_decomposition(
@@ -812,7 +932,13 @@ Current implementation idea: filter `os.environ` through `redact_secrets()`
 before logging.
 """,
         obligations=(
-            Obligation(("credentials", "diagnostics"), Category.NON_FUNCTIONAL),
+            Obligation(
+                (
+                    any_of("credential", "secret"),
+                    any_of("diagnostics", "error output", "log output"),
+                ),
+                Category.NON_FUNCTIONAL,
+            ),
         ),
         implementation_detail=("os.environ", "redact_secrets"),
         never_findings=frozenset({FindingKind.IMPLEMENTATION_LEAKAGE}),
@@ -844,7 +970,13 @@ Current design: an `AuthPreflight` class calls a `KeychainReader` module
 before each run.
 """,
         obligations=(
-            Obligation(("api keys", "locally authenticated"), Category.CONSTRAINT),
+            Obligation(
+                (
+                    any_of("api key", "provider key", "provider credential"),
+                    any_of("locally authenticated", "local login", "own session"),
+                ),
+                Category.CONSTRAINT,
+            ),
         ),
         implementation_detail=("AuthPreflight", "KeychainReader"),
         never_findings=frozenset({FindingKind.IMPLEMENTATION_LEAKAGE}),

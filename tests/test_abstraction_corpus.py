@@ -4,8 +4,9 @@ Each case's reference outputs run through the stages where its property
 matters (the RAW processor, Standard Process, Standard Review) on the Fibery
 fakes with a fake model runtime, and the semantic checks of
 `abstraction_corpus` are applied to what the stage validated and persisted.
-Negative controls feed structurally valid outputs that break one semantic
-property and prove the checks fail on that property, not on the JSON.
+Paraphrase controls remove the reference wording and still pass; negative
+controls feed structurally valid outputs that break one semantic property and
+prove the checks fail on that property, not on the JSON.
 """
 
 import json
@@ -14,6 +15,7 @@ import pytest
 
 from abstraction_corpus import (
     ANSWER_INVENTED,
+    ARCHITECTURE_UPSTREAM,
     CASES,
     CORPUS,
     FINDING_MISSING,
@@ -69,6 +71,11 @@ FROZEN_CLASSES = (
 PROCESS_CASES = [case for case in CORPUS if case.process]
 REVIEW_CASES = [case for case in CORPUS if case.review]
 
+TIMEOUT_CASE = "C01_one_capability_many_implementation_details"
+ACCEPTANCE_CASE = "C05_acceptance_evidence_not_test_implementation"
+OVERRIDE_CASE = "C06_unresolved_product_decision"
+ARCHITECTURE_CASE = "C07_unresolved_architecture_decision"
+
 
 def ids(cases):
     return [case.case_id for case in cases]
@@ -86,6 +93,11 @@ def first_candidate(case, **changes):
     return {**case.decomposition["candidates"][0], **changes}
 
 
+def wording(candidate):
+    """Every word the candidate states, for proving a marker is absent."""
+    return " ".join(str(value) for value in candidate.values()).lower()
+
+
 def root_sections(sections):
     """Every schema section, with the fixed text for those not given."""
     return {
@@ -95,6 +107,37 @@ def root_sections(sections):
         )
         for key in SECTION_KEYS
     }
+
+
+# -- meaning-preserving paraphrases that avoid the reference wording ---------------
+
+C01_PARAPHRASE = {
+    "category": "FUNCTIONAL",
+    "title": "Bound provider run duration",
+    "requirement": "Provider execution has a configured maximum duration. "
+    "Exceeding it produces a deadline-exceeded outcome for the caller.",
+    "acceptance_verification": "A run that goes past its maximum duration "
+    "ends, and its caller receives a deadline-exceeded outcome.",
+}
+C01_SOURCE_MARKERS = ("time limit", "timeout")
+
+C06_PARAPHRASE = first_candidate(
+    CASES[OVERRIDE_CASE],
+    open_questions="May an operator bypass a failed Review decision? The "
+    "source leaves this undecided.",
+)
+C06_SOURCE_MARKER = "override"
+
+C05_PARAPHRASE = first_candidate(
+    CASES[ACCEPTANCE_CASE],
+    requirement="When a Ready Requirement is sent back for rework, its previous "
+    "processing outcome is no longer presented as the outcome of the next "
+    "processing round.",
+    acceptance_verification="After rework, the next cycle reports whether it "
+    "succeeded or failed, and the earlier outcome is not displayed as that "
+    "cycle's result.",
+)
+C05_SOURCE_MARKERS = ("new cycle", "success or failure")
 
 
 # -- stage runners: the reference or a supplied output, through the real stage ----
@@ -170,7 +213,10 @@ def test_the_corpus_covers_exactly_the_ten_frozen_classes():
 @pytest.mark.parametrize("case", CORPUS, ids=ids(CORPUS))
 def test_every_case_states_its_classification_and_boundary_properties(case):
     assert case.obligations, "the source-established obligations are explicit"
-    assert all(o.category in Category and o.concepts for o in case.obligations)
+    for obligation in case.obligations:
+        assert obligation.category in Category
+        assert obligation.concepts
+        assert all(concept.alternatives for concept in obligation.concepts)
     boundary = (
         case.implementation_detail,
         case.mandated,
@@ -205,7 +251,7 @@ def test_the_reference_review_satisfies_the_case(case):
     assert review_violations(case, review(case)) == []
 
 
-# -- AC5: any validated structured output can be checked, paraphrase included -----
+# -- AC5: any validated structured output can be checked; wording is not golden ---
 
 
 @pytest.mark.parametrize("case", CORPUS, ids=ids(CORPUS))
@@ -216,42 +262,53 @@ def test_a_bare_model_output_can_be_checked_without_running_a_stage(case):
     assert decomposition_violations(case, parsed.candidates) == []
 
 
-def test_a_paraphrase_that_keeps_the_meaning_passes():
-    case = CASES["C01_one_capability_many_implementation_details"]
-    paraphrase = with_candidates(
-        case,
-        first_candidate(
-            case,
-            title="Enforce the execution time limit",
-            requirement="Every provider run is bounded by the configured time "
-            "limit; when it is exceeded the caller receives a timeout.",
-            acceptance_verification="A run past the limit is ended and reported "
-            "to its caller as a timeout.",
-        ),
-    )
+def test_an_analysis_output_can_be_checked_without_running_a_stage():
+    case = CASES[ACCEPTANCE_CASE]
+    analysis = parse_analysis_output(json.dumps(case.process.reference))
+
+    assert normalization_violations(case, analysis.normalized, analysis.findings) == []
+
+
+def test_c01_paraphrase_without_the_source_markers_still_carries_the_obligation():
+    case = CASES[TIMEOUT_CASE]
+    assert not any(marker in wording(C01_PARAPHRASE) for marker in C01_SOURCE_MARKERS)
+
+    paraphrase = with_candidates(case, C01_PARAPHRASE)
 
     assert decomposition_violations(case, decompose(case, paraphrase)) == []
 
 
-def test_a_reworded_open_question_still_counts_as_open():
-    case = CASES["C06_unresolved_product_decision"]
-    reworded = with_candidates(
-        case,
-        first_candidate(
-            case,
-            open_questions="Whether operators may override a failed Review "
-            "decision is still undecided.",
-        ),
-    )
+def test_c06_open_question_reworded_without_override_stays_open():
+    case = CASES[OVERRIDE_CASE]
+    assert C06_SOURCE_MARKER not in wording(C06_PARAPHRASE)
+
+    reworded = with_candidates(case, C06_PARAPHRASE)
 
     assert decomposition_violations(case, decompose(case, reworded)) == []
 
 
-def test_an_analysis_output_can_be_checked_without_running_a_stage():
-    case = CASES["C05_acceptance_evidence_not_test_implementation"]
-    analysis = parse_analysis_output(json.dumps(case.process.reference))
+def test_c05_acceptance_paraphrase_without_the_source_markers_is_still_observable():
+    case = CASES[ACCEPTANCE_CASE]
+    assert not any(marker in wording(C05_PARAPHRASE) for marker in C05_SOURCE_MARKERS)
 
-    assert normalization_violations(case, analysis.normalized, analysis.findings) == []
+    paraphrase = with_candidates(case, C05_PARAPHRASE)
+
+    assert decomposition_violations(case, decompose(case, paraphrase)) == []
+
+
+def test_c07_reworded_architecture_question_is_still_caught():
+    """The architecture question is a meaning too: rewording does not hide it."""
+    case = CASES[ARCHITECTURE_CASE]
+    reworded = first_candidate(
+        case, open_questions="Which enforcement mechanism stops an over-long run?"
+    )
+    assert "cancellation mechanism" not in wording(reworded)
+
+    violations = decomposition_violations(
+        case, decompose(case, with_candidates(case, reworded))
+    )
+
+    assert ARCHITECTURE_UPSTREAM in rules(violations), violations
 
 
 # -- AC2: implementation detail promoted to Requirement is caught -----------------
@@ -273,7 +330,7 @@ FIELD_CANDIDATE = {
     ("case_id", "promoted", "expected"),
     [
         pytest.param(
-            "C01_one_capability_many_implementation_details",
+            TIMEOUT_CASE,
             lambda case: with_candidates(
                 case, case.decomposition["candidates"][0], WATCHDOG_CANDIDATE
             ),
@@ -294,7 +351,7 @@ FIELD_CANDIDATE = {
             id="C04-suggestion-becomes-a-constraint",
         ),
         pytest.param(
-            "C05_acceptance_evidence_not_test_implementation",
+            ACCEPTANCE_CASE,
             lambda case: with_candidates(
                 case,
                 first_candidate(
@@ -325,7 +382,7 @@ def test_promoting_implementation_detail_is_caught(case_id, promoted, expected):
 
 
 def test_normalization_that_keeps_test_mechanics_unreported_is_caught():
-    case = CASES["C05_acceptance_evidence_not_test_implementation"]
+    case = CASES[ACCEPTANCE_CASE]
     kept = {
         "normalized_requirement": {
             **case.process.reference["normalized_requirement"],
@@ -393,18 +450,28 @@ def test_a_review_that_confirms_leakage_on_the_mandate_is_caught():
 
 # -- AC4: an invented answer to an open product question is caught -----------------
 
-OVERRIDE_CASE = "C06_unresolved_product_decision"
 ANSWERED = (
     "A failed Review returns the Requirement to the human with its failure "
     "reasons, and an operator can override a failed Review decision."
 )
+ANSWERED_WITH_BYPASS = (
+    "A failed Review returns the Requirement to the human with its failure "
+    "reasons, and an operator can bypass a failed Review decision."
+)
 
 
-def test_a_decomposition_that_answers_the_open_question_is_caught():
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param(ANSWERED, id="override-wording"),
+        pytest.param(ANSWERED_WITH_BYPASS, id="bypass-wording"),
+    ],
+)
+def test_a_decomposition_that_answers_the_open_question_is_caught(answer):
     case = CASES[OVERRIDE_CASE]
     answered = with_candidates(
         case,
-        first_candidate(case, requirement=ANSWERED, open_questions=""),
+        first_candidate(case, requirement=answer, open_questions=""),
     )
 
     violations = decomposition_violations(case, decompose(case, answered))
