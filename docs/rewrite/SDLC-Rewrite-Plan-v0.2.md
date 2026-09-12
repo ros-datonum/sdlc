@@ -2024,7 +2024,7 @@ After `RW-V02` verifies the corrected Requirement pipeline:
 
 ## RW-D01 — Reconcile canonical docs and README
 
-**Status:** IMPLEMENTING  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** all implementation items in Blocks B–D `VERIFIED`, `RW-V03`
 
@@ -2064,10 +2064,43 @@ At minimum reconcile:
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
-**Blocker:** prerequisite verification  
-**Execution Notes:** —
+**Implementation Commit:** `0e30f6bc944b90be729997311f54b95ac342be26`  
+**Implementation Evidence:**
+
+Documentation reconciliation only, under `docs/rewrite/RW-D01-Documentation-Boundary-v0.1.md` at baseline `1ff20691`. Production code, test code and configuration: **NONE** changed. Two current documents were created; twelve existing documents were reconciled.
+
+- AC1 — README and canonical specs agree on the current normal user flow. README now teaches `sdlc project bootstrap` first, with its verified result (four managed consumer paths plus Fibery Project and initial `Raw + Draft`), then positions `project init` and `project requirement add` as deterministic inner primitives that bootstrap reuses. The Process, Review, Ready and Apply specs carry matching control-surface notes, and both new current documents describe the identical flow. The stale "Only three capabilities are approved for the first implementation cycle" scope statement is gone.
+- AC2 — the Requirement WHAT/HOW boundary is explicit. README and `SDLC-MVP-v0.5-Current-Architecture.md` both state Requirement = WHAT must be true, Technical Solution Architecture = HOW, Delivery Planning = solution-specific executable decomposition, Task = concrete work, citing `docs/specs/Standard-Requirement-Abstraction-v0.2.md`. Both preserve the source-mandated-mechanism exception verbatim and explicitly reject the oversimplification "Requirements can never contain technical detail".
+- AC3 — Fibery State is documented as human lifecycle control. The three human-owned transitions (`Raw Draft -> Process`, `Standard Ready -> Process`, `Standard Ready -> Apply`) are stated in README, `Requirement-Lifecycle-v0.2-Current.md` and the Ready spec. `Standard Draft -> Process` is documented as dispatcher-owned inherited progression, never a per-candidate human transition. Review verdicts (`PASS`/`NEEDS_WORK`/`BLOCKING`) are documented as evidence only, with `Succeeded` + `BLOCKING` named as a normal non-contradictory state.
+- AC4 — worker automation is documented only to the verified level. `sdlc worker run` is described as one foreground local process, executor not authority, explicitly not a distributed orchestration system, with no queue/broker/scheduler/webhook/multi-host/exactly-once claim. The four eligible routes, the four Processing Status values and the exact reset targets (`Raw + Process`, `Standard + Process`, `Standard + Review`, `Standard + Apply`) are documented, with explicit denial of resets at `Raw + Review`, `Standard + Ready` and `Standard + Applied`. The Process → Review handoff is documented as two distinct cycles in which the runner must not write `Succeeded` over the reset. The failure boundary states `Failed` is not auto-retried, stale `Processing` is not stolen, and no TTL/heartbeat/lease exists. The runner prerequisite cites `docs/fibery/Worker-Runner-Setup-v0.1.md` and states the runner validates the field/options but does not create the automation.
+- AC5 — bootstrap docs match the verified implementation. The command surface, the exact four managed paths, the explicit not-created list (`.codex/config.toml`, `.claude/settings.json`, `.agents/`, `.claude/agents/`, `.claude/skills/`, `.agents/skills/`, `.env`, RAW copy, canonical mirror), the rerun-safe `PROJECT_ALREADY_BOOTSTRAPPED` behavior and the "bootstrap stops at Draft" boundary all match `RW-B04`/`RW-B05` verification.
+- AC6 — no current doc points to physical Folder lifecycle semantics. Both new current documents state `Requirement Type + State = lifecycle placement`, Requirement-contained Documents = canonical documents, `fibery/Folder != lifecycle authority`. The `Requirements/{Raw,Draft,Approved}` tree appears only as retired historical behavior in README, the Project Init spec, the historical checkpoint and the two new documents' retirement statements. Smart Folder/context views are documented as optional human navigation, never runtime dependencies.
+- AC7 — no current doc claims downstream unimplemented phases are implemented. `SDLC-MVP-v0.5-Current-Architecture.md` keeps the full lifecycle as product roadmap while stating "naming a phase does not mean an engine exists", and lists eight unimplemented engines (UX/Product Design, Technical Solution Architecture, Delivery Planning/backlog, Epic/Story/Task workflow, System Verification & Hardening, Release Preparation, Deployment, Post-Deploy Validation). README, AGENTS.md and `.claude/CLAUDE.md` repeat that no engine exists for any of them.
+
+Stale-claim inventory and disposition (repository-wide `*.md` scan):
+
+- `Only three capabilities` — **FIXED** in `README.md`; remaining matches are the D01 boundary quoting it.
+- `No implementation exists yet` — **FIXED** in the Review and Ready specs; the plan's line 1172 note is HISTORICAL / SUPERSEDED.
+- `Not yet implemented` — **FIXED** in the Process spec.
+- `Standard Draft -> Process` — **CURRENT AND CORRECT** in `Requirement-Lifecycle-Ownership-v0.2.md` and `Requirement-State-Worker-Contract-v0.1.md`, where it is defined as the system-owned inherited path; **CURRENT AND CORRECT** in `Requirement-Lifecycle-v0.2-Current.md`, which negates it as a human transition; **HISTORICAL / SUPERSEDED** in the v0.1 checkpoint, now explicitly annotated as no longer the operating model.
+- `Requirements/{Raw,Draft,Approved}` — **CURRENT AND CORRECT** everywhere it survives: every occurrence is retirement wording (README, Project Init spec, both new documents, historical checkpoint).
+- `manual worker` — **CURRENT AND CORRECT**: only `Requirement-Lifecycle-Ownership-v0.2.md` "controlled manual worker execution" in its admin/recovery list, plus rewrite-record text.
+- `run by hand` — **FIXED**: zero matches outside `docs/rewrite/`; README now says automatic progression simply stops without the runner.
+- `is not claimed here` — **FIXED**: the stale RW-O04 sentence is removed.
+- `project init` / `project requirement add` / `worker run` — **CURRENT AND CORRECT**: these commands remain supported and documented; occurrences are now correctly positioned as inner primitives and normal machine execution respectively.
+
+Gates: `uv sync --locked` OK; `uv run ruff check .` clean; `uv run ruff format --check .` 190 files; `uv run pytest -q` `2271 passed`. Path validation: all 18 cited authority documents exist; 61 backticked `docs/`, `src/` and `config/` references across the reconciled set resolve, 0 broken.
+
+**Blocker:** — (reviewer-authorized dependency clearance: RW-D01 was frozen `BLOCKED` on "all implementation items in Blocks B–D `VERIFIED`, `RW-V03`"; Blocks B, C, D and E are independently verified, most recently by `docs/rewrite/RW-V03-Verification-v0.1.md`)  
+**Execution Notes:**
+
+- Baseline `1ff20691`; IMPLEMENTING mark `87b6da9`; implementation `0e30f6b`.
+- Created: `docs/architecture/SDLC-MVP-v0.5-Current-Architecture.md`, `docs/architecture/Requirement-Lifecycle-v0.2-Current.md`. No other successor filename was invented.
+- Historical documents retained and **not** rewritten: `SDLC-MVP-v0.4-Frozen-Architecture.md` and `Requirement-Lifecycle-v0.1-Checkpoint.md` received header/front-matter status changes and successor pointers only; their bodies, including the old manual per-candidate lifecycle and the retired folder model, remain intact as historical evidence.
+- Normative contracts were not rewritten: the Process, Review, Ready and Apply specs changed only their status lines and gained bounded current-control-surface notes; Apply's evidence/staleness/relations contract, and the Project Init / Requirement Add behavior and result codes, are untouched.
+- Three additional files were edited beyond the primary set, each for a concrete stale cross-reference discovered while reconciling README's scope section, and each named here as the boundary requires: `AGENTS.md` and `.claude/CLAUDE.md` both carried the same superseded three-capability scope list as current agent operating instructions and would have contradicted the reconciled README (an AC1 failure); `docs/IMPLEMENTATION-START.md` presented that same three-capability order under a current "Implement now" heading and was marked HISTORICAL / SUPERSEDED with a successor pointer rather than rewritten.
+- No new CLI command, State, Processing Status value, template path, Fibery field, lifecycle transition or revision/supersession system was introduced. No live Fibery mutation occurred; D01 required none.
+- No Proposed Change Request. The documentation reconciled without requiring any behavior change.
 
 ### Verification Record
 
