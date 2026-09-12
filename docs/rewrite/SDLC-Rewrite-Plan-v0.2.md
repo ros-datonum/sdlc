@@ -1790,7 +1790,7 @@ All evidence is in `tests/test_project_bootstrap.py` (50 tests) and `tests/test_
 
 ## RW-B05 — Bootstrap end-to-end test on disposable project
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B04`
 
