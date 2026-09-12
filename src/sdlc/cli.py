@@ -31,6 +31,7 @@ from sdlc.model_runtime_config import (
     load_model_runtime_config,
     select_runtime,
 )
+from sdlc.project_bootstrap import BootstrapCode, BootstrapResult, bootstrap_project
 from sdlc.project_init import initialize_project
 from sdlc.raw_processor import process_raw_requirement
 from sdlc.ready_decision import (
@@ -129,6 +130,22 @@ APPLY_DESCRIPTION = (
     "in Fibery, an assistant acting on the human's explicit instruction, or the "
     "approve command. It takes no verdict acknowledgement."
 )
+BOOTSTRAP_DESCRIPTION = (
+    "Prepare one consumer project to participate in SDLC: apply the frozen "
+    "project-local template, write the project descriptor and the supplied "
+    "project context, create the Fibery Project through the existing project "
+    "init primitive, and ingest the exported RAW requirements artifact through "
+    "the existing requirement add primitive. Both exported artifacts come from "
+    "one requirements-export session and are used exactly as supplied: nothing "
+    "is reinterpreted, no model runs, and the initial RAW Requirement stops at "
+    "Draft, where a human decides when it moves to Process. Existing managed "
+    "files are reused when compatible and never overwritten or merged; an "
+    "incompatible one stops the attempt before anything is created."
+)
+BOOTSTRAP_NEXT_STEP = (
+    "Next:\nReview the initial RAW Requirement in Fibery.\nWhen it is ready, "
+    "move it from Draft -> Process; bootstrap starts no processing itself."
+)
 WORKER_DESCRIPTION = "The state-driven Requirement worker runner (RW-C04)."
 WORKER_RUN_DESCRIPTION = (
     "Run the state-driven Requirement worker in the foreground until Ctrl-C. It "
@@ -162,6 +179,33 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--code", help="Project Code. Generated when omitted.")
     init.add_argument("--description", help="Project Description.")
     init.set_defaults(handler=_run_project_init)
+
+    bootstrap = project_commands.add_parser(
+        "bootstrap",
+        help="Prepare one consumer project: template, descriptor, context, the "
+        "Fibery Project and the initial RAW Requirement.",
+        description=BOOTSTRAP_DESCRIPTION,
+    )
+    bootstrap.add_argument("--name", required=True, help="Project Name.")
+    bootstrap.add_argument(
+        "--requirements",
+        required=True,
+        help="Path to the exported RAW requirements Markdown artifact.",
+    )
+    bootstrap.add_argument(
+        "--context",
+        required=True,
+        help="Path to the project-context.md artifact of the same export session.",
+    )
+    bootstrap.add_argument(
+        "--target",
+        help="Consumer project directory. The current directory when omitted.",
+    )
+    bootstrap.add_argument(
+        "--code", help="Project Code. Resolved from the Project Name when omitted."
+    )
+    bootstrap.add_argument("--description", help="Project Description.")
+    bootstrap.set_defaults(handler=_run_project_bootstrap)
 
     requirement = project_commands.add_parser(
         "requirement",
@@ -352,6 +396,103 @@ def _run_project_init(
     )
     render_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _bootstrap_workspaces(
+    settings: FiberySettings,
+) -> tuple[FiberyHttpWorkspace, FiberyRequirementWorkspace]:
+    """The Project-side and Requirement-side adapters of one workspace.
+
+    Both are built from the same settings and the same client, so bootstrap
+    cannot end up composing two different Fibery workspaces.
+    """
+    client = FiberyClient(settings)
+    return (
+        FiberyHttpWorkspace(
+            client=client, space=settings.space, space_id=settings.space_id
+        ),
+        FiberyRequirementWorkspace(
+            client=client, space=settings.space, space_id=settings.space_id
+        ),
+    )
+
+
+def _run_project_bootstrap(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    """`sdlc project bootstrap`: the one outer project setup action.
+
+    No model runtime is selected or loaded: bootstrap composes deterministic
+    primitives only.
+    """
+    try:
+        settings = load_fibery_settings()
+    except ConfigurationError as error:
+        print(str(error), file=error_out)
+        return EXIT_FAILURE
+
+    project_workspace, requirement_workspace = _bootstrap_workspaces(settings)
+    result = bootstrap_project(
+        project_workspace,
+        requirement_workspace,
+        name=arguments.name,
+        requirements_path=arguments.requirements,
+        context_path=arguments.context,
+        target=arguments.target,
+        code=arguments.code,
+        description=arguments.description,
+    )
+    render_bootstrap_result(result, out if result.is_normal else error_out)
+    return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def render_bootstrap_result(result: BootstrapResult, stream: TextIO) -> None:
+    """Print the outcome code first, then the bounded composition detail.
+
+    Identities, managed paths and inner result codes only: the RAW artifact and
+    the project context never appear here.
+    """
+    print(result.code.value, file=stream)
+    print(file=stream)
+    print(result.message, file=stream)
+
+    if result.project_name:
+        print(f"\nProject: {result.project_name}", file=stream)
+    if result.project_code:
+        print(f"Project Code: {result.project_code}", file=stream)
+    if result.requirement_id:
+        print(f"Initial RAW Requirement: {result.requirement_id}", file=stream)
+    if result.target:
+        print(f"Target: {result.target}", file=stream)
+
+    _render_bootstrap_local(result, stream)
+    if result.project_init_code is not None:
+        print(f"\nProject Init: {result.project_init_code.value}", file=stream)
+    if result.requirement_add_code is not None:
+        print(f"Requirement Add: {result.requirement_add_code.value}", file=stream)
+    if result.failed_step is not None:
+        print(f"\nFailed step: {result.failed_step.value}", file=stream)
+    if result.details:
+        print("\nDetails:", file=stream)
+        for item in result.details:
+            print(f"- {item}", file=stream)
+    if result.code is BootstrapCode.PROJECT_BOOTSTRAPPED:
+        print(f"\n{BOOTSTRAP_NEXT_STEP}", file=stream)
+
+
+def _render_bootstrap_local(result: BootstrapResult, stream: TextIO) -> None:
+    """What this attempt did to the consumer project, path by path."""
+    if result.target_created:
+        print("\nCreated the target directory.", file=stream)
+    for label, paths in (
+        ("Created", result.local_created),
+        ("Updated", result.local_updated),
+        ("Reused", result.local_reused),
+    ):
+        if paths:
+            print(f"\n{label}:", file=stream)
+            for item in paths:
+                print(f"- {item}", file=stream)
 
 
 def _run_requirement_add(
