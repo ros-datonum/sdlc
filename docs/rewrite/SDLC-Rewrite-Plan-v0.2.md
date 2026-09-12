@@ -1561,7 +1561,7 @@ Exact files, merge/copy behavior, placeholders, and optional files must be liste
 
 ## RW-B02 — Implement reusable consumer project template
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B01`
 
@@ -1594,10 +1594,31 @@ Add exactly the template frozen in `RW-B01`.
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
-**Blocker:** `RW-B01`  
-**Execution Notes:** —
+**Implementation Commit:** `a686beb312059405a9b229ffb7a679badb9bb946`  
+**Implementation Evidence:**
+
+All evidence is in `tests/test_consumer_template.py` (70 tests) over `src/sdlc/consumer_template.py`. The suite reads the frozen block back out of `docs/rewrite/RW-B01-Template-Manifest-v0.1.md`, so the module is compared against RW-B01 itself rather than against a second copy of the same typing.
+
+- AC1 — the manifest equals RW-B01. `test_the_managed_manifest_is_exactly_the_four_b01_paths` pins `MANAGED_PATHS` to `.sdlc/project.yaml`, `.sdlc/project-context.md`, `AGENTS.md`, `.claude/CLAUDE.md`; `test_the_static_template_paths_are_the_two_agent_guidance_files` pins the static pair as a strict subset and keeps the descriptor (RW-B03) and the context (RW-B04) out of it; `test_there_are_no_optional_paths` pins the empty optional set; `test_the_markers_are_exactly_the_frozen_ones` and `test_the_managed_block_is_exactly_the_block_rw_b01_froze` compare the markers and the whole block against the manifest text.
+- AC2 — no undeclared template file. `test_the_module_declares_no_path_outside_the_manifest` collects every module constant whose name ends in `_PATH`/`_PATHS` and requires the set to equal `MANAGED_PATHS`. The seven RW-B01 section 3 excluded paths are asserted absent from the managed and static sets, from the block, and from every materialized output (`test_no_excluded_runtime_or_agent_path_is_managed`, `test_the_block_never_points_at_an_excluded_runtime_path`, `test_no_materialization_introduces_an_excluded_path_or_placeholder`). The module creates nothing at all: `test_the_module_imports_nothing_that_could_reach_the_world` parses its AST and requires imports to be a subset of `__future__`, `dataclasses`, `enum`, so there is no filesystem, Fibery or bootstrap reach.
+- AC3 — placeholder substitution points are explicit and tested, and the frozen answer is none. `TEMPLATE_PLACEHOLDERS == ()` (`test_the_frozen_placeholder_set_is_empty`), `test_the_static_block_carries_no_dynamic_placeholder` rejects `{`, `}`, `${`, `%s`, `%(`, `<<` and `{{` inside the block, and no materialized output introduces one. No placeholder was invented to satisfy the criterion.
+- AC4 — no secret or account-specific value. `test_the_block_carries_no_credential_or_account_value` rejects `token`, `api_key`, `apikey`, `password`, `secret`, `bearer`, `sk-` and `fibery_` in the block. The module contains no host, account id, model, provider, endpoint, approval, permission, sandbox or environment value; its only mention of such settings is the RW-B01 instruction that project-local guidance must not override the user's global configuration.
+- Merge semantics, each pinned by tests: absent and empty materialize the block plus one terminating LF; foreign UTF-8 content is preserved byte for byte with a one-blank-line separation (`no final newline`, `one`, `two` and `three` trailing newline cases); CRLF is used for appended material only when the file is CRLF throughout, and mixed endings keep LF; an exact block is `COMPATIBLE` and the supplied bytes are returned unchanged, including the CRLF rendering and with foreign content before, after or both sides preserved; a rerun over an appended file classifies `COMPATIBLE` with exactly one BEGIN marker, so nothing doubles.
+- Conflicts fail closed with no bytes: BEGIN only, END only, reversed markers, duplicate BEGIN, duplicate END, invalid UTF-8, and six near-miss blocks (changed wording, whitespace-only, removed blank line, reordered bullets, dropped bullet, changed capitalization). `test_a_conflict_reason_names_the_class_and_never_echoes_the_file` proves the reason names only the class, stays under 80 characters and does not echo file prose.
+- Red check: against `src` from the pre-B02 baseline `ef287f0`, the suite fails at collection with `ImportError: cannot import name 'consumer_template' from 'sdlc'`; on `a686beb` it passes. No test was weakened to manufacture a red count.
+- Gates: dedicated `70 passed`; unrelated CLI/project-init/requirement-add/project-code suites `111 passed`; full `uv sync --locked`, `ruff check .`, `ruff format --check .` (164 files), `pytest -q` `2066 passed`.
+
+**Blocker:** — (reviewer-authorized dependency clearance: `RW-B01` is VERIFIED in `docs/rewrite/RW-B01-Verification-v0.1.md`, and `docs/rewrite/RW-B02-Implementation-Boundary-v0.1.md` section 12 authorizes implementation)  
+**Execution Notes:**
+
+- Base `ef287f0`; IMPLEMENTING mark `90b6b4b`; implementation `a686beb`.
+- The `BLOCKED -> IMPLEMENTING` transition is the reviewer-authorized dependency clearance above, not a semantic plan change; the frozen RW-B02 text is unchanged.
+- Changed files: new `src/sdlc/consumer_template.py` (221 lines) and `tests/test_consumer_template.py` (391 lines). No other production file changed and no documentation change was needed.
+- Public API: the path constants `DESCRIPTOR_PATH`, `CONTEXT_PATH`, `AGENTS_GUIDANCE_PATH`, `CLAUDE_GUIDANCE_PATH`, the sets `MANAGED_PATHS`, `STATIC_TEMPLATE_PATHS`, `OPTIONAL_PATHS`, `TEMPLATE_PLACEHOLDERS`, the template constants `BEGIN_MARKER`, `END_MARKER`, `MANAGED_BLOCK`, the vocabularies `GuidanceDisposition` (`ABSENT`, `APPENDABLE_FOREIGN_CONTENT`, `COMPATIBLE`, `CONFLICT`) and `ConflictReason` (seven bounded classes), the frozen dataclasses `GuidanceClassification` and `GuidancePlan` (`disposition`, `content`, `reason`, `is_conflict`, `requires_write`), and the functions `managed_block_bytes`, `classify_agent_guidance`, `plan_agent_guidance`.
+- Empty existing content is reported as `ABSENT` because its materialization is identical to an absent file; RW-B04 keeps the filesystem distinction it can see. No fifth disposition was invented.
+- The appended form is existing bytes plus the separator plus the block, exactly as RW-B01 section 8.2 states; only the absent and empty cases add the terminating LF that RW-B01 section 8.1 requires.
+- Nothing in the repository imports the module yet. RW-B04 is its first caller by design, and RW-B02 adds no call site of its own.
+- No Proposed Change Request.
 
 ### Verification Record
 
