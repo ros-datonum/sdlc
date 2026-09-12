@@ -1790,7 +1790,7 @@ All evidence is in `tests/test_project_bootstrap.py` (50 tests) and `tests/test_
 
 ## RW-B05 — Bootstrap end-to-end test on disposable project
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B04`
 
@@ -1814,10 +1814,32 @@ The verification must demonstrate:
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
-**Blocker:** `RW-B04`  
-**Execution Notes:** —
+**Implementation Commit:** `9ab69b36fe859feadde4fa4ad3cf38b14c6f0103`  
+**Implementation Evidence:**
+
+RW-B05 is a live acceptance gate, not an implementation item: no production code and no test code changed. The complete live record is `docs/rewrite/RW-B05-Live-Bootstrap-Evidence-v0.1.md`, run against the real CLI, a real temporary consumer directory outside this repository and the configured live Fibery workspace, on one disposable Project (`ZZ RW-B05 Bootstrap Probe 0912` / `ZZB05PROBE`) proven free by bounded read-only queries before the first mutation.
+
+- AC1 — one real setup action creates a usable local project structure. One `uv run sdlc project bootstrap` invocation through the real CLI handler returned exit 0 and `PROJECT_BOOTSTRAPPED` (`Project Init: PROJECT_INITIALIZED`, `Requirement Add: RAW_REQUIREMENT_ADDED`, `ZZB05PROBE-RAW-0089`) into an empty existing target, producing a tree of exactly six entries: the four managed files and their two parents. `bootstrap_project()` was not called directly for the success proof.
+- AC2 — descriptor and context match the frozen B01/B03 contracts. `parse_descriptor` accepted `.sdlc/project.yaml` with `version 1`, `project.name`/`project.code` equal to the disposable identity, `fibery.project_code == project.code`, `repository.root "."`, all three policies null, `checks []`, `standards.profile null`, `extensions []`. `.sdlc/project-context.md` was byte-identical to the supplied export (SHA-256 equal), and both `AGENTS.md` and `.claude/CLAUDE.md` classified B02 `COMPATIBLE`. No excluded runtime/auth/skills path and no RAW copy or Requirements mirror was created.
+- AC3 — Fibery Project exists exactly once. Bounded queries (`q/limit 3`, distinguishing 0/1/more) gave exact Name count 1 and Code count 1, both resolving to the same entity.
+- AC4 — initial RAW exists exactly once. A bounded query on Project plus Source Fingerprint returned exactly one Requirement: `ZZB05PROBE-RAW-0089`, `Type = Raw`, `State = Draft`, belonging to the disposable Project, fingerprint equal to the parsed export. Its single Root Document's stored content satisfied `content_equivalent(stored, parsed.body)`.
+- AC5 — rerun is safe. The identical command returned exit 0 and `PROJECT_ALREADY_BOOTSTRAPPED` with all four paths reused (`PROJECT_ALREADY_EXISTS`, `REQUIREMENT_ALREADY_ADDED`). Against the pre-rerun snapshot: all four digests unchanged, tree unchanged, Name/Code counts still 1 on the same Project id, RAW count still 1 with the same entity id and Requirement ID, the same single Root Document, still Draft, no Standard candidate and no Processing Result.
+- AC6 — user/global model/auth/edit configuration unchanged. `~/.claude/settings.json` and `~/.codex/config.toml` were hashed before and after; both SHA-256 values are equal. Contents were never read into evidence, and no user-global file was created or modified.
+- AC7 — no credentials written to project files. The token value held by the verification process was checked programmatically against the bytes of all four managed files and appears in none; the literals `FIBERY_TOKEN`, `Authorization` and `Token ` appear in none. The token was never printed.
+- AC8 — real CLI failure is truthful and corrupts nothing. A separate target carrying a deliberately differing `.sdlc/project-context.md` produced exit 1 and `BOOTSTRAP_CONFLICT` at `preflight managed paths`, naming the differing path. The foreign file stayed byte-identical, no managed path was created, and live Project/RAW counts, ids and lifecycle State were unchanged. No live partial write was induced.
+- AC9 — no processing starts without the authorizing transition. After a 14-second observation with no command issued against it, the RAW remained `Raw` / `Draft` / `Not Processed`, the Project held exactly one Requirement and no Standard, and the RAW had one Root Document with no child Processing Result. No `Draft -> Process` was performed. No `sdlc worker run` process was active on the host, checked before the first mutation.
+- Gates, run after the live evidence completed: dedicated `79 passed`; `ruff check .` clean; `ruff format --check .` 176 files; full `pytest -q` `2271 passed`. No live-model test was required.
+
+**Blocker:** — (reviewer-authorized dependency clearance: `RW-B04` is independently VERIFIED by `docs/rewrite/RW-B04-Verification-v0.1.md`, and `docs/rewrite/RW-B05-Implementation-Boundary-v0.1.md` freezes this live gate)  
+**Execution Notes:**
+
+- Baseline `99263693`; IMPLEMENTING mark `1d2e486`; live evidence `9ab69b3`. The plan showed `BLOCKED` only because B04 was unverified; that dependency was cleared before work began.
+- Repository files changed: `docs/rewrite/RW-B05-Live-Bootstrap-Evidence-v0.1.md` (new) plus these RW-B05 plan fields. Production code and test code are untouched, as the green path requires.
+- Process-scoped configuration was required and is recorded as operational evidence, not a product change. The persistent `.env` still carries `FIBERY_SPACE_ID` empty (the condition RW-O03 recorded), and the repository auto-loads no `.env`: `sdlc.config` reads the process environment only, with no dotenv dependency, no `env-file` setting and no `.envrc`. The Space id was discovered read-only and injected into the verification process alone. No `.env` and no Claude/Codex/user-global configuration was edited.
+- The Space id was not taken from a view-name heuristic: it was bound to real entities by confirming that all 25 sampled `SDLC/Requirement` Root Documents resolve to one `fibery/container-app`, which is the container a new Root Document write uses.
+- Cleanup completed. The Requirement and then the Project were deleted by their exact recorded entity ids, after confirming the stored Project Name matched the disposable identity; no fuzzy name matching was used and no pre-existing entity was touched. Afterwards Project exact-name count, Project Code count and workspace-wide fingerprint matches are all 0, neither recorded id resolves, the recorded Root Document no longer resolves and no document names the deleted public id. The temporary input, consumer and failure-probe directories were removed. Deletion ran from an ephemeral verification script through the existing authenticated Commands API; no deletion support was added to production code.
+- No production Requirement or Project was used, no model ran, no RAW processing ran, no `Draft -> Process` occurred, requirements-export was not run, AMR was not touched and Block E was not started.
+- No Proposed Change Request. The gate passed against the verified B04 implementation without exposing a production defect.
 
 ### Verification Record
 
