@@ -673,6 +673,19 @@ def _materialize(
 
 
 def _ensure_target(directory: Path, durable: _Durable) -> None:
+    """Create the target if it is still absent, and never accept a symlink for it.
+
+    `Path.is_dir()` follows a symlink, so the symlink test comes first: a target
+    that became `symlink -> directory` between preflight and here must fail
+    closed rather than let every managed path be written through it.
+    """
+    if directory.is_symlink():
+        raise _Stopped(
+            BootstrapCode.BOOTSTRAP_FAILED,
+            BootstrapStep.MATERIALIZE_LOCAL,
+            "The target became a symlink after preflight; bootstrap does not "
+            "follow it and wrote nothing.",
+        )
     if directory.is_dir():
         return
     try:
@@ -687,11 +700,26 @@ def _ensure_target(directory: Path, durable: _Durable) -> None:
     durable.target_created = True
 
 
+def _require_real_target(directory: Path) -> None:
+    """The target root must still be a real directory before each mutation.
+
+    It is the ancestor of every managed path, so a target swapped for a symlink
+    after the earlier checks would silently redirect the whole manifest.
+    """
+    if directory.is_symlink() or not directory.is_dir():
+        raise _Stopped(
+            BootstrapCode.BOOTSTRAP_FAILED,
+            BootstrapStep.MATERIALIZE_LOCAL,
+            "The target is no longer a real directory; nothing was written through it.",
+        )
+
+
 def _ensure_directories(directory: Path, durable: _Durable) -> None:
     for relative in MANAGED_PARENTS:
         path = directory / relative
         if path.is_dir() and not path.is_symlink():
             continue
+        _require_real_target(directory)
         try:
             path.mkdir()
         except OSError as error:
@@ -706,6 +734,7 @@ def _ensure_directories(directory: Path, durable: _Durable) -> None:
 
 def _write_managed(directory: Path, plan: ManagedPathPlan, durable: _Durable) -> None:
     """Write one planned path, after proving it is still what preflight saw."""
+    _require_real_target(directory)
     path = directory / plan.relative
     content = plan.content or b""
     _recheck(path, plan)
@@ -829,7 +858,8 @@ def _initialize(
             else BootstrapCode.BOOTSTRAP_FAILED,
             BootstrapStep.PROJECT_INIT,
             f"Project Init reported {result.code.value}; "
-            "bootstrap changed nothing else.",
+            "bootstrap stopped before Requirement Add. Local state this attempt "
+            "created is listed and left in place.",
             (result.message, *result.details),
         )
     return _validate_project(

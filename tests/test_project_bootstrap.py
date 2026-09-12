@@ -646,6 +646,11 @@ def test_a_project_init_failure_after_local_state_is_partial_and_adds_nothing(
     assert result.requirement_add_code is None, "Requirement Add never ran"
     assert set(tree(directory)) == set(MANAGED_PATHS), "local state is left in place"
     assert "create_requirement" not in requirement_workspace.calls
+    # The message must not contradict the durable local state it reports.
+    assert set(result.local_created) == set(MANAGED_PATHS)
+    assert sorted(result.managed_directories_created) == [".claude", ".sdlc"]
+    assert "changed nothing else" not in result.message
+    assert "stopped before Requirement Add" in result.message
 
 
 def test_a_requirement_add_failure_is_partial_and_nothing_is_rolled_back(
@@ -921,3 +926,47 @@ def test_initialize_project_still_resolves_its_own_code_when_none_is_supplied():
 
     assert result.code is ResultCode.PROJECT_INITIALIZED
     assert result.project_code == next(candidate_project_codes(NAME))
+
+
+# -- the target root is re-checked immediately before every local mutation -------------
+
+
+def test_a_target_that_becomes_a_symlink_after_preflight_is_never_written_through(
+    tmp_path, inputs, monkeypatch
+):
+    """The race the static checks cannot see: an absent target preflights as safe,
+    then another actor turns it into a symlink before materialization."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = tmp_path / "late-symlink"
+    requirements, context = inputs
+    project_workspace, requirement_workspace = linked_workspaces()
+    preflight = project_bootstrap._preflight_local
+
+    def preflight_then_swap(directory, descriptor, context_bytes):
+        plans = preflight(directory, descriptor, context_bytes)
+        directory.symlink_to(outside, target_is_directory=True)
+        return plans
+
+    monkeypatch.setattr(project_bootstrap, "_preflight_local", preflight_then_swap)
+
+    result = bootstrap_project(
+        project_workspace,
+        requirement_workspace,
+        name=NAME,
+        requirements_path=requirements,
+        context_path=context,
+        target=target,
+    )
+
+    assert not result.is_normal, result
+    assert result.code is BootstrapCode.BOOTSTRAP_FAILED
+    assert result.failed_step is BootstrapStep.MATERIALIZE_LOCAL
+    assert target.is_symlink(), "the symlink is left exactly as it was found"
+    assert list(outside.iterdir()) == [], "nothing was written through it"
+    for relative in MANAGED_PATHS:
+        assert not (outside / relative).exists()
+    assert result.local_created == () and result.local_updated == ()
+    assert not result.target_created
+    assert project_workspace.mutations == []
+    assert requirement_workspace.mutations == []

@@ -374,3 +374,28 @@ def test_the_bootstrap_command_is_not_the_init_command():
 
     assert bootstrap.handler is not init.handler
     assert pathlib.Path(str(bootstrap.requirements)).name == "r.md"
+
+
+def test_a_partial_report_never_claims_that_nothing_local_changed(
+    monkeypatch, exports, tmp_path
+):
+    """The rendered partial must agree with the created paths it prints."""
+    from sdlc.fibery_workspace import FiberyError
+
+    target = tmp_path / "consumer"
+    target.mkdir()
+    pair = linked_workspaces()
+    project_workspace, _ = pair
+    project_workspace.failures["create_project"] = FiberyError("refused")
+
+    code, out, error_out, _ = run_command(
+        monkeypatch, exports, "--target", str(target), workspaces=pair
+    )
+
+    printed = out + error_out
+    assert code == cli.EXIT_FAILURE
+    assert error_out.startswith(f"{BootstrapCode.PARTIAL_BOOTSTRAP.value}\n")
+    assert "changed nothing else" not in printed
+    assert "stopped before Requirement Add" in printed
+    for relative in MANAGED_PATHS:
+        assert relative in printed, "the created paths stay visible"
