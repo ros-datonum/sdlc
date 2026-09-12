@@ -1442,7 +1442,7 @@ The technical transport/mechanism must come from the frozen `RW-C04` technical c
 
 ## RW-O04 — Requirement lifecycle end-to-end automation test
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-O03`
 
