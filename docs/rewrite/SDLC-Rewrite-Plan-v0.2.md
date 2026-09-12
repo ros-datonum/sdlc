@@ -1702,7 +1702,7 @@ All evidence is in `tests/test_project_descriptor.py` (126 tests) over `src/sdlc
 
 ## RW-B04 — Implement one outer project bootstrap action
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B02`, `RW-B03`, `RW-C03`
 
