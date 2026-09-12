@@ -1561,7 +1561,7 @@ Exact files, merge/copy behavior, placeholders, and optional files must be liste
 
 ## RW-B02 — Implement reusable consumer project template
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B01`
 
