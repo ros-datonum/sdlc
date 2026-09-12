@@ -1,6 +1,16 @@
 # SDLC MVP v0.4 — Frozen Architecture
 
-**Status:** Current baseline for MVP implementation.
+**Status:** HISTORICAL / SUPERSEDED FOR CURRENT REQUIREMENT OPERATIONS.  
+**Current successor:** `docs/architecture/SDLC-MVP-v0.5-Current-Architecture.md`
+
+This document is retained as the pre-rewrite frozen architecture. Its body is
+historical and is deliberately not rewritten into the corrected design.
+
+The full Project lifecycle below remains the product roadmap, but this document
+must not be read as a statement of what is implemented. For current
+implementation status, the corrected Requirement abstraction and the
+state-driven Requirement lifecycle, use the successor above and
+`docs/architecture/Requirement-Lifecycle-v0.2-Current.md`.
 
 ## 1. Project Lifecycle
 

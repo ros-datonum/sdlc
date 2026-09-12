@@ -1,6 +1,17 @@
 # Implementation Start
 
-## Implement now
+**Status:** HISTORICAL / SUPERSEDED. This recorded the original bootstrap-era
+implementation order, when only the first three capabilities were in scope. All
+three were built, and the SDLC Rewrite v0.2 then added project bootstrap, the
+corrected Requirement abstraction and the state-driven lifecycle.
+
+For current implementation status and scope use
+`docs/architecture/SDLC-MVP-v0.5-Current-Architecture.md` and
+`docs/architecture/Requirement-Lifecycle-v0.2-Current.md`.
+
+The original content follows, unchanged.
+
+## Implement now (historical)
 
 In this order:
 

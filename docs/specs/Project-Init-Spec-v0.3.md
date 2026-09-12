@@ -13,6 +13,22 @@ The command is intentionally deterministic and narrow.
 
 It does **not** analyze requirements, create Project Phases, ingest requirements, create backlog items, or make product/technical decisions.
 
+### Current positioning
+
+```text
+project init remains a supported deterministic primitive;
+the verified outer new-project path is project bootstrap;
+bootstrap resolves identity and reuses project init;
+direct invocation remains valid within this primitive's contract.
+```
+
+`sdlc project bootstrap` is the normal entry point when both exported artifacts
+(RAW requirements and project context) are available: it resolves the Project
+identity and Code, then invokes this primitive unchanged. Direct invocation
+stays valid for admin and incremental workflows. Nothing in this specification's
+behavior or result codes changes. See
+`docs/architecture/Project-Bootstrap-Contract-v0.1.md`.
+
 ## 2. Command
 
 ```bash

@@ -1,6 +1,10 @@
 # Standard Requirement Ready Decision Specification v0.1
 
-**Status:** APPROVED. Frozen contract for implementation. No implementation exists yet.  
+**Status:** APPROVED. Implemented and independently verified. The normal Ready
+decisions are implemented as Requirement State ownership; the commands below
+remain the admin/compatibility surface.  
+**Verification:** `docs/rewrite/RW-O01-Verification-v0.1.md` and
+`docs/rewrite/RW-O04-Verification-v0.1.md`.  
 **Amended by:** `RW-O01` (SDLC Rewrite v0.2) under
 `Requirement-Lifecycle-Ownership-v0.2` (`RW-C02`): the human State transition is
 the decision, and the commands below are an admin/compatibility surface
@@ -37,6 +41,25 @@ the command is optional, but they create no different kind of approval: a
 direct `Ready -> Apply` carries no acknowledgement, and the command cannot make
 stale or invalid evidence safe, because Apply revalidates the reviewed bindings
 however the Requirement reached `Apply` (section 18).
+
+**After the human transition.**
+
+```text
+Ready -> Process
+or
+Ready -> Apply
+
+is the human decision.
+
+After that transition the worker handles the machine stage.
+The human does not need to invoke normalize/apply to make
+the decision authoritative.
+```
+
+The state-driven runner picks the Requirement up on its next poll: `Ready ->
+Process` starts a new Standard Process cycle that runs through Review back to
+`Ready`, and `Ready -> Apply` is claimed by deterministic Apply. See
+`docs/architecture/Requirement-Lifecycle-v0.2-Current.md`.
 
 Everything below describes that command unless it says otherwise.
 

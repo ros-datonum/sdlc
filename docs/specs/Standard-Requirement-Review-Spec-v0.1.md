@@ -1,9 +1,12 @@
 # Standard Requirement Review Specification v0.1
 
-**Status:** APPROVED. Frozen contract for implementation. No implementation exists yet.  
+**Status:** APPROVED. Implemented and independently verified.  
 **Amended by:** `RW-R04` (SDLC Rewrite v0.2): review at the Requirement level
 (section 3.1) and the originating RAW source as read-only evidence (section 5).
 The amendment's status is tracked in `docs/rewrite/SDLC-Rewrite-Plan-v0.2.md`.
+
+Verification: `docs/rewrite/RW-R04-Verification-v0.1.md` (abstraction) and
+`docs/rewrite/RW-O04-Verification-v0.1.md` (end-to-end lifecycle).
 
 Design for `Requirement.Type = Standard` + `Requirement.State = Review`.
 
@@ -14,6 +17,18 @@ Draft -> Process -> Review -> Ready -> Apply -> Applied
 ```
 
 `Process` is frozen. This capability performs `Review -> Ready`.
+
+### Current control surface
+
+Normal Review starts automatically: a successful Standard Process moves `State`
+to `Review`, the Fibery reset automation sets `Processing Status` to
+`Not Processed` for that new Review cycle, and the state-driven runner then
+claims and invokes Review. Process and Review are two separate processing
+cycles; the runner does not write `Succeeded` for the completed Process cycle
+after the reset. See `docs/architecture/Requirement-Lifecycle-v0.2-Current.md`.
+
+The manual `review` command remains an admin / diagnosis / recovery surface and
+is not lifecycle authority.
 
 ## 2. Why Review exists
 

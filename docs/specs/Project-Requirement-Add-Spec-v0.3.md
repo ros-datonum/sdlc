@@ -18,6 +18,20 @@ The command is intentionally deterministic and narrow.
 
 It does **not** analyze requirements, create Standard Requirements, classify FR/NFR/CON, establish dependencies, or invoke an LLM.
 
+### Current positioning
+
+```text
+requirement add remains a supported deterministic ingestion primitive;
+bootstrap uses it for the initial RAW;
+additional RAW sources for an existing Project may still be added directly.
+```
+
+`sdlc project bootstrap` invokes this primitive unchanged to ingest the initial
+RAW artifact of a new Project. Adding a **further** RAW source to an existing
+Project is this command's normal job — re-bootstrapping is not required for
+that. Nothing in this specification's transport, fingerprint or duplicate
+semantics changes. See `docs/architecture/Project-Bootstrap-Contract-v0.1.md`.
+
 ---
 
 ## 2. Command

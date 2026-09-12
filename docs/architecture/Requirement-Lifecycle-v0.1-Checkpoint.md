@@ -1,8 +1,24 @@
 # Requirement Lifecycle v0.1 — Architecture Checkpoint
 
-**Status:** Checkpoint. Records what the frozen Requirement lifecycle guarantees
-and selects the next vertical slice. It does not replace
-`SDLC-MVP-v0.4-Frozen-Architecture.md` and does not redesign any frozen
+**Status:** HISTORICAL / SUPERSEDED FOR CURRENT REQUIREMENT OPERATIONS.  
+**Current successor:** `docs/architecture/Requirement-Lifecycle-v0.2-Current.md`
+
+This checkpoint is retained as historical evidence of the pre-rewrite
+Requirement lifecycle. Its body is deliberately not rewritten.
+
+In particular, the manual per-candidate `Standard Draft -> Process` transition
+described below is **no longer the operating model**: candidates produced by an
+authorized RAW processing cycle are now progressed automatically by the verified
+dispatcher, and the only human-owned transitions are `Raw Draft -> Process`,
+`Standard Ready -> Process` and `Standard Ready -> Apply`. The physical
+`Requirements/{Raw,Draft,Approved}` folder tree discussed below is retired.
+
+For current operations use the successor above and
+`docs/architecture/SDLC-MVP-v0.5-Current-Architecture.md`.
+
+Original checkpoint status: records what the frozen Requirement lifecycle
+guaranteed and selected the next vertical slice. It did not replace
+`SDLC-MVP-v0.4-Frozen-Architecture.md` and did not redesign any frozen
 capability.
 
 ## 1. Lifecycle overview
