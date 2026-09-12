@@ -1630,7 +1630,7 @@ All evidence is in `tests/test_consumer_template.py` (70 tests) over `src/sdlc/c
 
 ## RW-B03 — Implement project descriptor contract
 
-**Status:** IMPLEMENTING  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B01`
 
@@ -1666,10 +1666,31 @@ Exact keys and optionality must be frozen before implementation.
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
-**Blocker:** `RW-B01`  
-**Execution Notes:** —
+**Implementation Commit:** `4189f2c273799d44286ef8f7f135cd9099705c01`  
+**Implementation Evidence:**
+
+All evidence is in `tests/test_project_descriptor.py` (126 tests) over `src/sdlc/project_descriptor.py`. Everything is exercised as values and bytes; the module has no filesystem, Fibery, environment or model reach.
+
+- AC1 — validation rejects missing mandatory identity and configuration. Every one of the six frozen top-level groups is removed in turn and refused as `MISSING_KEY` (`test_a_missing_mandatory_group_is_refused`), as is each nested key of the multi-key groups (`project.name`, `project.code`, `repository.root`, `repository.branch_policy`, `standards.profile`, `standards.extensions`). The single-key `fibery` group is covered by both of its failure shapes: substituting the key gives `MISSING_KEY`, emptying the block gives `INVALID_SYNTAX` (`test_the_single_key_fibery_group_refuses_both_of_its_failure_shapes`). Identity invariants are refused individually: blank name, invalid Project Code, `PROJECT_CODE_MISMATCH` for a `fibery.project_code` that differs, a root other than `.` including absolute and sub-paths, invalid policy/profile/extension/check identifiers, duplicate check names and extensions, and blank, multiline or NUL commands. Structure is refused too: unknown keys at top level and in every nested group, duplicate keys at top level, nested and inside a check item, wrong scalar/list/mapping types, an unsupported `version`, and ten malformed-syntax shapes (`test_malformed_syntax_is_refused_rather_than_guessed`).
+- AC2 — the descriptor is generated from bootstrap inputs. `new_project_descriptor(project_name, project_code)` produces exactly the frozen default (`test_the_default_descriptor_is_exactly_the_frozen_bootstrap_value`): version 1, trimmed name, validated Code mirrored into `fibery.project_code`, `repository.root = "."` with all three policies null, no checks, and null profile with no extensions. The name is trimmed (`test_the_project_name_is_trimmed`), a blank name is refused, and the Code goes through the existing `sdlc.project_code.validate_project_code` rather than a second format rule (`test_the_project_code_follows_the_existing_validator`). `test_generation_accepts_no_input_beyond_name_and_code` pins the signature, so no description, context, RAW source, repository inspection or environment value can enter.
+- AC3 — reruns are semantically stable. Generation is deterministic, `parse(render(x)) == x` and `render(parse(render(x))) == render(x)` hold for the default and a fully populated descriptor, and unchanged inputs render byte-identically even when supplied with different surrounding whitespace or casing of the Code (`test_unchanged_inputs_generate_byte_identical_descriptors`). Compatibility is a pure comparison: the canonical bytes are compatible, and so are the accepted formatting variants (CRLF, blank lines, no final newline) without any rewrite, which is what lets RW-B04 reuse an existing file (`test_accepted_formatting_differences_stay_compatible`, `test_compatibility_never_rewrites_or_merges`). Any semantic difference — name, Code and its mapping, repository policy, checks, standards — and any invalid descriptor conflicts.
+- AC4 — no credential or canonical Requirement surface exists. The schema is closed, so twenty shadow keys are refused as `UNKNOWN_KEY`, covering tokens, API keys, passwords, secrets, OAuth, model and provider selection, provider endpoint, approval/permission/sandbox/edit modes, `requirements`, `raw_source`, `state`, `processing_status`, architecture, epics and tasks (`test_every_shadow_configuration_key_fails_as_unknown`). The `fibery` group accepts nothing but `project_code`: host, space id, token and project UUID are all refused (`test_the_fibery_group_accepts_nothing_but_the_project_code`). Diagnostics name a key path or line and never echo a value, proven with a descriptor carrying sensitive prose in its project name (`test_a_diagnostic_names_the_location_and_never_the_content`).
+- Red check: against `src` from the pre-B03 baseline `916d1416`, the suite fails at collection with `ImportError: cannot import name 'project_descriptor' from 'sdlc'`; on `4189f2c` it passes. No test was weakened to manufacture a red count.
+- Gates: dedicated `126 passed`; focused regressions over `test_consumer_template`, `test_project_code`, `test_project_init`, `test_project_init_failures` and `test_cli` `156 passed`; full `uv sync --locked`, `ruff check .`, `ruff format --check .` (169 files), `pytest -q` `2192 passed`.
+
+**Blocker:** — (reviewer-authorized dependency clearance: `RW-B01` is VERIFIED in `docs/rewrite/RW-B01-Verification-v0.1.md`, and the exact schema and boundary are frozen in `docs/rewrite/RW-B03-Project-Descriptor-Contract-v0.1.md` and `docs/rewrite/RW-B03-Implementation-Boundary-v0.1.md`)  
+**Execution Notes:**
+
+- Base `916d1416`; IMPLEMENTING mark `9b80fd6`; implementation `4189f2c`.
+- The `BLOCKED -> IMPLEMENTING` transition is the reviewer-authorized dependency clearance above, not a semantic plan change; the frozen RW-B03 text is unchanged.
+- Changed files: new `src/sdlc/project_descriptor.py` (578 lines) and `tests/test_project_descriptor.py` (607 lines). No other production file changed and no documentation change was needed.
+- Public API: the value objects `ProjectDescriptor`, `ProjectIdentity`, `FiberyMapping`, `RepositoryConfig`, `ProjectCheck` and `StandardsConfig`, all frozen dataclasses so descriptor equality is semantic equality; the constants `DESCRIPTOR_VERSION`, `REPOSITORY_ROOT`, `IDENTIFIER_PATTERN`, `TOP_LEVEL_KEYS` and the per-group key tuples; the vocabularies `DescriptorProblem` (`invalid encoding`, `invalid syntax`, `missing key`, `unknown key`, `duplicate key`, `invalid value`, `unsupported version`, `project code mismatch`) and `InvalidProjectDescriptor(problem, location)`; and the functions `new_project_descriptor`, `render_descriptor`, `parse_descriptor` and `descriptor_compatible`.
+- Grammar boundary: the parser reads the canonical form plus three harmless variations that are explicitly tested — CRLF line endings, blank lines and a missing final newline. Scalars are only a JSON-compatible double-quoted string, `null`, a non-negative integer or `[]`. Tabs, non-two-space indentation, comments, unquoted scalars, a key with both an inline value and an indented block, and a key with no value at all are refused as `INVALID_SYNTAX`. It is not a general YAML implementation and adds no runtime dependency: `json` and `re` from the standard library plus `sdlc.project_code` are the only imports, pinned by `test_the_module_imports_only_the_standard_library_and_project_code`.
+- Canonical serialization: UTF-8, LF, exactly one final LF, frozen key order, JSON-compatible quoted string scalars for escaping without a YAML dependency, `[]` for empty lists, and check and extension order preserved rather than sorted.
+- Compatibility returns a plain bool, since RW-B01 gives the descriptor whole-file ownership and a conflict stops bootstrap; a caller wanting the class of problem calls `parse_descriptor` directly and reads `InvalidProjectDescriptor.problem`.
+- `consumer_template.DESCRIPTOR_PATH` is deliberately not imported: RW-B03 never touches a path, so the coupling would buy nothing. B02 and B03 remain separate pure contracts.
+- Not implemented, by design: file materialization, target preflight, symlink safety, Project Code collision resolution, Fibery lookup, project-context copying, `sdlc project bootstrap`, B04 composition, B05, and any execution of a check, policy or standards profile.
+- No Proposed Change Request.
 
 ### Verification Record
 
