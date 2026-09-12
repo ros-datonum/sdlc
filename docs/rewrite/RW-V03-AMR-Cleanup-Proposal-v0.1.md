@@ -1,6 +1,6 @@
 # RW-V03 — AMR Cleanup Proposal v0.1
 
-**Status:** HUMAN REVIEW REQUIRED  
+**Status:** V03-A EXECUTED; V03-B HUMAN DECISION REQUIRED  
 **Work item:** `RW-V03 — Human-reviewed cleanup of obsolete AMR dogfood requirements`  
 **Date:** 2026-09-12  
 **Historical baseline:** `docs/rewrite/RW-V01-AMR-Baseline-v0.1.md`  
@@ -9,11 +9,7 @@
 
 ## 1. Purpose
 
-This document proposes the explicit human-reviewed classification and cleanup set for the 28 historical Applied Standard Requirements in the canonical `ai-model-runner` / `AMR` Project.
-
-It authorizes **nothing by itself**.
-
-No live Fibery entity was changed while preparing this proposal.
+This document records the explicit human-reviewed classification and staged cleanup set for the 28 historical Applied Standard Requirements that existed in the canonical `ai-model-runner` / `AMR` Project at the RW-V01 baseline.
 
 The frozen RW-V03 classifications are:
 
@@ -51,7 +47,7 @@ canonical replacement in ai-model-runner / AMR
 
 Deleting an old AMR Requirement merely because a corrected reference candidate covers it would remove a canonical AMR obligation before an authorized canonical replacement exists.
 
-For that reason this proposal has two cleanup sets:
+For that reason cleanup is split into two sets:
 
 1. **Immediate safe cleanup** — old Requirement content that no longer belongs at Requirement level and needs no replacement Requirement.
 2. **Deferred replacement cleanup** — old Requirements that are semantically superseded by the corrected corpus but must remain until a separate human-approved canonicalization/promotion decision makes their replacement obligations authoritative for AMR.
@@ -77,7 +73,7 @@ Candidate count is not the reason for any classification.
 
 ## 4. Source A cleanup classification — `AMR-RAW-0053`
 
-| Old Requirement | Proposed classification | Corrected correspondence | Proposed action now | Rationale |
+| Old Requirement | Classification | Corrected correspondence | Current action | Rationale |
 |---|---|---|---|---|
 | `AMR-FR-0054` | replaced | `ZZV02AMR-FR-0092` | KEEP pending canonical replacement | provider-neutral execution is preserved as one corrected capability |
 | `AMR-CON-0055` | replaced | `ZZV02AMR-NFR-0094` (+ `CON-0093`) | KEEP pending canonical replacement | argv/no-shell remains a source-mandated safety constraint, expressed without making subprocess implementation the capability itself |
@@ -102,17 +98,17 @@ Candidate count is not the reason for any classification.
 Source A classification:
 
 ```text
-replaced       = 13
-over-decomposed = 6
-obsolete        = 0
-total          = 19
+replaced         = 13
+over-decomposed  = 6
+obsolete         = 0
+total            = 19
 ```
 
 ---
 
 ## 5. Source B cleanup classification — `AMR-RAW-0077`
 
-| Old Requirement | Proposed classification | Corrected correspondence | Proposed action now | Rationale |
+| Old Requirement | Classification | Corrected correspondence | Current action | Rationale |
 |---|---|---|---|---|
 | `AMR-FR-0078` | replaced | `ZZV02AMR-FR-0107` | KEEP pending canonical replacement | corrected external-contract Requirement preserves the mandatory ModelRequest field set while leaving representation/serialization HOW open |
 | `AMR-FR-0079` | replaced | `ZZV02AMR-FR-0108` | KEEP pending canonical replacement | corrected ModelResponse contract preserves the externally observable field set and open source gaps |
@@ -122,49 +118,90 @@ total          = 19
 | `AMR-CON-0083` | replaced | `ZZV02AMR-CON-0111` | KEEP pending canonical replacement | role remains opaque telemetry with no execution semantics |
 | `AMR-CON-0084` | replaced | `ZZV02AMR-CON-0112` | KEEP pending canonical replacement | provider-neutral closed-v1 contract constraint remains intact |
 | `AMR-CON-0085` | over-decomposed | folded into `ZZV02AMR-CON-0112` Constraints | KEEP pending canonical replacement | no-credential-field rule is part of the broader consumer-contract constraint rather than a separate Requirement |
-| `AMR-CON-0086` | obsolete | **no corrected Requirement candidate** | **PROPOSE DELETE NOW, subject to human approval** | unit-test coverage statement belongs downstream under RW-C01 Example 7; V02 intentionally produced no Requirement candidate for it, so removing it loses no corrected product Requirement obligation |
+| `AMR-CON-0086` | obsolete | **no corrected Requirement candidate** | **DELETED under approved V03-A** | unit-test coverage statement belongs downstream under RW-C01 Example 7; V02 intentionally produced no Requirement candidate for it, so removing it loses no corrected product Requirement obligation |
 
 Source B classification:
 
 ```text
-replaced        = 6
-over-decomposed = 2
-obsolete        = 1
-total           = 9
+replaced         = 6
+over-decomposed  = 2
+obsolete         = 1
+total            = 9
 ```
 
 ---
 
-## 6. Immediate cleanup set proposed for human approval
+## 6. Gate V03-A — approved and executed
 
-Exactly one old Requirement is safe to remove without first creating a canonical corrected Requirement in AMR:
-
-```text
-AMR-CON-0086
-entity id: 8d80e73d-59f0-5d16-afa8-75070a8f35eb
-classification: obsolete
-reason: test-implementation / verification-coverage work belongs downstream and V02 correctly produced no Requirement-level replacement
-```
-
-### Proposed immediate action
+Human approval received verbatim:
 
 ```text
-DELETE FROM ACTIVE SDLC/Requirement CORPUS:
-- AMR-CON-0086 / 8d80e73d-59f0-5d16-afa8-75070a8f35eb
+Approve V03-A: delete only AMR-CON-0086 by exact entity id; keep the other 27 historical Standards and the entire corrected reference corpus unchanged.
 ```
 
-Deletion must use this exact entity id after re-reading and confirming:
+### Pre-delete re-read
+
+The exact target was re-read immediately before deletion and matched all guard conditions:
 
 ```text
 Requirement ID = AMR-CON-0086
+entity id       = 8d80e73d-59f0-5d16-afa8-75070a8f35eb
 Project         = ai-model-runner / AMR
 Type            = Standard
 State           = Applied
 ```
 
-The V01 compact baseline remains the permanent audit record of the deleted historical Requirement.
+### Executed action
 
-**Human approval: PENDING.**
+Exactly one entity was deleted from `SDLC/Requirement`:
+
+```text
+AMR-CON-0086
+8d80e73d-59f0-5d16-afa8-75070a8f35eb
+```
+
+Post-delete exact-id query returns zero rows.
+
+### Referential cleanup side effect
+
+Fibery automatically removed inverse relationship references to the deleted entity. Activity history shows only these relation removals on retained historical entities:
+
+- `AMR-RAW-0077`: `Produces -> AMR-CON-0086` removed;
+- `AMR-CON-0071`, `AMR-FR-0078`, `AMR-FR-0079`, `AMR-FR-0080`, `AMR-FR-0081`, `AMR-FR-0082`: inverse `Blocks` references to `AMR-CON-0086` removed;
+- `AMR-FR-0081`, `AMR-FR-0082`: inverse `Affects` references to `AMR-CON-0086` removed.
+
+The deleted entity's own `Derived From`, `Depends On`, and `Impacted By` relations were removed as part of deletion.
+
+This changed `fibery/modification-date` on those retained entities, but **did not change their Requirement ID, Type, State, Root Document content, or surviving obligation semantics**. No other historical entity was modified.
+
+### Historical corpus postcondition
+
+The canonical AMR Project now contains:
+
+```text
+2 Raw Requirements       -> Review
+27 Standard Requirements -> Applied
+AMR-CON-0086             -> absent
+```
+
+The remaining 27 historical Standards are preserved.
+
+### Corrected reference corpus postcondition
+
+The retained V02 reference Project remains exactly:
+
+```text
+2 Raw Requirements       -> Review / Succeeded
+21 Standard Requirements -> Ready / Succeeded
+0 Applied
+0 Failed
+```
+
+Its entity modification dates are unchanged from the V02 verification snapshot, so V03-A did not mutate the corrected reference corpus.
+
+The V01 compact baseline remains the permanent audit record for historical `AMR-CON-0086`.
+
+**Gate V03-A: COMPLETE.**
 
 ---
 
@@ -233,11 +270,11 @@ This is not permission to:
 
 A separate explicit human decision is required before full replacement cleanup can safely proceed.
 
-The cleanup problem is therefore split:
+The cleanup problem therefore remains split:
 
 ```text
 A. Remove Requirement-level material that is genuinely obsolete and needs no replacement
-   -> AMR-CON-0086 only, pending human approval.
+   -> COMPLETE: AMR-CON-0086 deleted under explicit human approval.
 
 B. Replace the remaining old decomposition with corrected canonical AMR Requirements
    -> canonicalization/promotion decision required first.
@@ -245,24 +282,9 @@ B. Replace the remaining old decomposition with corrected canonical AMR Requirem
 
 ---
 
-## 9. Human decision gates
-
-### Gate V03-A — immediate obsolete cleanup
-
-Approve or reject this exact deletion:
-
-```text
-DELETE AMR-CON-0086
-entity 8d80e73d-59f0-5d16-afa8-75070a8f35eb
-```
-
-No other live deletion is included in Gate V03-A.
-
-### Gate V03-B — canonicalization strategy
+## 9. Gate V03-B — canonicalization strategy
 
 Before the remaining 27 may be deleted, choose/authorize a bounded mechanism that makes the verified corrected obligations canonical for `ai-model-runner / AMR` without corrupting identity/history.
-
-This proposal intentionally does not invent that mechanism.
 
 Until Gate V03-B is resolved:
 
@@ -272,19 +294,22 @@ reference corrected corpus: KEEP
 both original RAWs: KEEP
 ```
 
+No further live deletion is authorized by V03-A.
+
 ---
 
-## 10. Proposed RW-V03 state
+## 10. Current RW-V03 state
 
-RW-V03 is **not complete** after this proposal.
+RW-V03 is **not complete** after V03-A.
 
 Current truthful state:
 
 ```text
-classification proposal: COMPLETE
-human cleanup approval: PENDING
-live deletions: NONE
-canonicalization/promotion decision: PENDING
+classification:                    COMPLETE
+Gate V03-A human approval:         COMPLETE
+Gate V03-A live deletion:          COMPLETE (AMR-CON-0086 only)
+remaining historical Standards:    27 Applied, protected
+corrected reference Standards:     21 Ready/Succeeded, protected
+canonicalization/promotion decision: PENDING (Gate V03-B)
+RW-V03 final verification:         NOT YET ELIGIBLE
 ```
-
-No deletion should occur merely because this document exists.
