@@ -2024,7 +2024,7 @@ After `RW-V02` verifies the corrected Requirement pipeline:
 
 ## RW-D01 — Reconcile canonical docs and README
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** all implementation items in Blocks B–D `VERIFIED`, `RW-V03`
 
