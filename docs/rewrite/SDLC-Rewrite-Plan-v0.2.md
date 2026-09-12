@@ -1262,7 +1262,7 @@ Exact module/file location must be the one frozen in `RW-C04` before this item b
 
 ## RW-O03 — Implement state-change trigger entrypoint
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-O02`
 
@@ -1298,10 +1298,139 @@ The technical transport/mechanism must come from the frozen `RW-C04` technical c
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
-**Blocker:** `RW-C04`  
-**Execution Notes:** —
+**Implementation Commit:** `38f702d3c2bae189192c9db343ac8789aceb4fb9`  
+**Implementation Evidence:**
+
+- AC1 — a relevant State change causes the correct dispatcher invocation, with no manual command.
+  - `tests/test_requirement_runner.py`: `test_a_human_state_change_alone_starts_the_right_worker`. A human Raw Draft → Process, Standard Ready → Process and Standard Ready → Apply, with the modelled Fibery reset, start exactly the RAW Processor, Standard Process and Apply on the next cycle. Before the change the same Requirement is `IDLE`.
+  - Real workers through the runner:
+    - `test_raw_process_completes_with_its_candidates_progressed_and_succeeds`: RAW Review / `Succeeded`; the produced candidate is in Process at `Not Processed`.
+    - `test_review_reaches_ready_and_succeeds_whatever_the_verdict`: PASS, NEEDS_WORK and BLOCKING all reach Ready / `Succeeded`.
+    - `test_apply_reaches_applied_and_succeeds`.
+    - `test_standard_process_hands_off_to_review_and_leaves_the_reset_intact`.
+    - `test_regression_succeeded_is_never_written_over_the_review_cycle_reset`: Process → Review → Ready in consecutive cycles, with no idle sleep between them.
+  - Selection:
+    - `test_the_lowest_public_id_runs_first_and_work_drains_without_an_idle_sleep`;
+    - `test_the_numerically_lowest_public_id_wins_whatever_order_the_page_has`;
+    - `test_one_cycle_dispatches_exactly_one_worker_and_asks_to_query_again`.
+  - CLI: `tests/test_cli_worker.py::test_a_state_driven_apply_runs_without_a_manual_command`. `sdlc worker run` applies a Requirement in Apply through the real handler, runner, lock and Apply worker.
+- AC2 — an irrelevant State change causes no worker mutation.
+  - `test_no_eligible_work_dispatches_nothing_and_sleeps_the_default_interval` covers the 8 no-route Type/State pairs.
+  - `test_a_polled_row_whose_own_values_select_no_route_is_never_claimed`: the same 8 pairs forged into the poll get no read, no write and no worker, because `select_route` decides every row.
+  - `test_a_polled_row_at_any_other_status_is_never_claimed`.
+  - `test_a_change_between_the_poll_and_the_claim_starts_no_worker`: a change to State, to State of another route, to Type, status, Project or Requirement ID gives `CANDIDATE_CHANGED` and zero writes.
+  - `test_a_candidate_that_no_longer_exists_is_not_claimed`.
+- AC3 — a duplicate or replayed trigger does not duplicate a durable outcome.
+  - Replay:
+    - `test_a_claimed_or_settled_cycle_is_never_run_again`: 4 routes × Processing, Succeeded and Failed are idle with zero writes.
+    - `test_a_worker_owned_transition_never_replays_its_worker`: each route's worker runs once, and Standard Process hands off to one Review.
+    - `test_failed_work_is_never_retried_automatically`.
+    - `test_an_abruptly_terminated_cycle_is_never_stolen`.
+    - `test_a_failed_final_status_write_does_not_run_the_worker_again`.
+  - Claim:
+    - `test_processing_is_written_and_confirmed_before_the_worker_starts`;
+    - `test_a_claim_that_cannot_be_written_starts_no_worker`;
+    - `test_a_claim_that_is_not_confirmed_starts_no_worker_and_writes_nothing_else`: a lost write, a read-back failure, or a concurrent State change, which is left unrepaired.
+  - Guard: `tests/test_worker_runner_guard.py`, 16 tests.
+    - The first runner holds the lock; a second fails immediately, in-process and cross-process.
+    - Different workspaces and the per-RAW locks do not collide.
+    - The lock is released on normal exit, on an exception, on release by the holder and on SIGKILL.
+    - A worker's child process does not inherit it.
+    - The file is empty and names no workspace.
+    - No flock, an unusable directory, or an unexpected flock error fails closed.
+  - CLI: `tests/test_cli_worker.py::test_a_second_runner_is_refused_visibly_and_touches_nothing`.
+- AC4 — failed worker execution never reports lifecycle completion.
+  - `test_a_worker_failure_is_failed_in_the_claimed_state` and `test_a_normal_result_without_its_transition_is_failed_not_completed`: 4 routes each; `Failed` is confirmed in the claimed State.
+  - `test_a_raw_progression_failure_is_failed_in_review_and_nothing_rolls_back`: for a conflict, a failed first write and a failed later write, the RAW is `Failed` in Review, progressed candidates stay, and nothing is demoted.
+  - These give `PARTIAL`, with the status left as observed:
+    - `test_a_read_failure_after_the_worker_guesses_no_final_status`;
+    - `test_a_route_gone_stale_after_the_claim_runs_nothing_and_guesses_nothing`;
+    - `test_a_final_status_that_cannot_be_confirmed_is_partial` (4 interleavings);
+    - `test_a_handoff_into_an_unexpected_state_is_partial_and_writes_nothing`;
+    - `test_a_dispatch_without_a_route_is_partial_and_writes_nothing`.
+  - `test_a_reset_not_observed_after_the_handoff_is_reported_and_never_written`: `RESET_NOT_OBSERVED`, no Succeeded, and Review does not start until the reset arrives.
+  - Red check on a scratch copy of `src` that writes Succeeded after Standard Process: `test_standard_process_hands_off_to_review_and_leaves_the_reset_intact` and the regression test fail (`RESET_NOT_OBSERVED` ≠ `HANDED_OFF`). Both pass on `38f702d`.
+- AC5 — trigger or poll data never becomes product truth when current Fibery state disagrees.
+  - `test_a_poll_row_the_current_fibery_state_contradicts_is_not_trusted`: a poll row claiming Apply / `Not Processed` for an Applied Requirement gives `CANDIDATE_CHANGED` and zero writes.
+  - The fresh re-read and claim read-back tests above; the dispatcher's own revalidation in `test_a_route_gone_stale_after_the_claim_runs_nothing_and_guesses_nothing`.
+  - `sdlc worker run` takes no payload, Requirement, Project, Type, State, status, runtime, model, approval, force or daemon argument: `test_no_override_flag_exists`, 13 cases.
+- Processing Status adapter (`FiberyRawProcessorWorkspace`, stub transport):
+  - `test_http_processing_status_is_resolved_from_the_schema_and_read_back`;
+  - `test_http_the_field_is_found_by_its_name_not_by_an_assumed_prefix`;
+  - `test_http_the_option_set_is_read_from_the_fields_option_database`;
+  - `test_http_a_wrong_option_set_is_rejected`: missing, fifth, renamed, duplicated;
+  - `test_http_a_missing_field_fails_only_the_runner_preflight`;
+  - `test_http_a_field_that_is_not_a_single_select_is_never_read_or_written`: multi-select, text, non-enum;
+  - `test_http_the_eligible_query_filters_routes_and_status_in_public_id_order`;
+  - `test_http_a_status_write_resolves_the_option_entity_then_updates_the_field`;
+  - `test_http_an_unknown_status_option_is_refused_before_any_write`;
+  - `test_http_existing_reads_are_unchanged_without_the_field`.
+  - The existing `tests/test_fibery_requirement_http.py` and `tests/test_fibery_http.py` pass unchanged.
+- CLI (`tests/test_cli_worker.py`):
+  - The interval defaults to 5, the minimum is 1, and `0`, `-1`, `1.5`, `five`, empty and `1e1` are rejected.
+  - The configured workspace is used.
+  - The three model roles are resolved from `config/sdlc.toml` before the lock is taken, and no model is launched.
+  - A preflight failure, a runtime configuration error and missing Fibery configuration claim nothing.
+  - Ctrl-C exits 130 and leaves an in-flight claim at Processing.
+  - Output carries identity and codes: not the title, not the Root Document prose, not the token.
+  - Idle cycles print nothing.
+  - Every test ends the loop through an injected stop, never a wait.
+- Focused: `uv run pytest -q` over 27 files → 819 passed:
+  - `tests/test_requirement_runner.py tests/test_worker_runner_guard.py tests/test_cli_worker.py tests/test_cli_apply.py`
+  - `tests/test_fibery_http.py tests/test_fibery_requirement_http.py`
+  - `tests/test_lifecycle_control.py tests/test_requirement_dispatcher.py`
+  - `tests/test_raw_processor.py tests/test_raw_processor_cross_stage.py tests/test_raw_processor_resume.py tests/test_raw_processor_validation.py tests/test_raw_single_writer.py`
+  - `tests/test_requirement_apply.py tests/test_requirement_apply_resume.py tests/test_requirement_apply_validation.py`
+  - `tests/test_standard_processor.py tests/test_standard_processor_concurrency.py tests/test_standard_processor_iterations.py tests/test_standard_processor_state_machine.py tests/test_standard_process_abstraction.py tests/test_standard_process_explicit_resume.py tests/test_standard_process_review_chain.py`
+  - `tests/test_standard_reviewer.py tests/test_standard_reviewer_state.py tests/test_standard_review_abstraction.py tests/test_standard_review_contract.py`
+- Full: `uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q` → All checks passed; 155 files already formatted; 1994 passed. The 160 new tests account for the difference from RW-O02's recorded 1834.
+
+**Blocker:** —  
+**Execution Notes:**
+
+- Base `fdfa391`; IMPLEMENTING mark `73efeab`; implementation `38f702d`. Status moved from `BLOCKED` to `IMPLEMENTING` because the blocker `RW-C04` is verified and the RW-O03 boundary is frozen at `fdfa391`. The frozen normative text is unchanged.
+- Changed files:
+  - New: `src/sdlc/requirement_runner.py`, `src/sdlc/worker_runner_guard.py`, `docs/fibery/Worker-Runner-Setup-v0.1.md`, `tests/test_requirement_runner.py`, `tests/test_worker_runner_guard.py`, `tests/test_cli_worker.py`.
+  - Supporting edits: `src/sdlc/cli.py`, `src/sdlc/fibery_http.py`, `src/sdlc/fibery_workspace.py`, `docs/fibery/Fibery-Schema-v0.1.md`, `README.md`.
+  - Unchanged: no dispatcher, worker, prompt, evidence-format, Review or Apply code. `tests/processor_fake.py` is untouched; the status fake wraps it.
+- Runner interface:
+  - Functions: `run_requirement_runner(workspace, workers, *, sleep, report, should_continue, poll_interval_seconds=5, on_started=None)`, `run_cycle(workspace, workers) -> CycleReport`, `finalize_cycle(workspace, claimed, dispatch_result) -> CycleReport`, `preflight(workspace)` and `require_poll_interval(seconds)`.
+  - `CycleOutcome`: `IDLE`, `POLL_FAILED`, `CANDIDATE_READ_FAILED`, `CANDIDATE_CHANGED`, `CLAIM_FAILED`, `CLAIM_NOT_CONFIRMED`, `SUCCEEDED`, `HANDED_OFF`, `RESET_NOT_OBSERVED`, `FAILED`, `PARTIAL`.
+  - `RunnerCode`: `WORKER_RUNNER_STARTED`, `WORKER_RUNNER_CONFIGURATION_INVALID`, `WORKER_RUNNER_BUSY`, `WORKER_RUNNER_GUARD_UNAVAILABLE`, `WORKER_RUNNER_PREFLIGHT_FAILED`, `WORKER_RUNNER_STOPPED`.
+- Workspace interface: `RunnerWorkspace(DispatchWorkspace)` adds `lock_scope`, `validate_processing_status_field(options)`, `find_eligible_requirements(routes, status)` and `set_processing_status(entity_id, status)`.
+  - The status is read back through `read_requirement` into the new optional `RequirementRecord.processing_status`, which defaults to None.
+  - The HTTP adapter resolves the Field from the schema by its label, `processing status`.
+  - It selects and writes the Field only when the schema shows a single-select: the option type carries `fibery/enum?` and the Field is not `fibery/collection?`. Otherwise every existing read is byte-identical.
+- Poll and query:
+  - One `fibery.entity/query` on the Requirement Database per cycle: `q/where` is status `= Not Processed` AND a `q/or` of the four Type+State pairs, `q/order-by` is `fibery/public-id` ascending, and `q/limit` is 100 (`ELIGIBLE_QUERY_LIMIT`).
+  - The runner filters the page through `select_route` and takes the numerically lowest public id.
+  - It sleeps the idle interval only after `IDLE`, `POLL_FAILED`, `CANDIDATE_READ_FAILED`, `CLAIM_FAILED` and `CLAIM_NOT_CONFIRMED`. After any other cycle it queries again at once.
+  - Cost of a worker cycle: the poll, the re-read, the claim write and its read-back, the dispatcher's own reads, one read before the final write, the final write and its read-back. The client paces every request.
+- Guard: `worker_runner_guard.hold_workspace(scope)`.
+  - Key: SHA-256 of the normalized workspace identity plus the fixed purpose `sdlc worker run`.
+  - File: `worker-runner-<key>.lock` in the per-RAW guard's lock directory (`~/.sdlc/locks`, or `SDLC_LOCK_DIR`). It is opened with `O_CLOEXEC` and locked with `LOCK_EX|LOCK_NB`, stays empty and is never unlinked.
+  - `raw_execution_guard.py` is not modified; its constants and directory function are imported.
+- Live Fibery, at this implementation commit: NOT configured and NOT verified. No live probe had been run, and the tests use fakes and a stub transport only.
+- Live Fibery, verified afterwards on 2026-09-12 by the CR-003 probe (evidence commit of that probe; RW-O03 runtime code unchanged): the field, its four options, the default, the eligible query and the reset automation all behave as the stub tests assume. Recorded in `docs/fibery/Fibery-API-Constraints-v0.1.md` constraint 28 and under `CR-003`.
+  - The probe ran on a disposable Project and two disposable Requirements, deleted afterwards and confirmed absent. No production Requirement took part.
+  - One correction: the schema does expose the configured default as `fibery/default-value`, which resolved to `Not Processed`. RW-O03 still does not validate the default, which its boundary allows; `docs/fibery/Worker-Runner-Setup-v0.1.md` no longer claims the schema hides it.
+  - `FIBERY_SPACE_ID` is empty in the local `.env`, so `sdlc worker run` cannot start from that configuration until the operator sets it. The probe built settings directly and discovered the Space id read-only from existing Requirement Document views.
+- Verified live by that probe, having been assumed from Fibery's public schema representation:
+  - single-select detection by `fibery/enum?` and `fibery/collection?`;
+  - `q/or` inside `q/where`;
+  - `q/order-by` on `fibery/public-id`, honoured in both directions.
+
+  Ordering was exercised with two-digit public ids only, so numeric versus text ordering of the public id remains unknown. The runner re-orders the page numerically anyway. With more than 100 eligible rows the lowest id could fall outside the page; it is drained on a later poll. A wrong schema assumption fails closed at preflight.
+- Existing Requirements whose Processing Status is empty are not eligible until a State change into a machine State triggers the reset. The setup document says so.
+- Two functions that were already over 40 lines grow slightly and are not refactored here:
+  - `cli.build_parser`, by 2 lines, because the worker parser lives in `_add_worker_commands`;
+  - `FiberyRequirementWorkspace._resolve_requirement_schema`, by 6 lines.
+- Not implemented, by design:
+  - the RW-O04 end-to-end lifecycle test;
+  - any retry, reset, lease, heartbeat, TTL or stale detection;
+  - automatic creation of the Fibery automation;
+  - daemonizing.
+- Proposed Change Request: `CR-003`, a live probe of the Processing Status adapter semantics before production use.
 
 ### Verification Record
 
@@ -1902,6 +2031,78 @@ O02 implementation note (RW-O02, `a1ee1fb`): the dispatcher's
   empty shells and all checks are unchanged; ordinary and manual calls still
   return NO_CHANGES_TO_PROCESS; no CLI flag exposes it. Automatic invocation
   awaits the RW-O03 runner and its Processing Status claim.
+O03 implementation note (RW-O03, `38f702d`): `sdlc worker run` now reaches
+  that route automatically. A human Ready -> Process plus the Fibery reset
+  makes the Requirement eligible; the runner claims it with Processing and
+  dispatches it once, and the claim stops the same authorized cycle from
+  being requested twice. The end-to-end rework proof remains RW-O04's.
+Blocking: NO
+Status: PROPOSED
+```
+
+```text
+CR-003
+Discovered In: RW-O03
+Observation: The Processing Status adapter added by RW-O03 relies on Fibery
+  behaviour this repository has not probed live:
+  - single-select detection by the option type's `fibery/enum?` and the
+    Field's `fibery/collection?` schema flags;
+  - a `q/or` of Type + State pairs inside `q/where`;
+  - `q/order-by` on `fibery/public-id`, whose order (numeric or text) is
+    unconfirmed;
+  - the option-entity write of the new Field.
+  These are pinned only against fakes and a stub transport. The project's
+  Fibery integration rule requires, before such semantics are frozen, a
+  narrow live probe on temporary state, a fake-versus-live comparison and a
+  regression for every discrepancy. No live workspace has the Processing
+  Status field or the reset automation yet.
+Why current item cannot/should not absorb it: RW-O03 authorizes no live
+  workspace change. The field and the reset automation are one-time operator
+  configuration (RW-C04 section 27, RW-O03 boundary), and the probe needs
+  the field to exist.
+Proposed decision: Before RW-O04 relies on the live runner:
+  1. The operator adds the field and the automation
+     (docs/fibery/Worker-Runner-Setup-v0.1.md).
+  2. Run a narrow live probe of the four adapter operations (validate the
+     field, find eligible work, set status, read back) on temporary
+     Requirements.
+  3. Compare the results with the stub expectations in
+     tests/test_requirement_runner.py and add a regression for any
+     discrepancy.
+  4. Record the results in docs/fibery/Fibery-API-Constraints-v0.1.md.
+Live probe result (2026-09-12; RW-O03 runtime code unchanged): the probe ran
+  and passed. The evidence is constraint 28 of
+  docs/fibery/Fibery-API-Constraints-v0.1.md.
+  - Field and options: SDLC/Processing Status resolved from the schema by its
+    label; option Database SDLC/Processing Status_SDLC/Requirement; options
+    exactly Not Processed, Processing, Succeeded and Failed; the real runner
+    preflight accepted the workspace.
+  - Single-select representation: the option Database carries
+    fibery/enum?: true and the Field has no fibery/collection? key, which is
+    what the stub tests assume.
+  - Read, write and read-back: all four option names round-tripped exactly on
+    a disposable Requirement in Draft, and no other Field of it changed.
+  - Eligible query: the four-arm q/or, the enum-name status filter and
+    q/order-by on fibery/public-id all work live; q/asc and q/desc returned
+    the two scratch rows in opposite orders. Numeric versus text ordering of
+    the public id stays unknown, and the runner re-sorts numerically anyway.
+  - Reset automation: every machine target reset an intentional Failed to
+    Not Processed within 0.5 to 2.7 s, while Raw + Review, Standard + Ready
+    and Standard + Applied each kept Failed over a 15 s window.
+  - One real model-free runner cycle on the Apply route confirmed Processing
+    before the worker ran, and Failed after the worker's typed refusal.
+  - Correction to the earlier assumption: the schema does expose the
+    configured default, as fibery/default-value, which resolved to
+    Not Processed. RW-O03 still does not validate the default, which its
+    boundary allows, and the setup document no longer claims otherwise.
+  - Probe data: a disposable Project and two disposable Requirements, deleted
+    afterwards and confirmed absent. No production Requirement took part.
+  - Local configuration gap: FIBERY_SPACE_ID is empty in the operator's .env,
+    so sdlc worker run cannot start from that configuration until it is set.
+    The probe built settings directly and discovered the Space id read-only
+    from existing Requirement Document views.
+  No adapter correction was needed, so no code changed. Whether this CR is now
+  closed remains the human's decision.
 Blocking: NO
 Status: PROPOSED
 ```

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from sdlc.config import ConfigurationError, FiberySettings, load_fibery_settings
 from sdlc.fibery_client import FiberyClient
@@ -37,6 +39,17 @@ from sdlc.ready_decision import (
 )
 from sdlc.requirement_add import add_raw_requirement
 from sdlc.requirement_apply import apply_standard_requirement
+from sdlc.requirement_dispatcher import RequirementWorkers
+from sdlc.requirement_runner import (
+    DEFAULT_POLL_INTERVAL_SECONDS,
+    MINIMUM_POLL_INTERVAL_SECONDS,
+    CycleOutcome,
+    CycleReport,
+    RunnerCode,
+    RunnerPreflightError,
+    require_poll_interval,
+    run_requirement_runner,
+)
 from sdlc.result_shell import RECOVERY_OPTION
 from sdlc.results import (
     AddResult,
@@ -61,10 +74,24 @@ from sdlc.standard_processor import (
 )
 from sdlc.standard_review import ReviewVerdict
 from sdlc.standard_reviewer import review_standard_requirement
+from sdlc.worker_runner_guard import (
+    WorkerRunnerBusy,
+    WorkerRunnerGuardUnavailable,
+    hold_workspace,
+)
 
 PROGRAM_NAME = "sdlc"
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
+# The shell convention for a process ended by Ctrl-C (SIGINT).
+EXIT_INTERRUPTED = 130
+
+WORKER_SETUP_DOCUMENT = "docs/fibery/Worker-Runner-Setup-v0.1.md"
+RUNNER_STOPPED_NOTE = (
+    "Stopped. A Requirement whose worker was interrupted keeps its Processing "
+    "Status: the runner never treats it as stale, retries or resets it, and "
+    "recovery is explicit."
+)
 
 # The normal lifecycle is driven by Requirement State in Fibery
 # (Requirement-Lifecycle-Ownership-v0.2); no command here creates authority.
@@ -101,6 +128,19 @@ APPLY_DESCRIPTION = (
     "state, however the Requirement reached Apply: a direct human State change "
     "in Fibery, an assistant acting on the human's explicit instruction, or the "
     "approve command. It takes no verdict acknowledgement."
+)
+WORKER_DESCRIPTION = "The state-driven Requirement worker runner (RW-C04)."
+WORKER_RUN_DESCRIPTION = (
+    "Run the state-driven Requirement worker in the foreground until Ctrl-C. It "
+    "polls every Project of the configured Fibery workspace for Requirements at "
+    "a machine route (Raw + Process, Standard + Process, Standard + Review, "
+    "Standard + Apply) whose Processing Status is Not Processed, and runs one "
+    "worker at a time with the configured model runtime roles; Apply is "
+    "model-free. Fibery State stays the only lifecycle authority: the runner "
+    "takes no Requirement, State, Type, status, runtime, model or approval "
+    "argument. The Processing Status field and its reset automation must be "
+    "configured and verified first (docs/fibery/Worker-Runner-Setup-v0.1.md). "
+    "One runner per workspace on this host; a second one exits immediately."
 )
 
 NEXT_STEP_HINT = "Use:\nsdlc project requirement add\nto add requirements."
@@ -238,7 +278,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     apply.set_defaults(handler=_run_requirement_apply)
 
+    _add_worker_commands(commands)
+
     return parser
+
+
+def _add_worker_commands(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """`sdlc worker run`, the only normal runner entrypoint (RW-C04 section 8)."""
+    worker = commands.add_parser(
+        "worker", help="Requirement worker runner.", description=WORKER_DESCRIPTION
+    )
+    worker_commands = worker.add_subparsers(dest="command", required=True)
+    run = worker_commands.add_parser(
+        "run",
+        help="Run the state-driven Requirement worker in the foreground.",
+        description=WORKER_RUN_DESCRIPTION,
+    )
+    run.add_argument(
+        "--poll-interval-seconds",
+        type=_poll_interval_seconds,
+        default=DEFAULT_POLL_INTERVAL_SECONDS,
+        metavar="N",
+        help=(
+            "Idle poll interval in whole seconds (default "
+            f"{DEFAULT_POLL_INTERVAL_SECONDS}, minimum "
+            f"{MINIMUM_POLL_INTERVAL_SECONDS}). Changes responsiveness only."
+        ),
+    )
+    run.set_defaults(handler=_run_worker)
 
 
 def _add_recovery_option(command: argparse._ActionsContainer, artifact: str) -> None:
@@ -481,6 +550,175 @@ def _run_requirement_apply(
     )
     render_apply_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _poll_interval_seconds(text: str) -> int:
+    """`--poll-interval-seconds`: a whole number of seconds, at least the minimum."""
+    try:
+        return require_poll_interval(int(text))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "expected a whole number of seconds, at least "
+            f"{MINIMUM_POLL_INTERVAL_SECONDS}; got {text!r}"
+        ) from error
+
+
+def _run_worker(arguments: argparse.Namespace, out: TextIO, error_out: TextIO) -> int:
+    """`sdlc worker run`: the foreground state-driven runner, until Ctrl-C.
+
+    Configuration and every model role resolve before the lock is taken, and
+    the lock and the Processing Status preflight before the first poll, so
+    none of their failures can leave a Requirement claimed.
+    """
+    try:
+        settings = load_fibery_settings()
+        workspace = _runner_workspace(settings)
+        workers = _runner_workers(workspace, load_model_runtime_config())
+    except (ConfigurationError, ModelRuntimeConfigError) as error:
+        _render_runner_code(
+            RunnerCode.WORKER_RUNNER_CONFIGURATION_INVALID, str(error), error_out
+        )
+        return EXIT_FAILURE
+    return _run_guarded(
+        workspace, workers, arguments.poll_interval_seconds, out, error_out
+    )
+
+
+def _run_guarded(
+    workspace: FiberyRawProcessorWorkspace,
+    workers: RequirementWorkers,
+    poll_interval_seconds: int,
+    out: TextIO,
+    error_out: TextIO,
+) -> int:
+    """Hold the workspace lock for the runner's whole life; report each refusal."""
+    try:
+        with hold_workspace(workspace.lock_scope):
+            run_requirement_runner(
+                workspace,
+                workers,
+                sleep=_sleep,
+                report=functools.partial(render_cycle, out=out, error_out=error_out),
+                should_continue=_keep_running,
+                poll_interval_seconds=poll_interval_seconds,
+                on_started=functools.partial(_render_started, stream=out),
+            )
+    except WorkerRunnerBusy as error:
+        _render_runner_code(RunnerCode.WORKER_RUNNER_BUSY, str(error), error_out)
+        return EXIT_FAILURE
+    except WorkerRunnerGuardUnavailable as error:
+        code = RunnerCode.WORKER_RUNNER_GUARD_UNAVAILABLE
+        _render_runner_code(code, str(error), error_out)
+        return EXIT_FAILURE
+    except RunnerPreflightError as error:
+        message = f"{error}\n\nSee {WORKER_SETUP_DOCUMENT}."
+        _render_runner_code(
+            RunnerCode.WORKER_RUNNER_PREFLIGHT_FAILED, message, error_out
+        )
+        return EXIT_FAILURE
+    except KeyboardInterrupt:
+        _render_runner_code(RunnerCode.WORKER_RUNNER_STOPPED, RUNNER_STOPPED_NOTE, out)
+        return EXIT_INTERRUPTED
+    return EXIT_SUCCESS
+
+
+def _runner_workspace(settings: FiberySettings) -> FiberyRawProcessorWorkspace:
+    return FiberyRawProcessorWorkspace(
+        client=FiberyClient(settings),
+        space=settings.space,
+        space_id=settings.space_id,
+    )
+
+
+def _runner_workers(
+    workspace: FiberyRawProcessorWorkspace,
+    # The parsed [model_runtime] table, as load_model_runtime_config returns it.
+    runtime_config: dict[str, Any],
+) -> RequirementWorkers:
+    """The four existing workers, bound to the configured roles; Apply is model-free.
+
+    Every role resolves here, before the runner starts, so a configuration
+    error stops it before any Requirement is claimed. Nothing overrides a role.
+    """
+    raw, standard, reviewer = (
+        LocalCliModelRuntime(select_runtime(runtime_config, role))
+        for role in (
+            RAW_REQUIREMENT_PROCESSOR_ROLE,
+            STANDARD_REQUIREMENT_PROCESSOR_ROLE,
+            STANDARD_REQUIREMENT_REVIEWER_ROLE,
+        )
+    )
+    return RequirementWorkers(
+        process_raw=functools.partial(process_raw_requirement, workspace, raw),
+        process_standard=functools.partial(
+            process_standard_requirement, workspace, standard
+        ),
+        review_standard=functools.partial(
+            review_standard_requirement, workspace, reviewer
+        ),
+        apply_standard=functools.partial(apply_standard_requirement, workspace),
+    )
+
+
+def _sleep(seconds: float) -> None:
+    """The runner's idle wait on the process clock; tests replace it."""
+    time.sleep(seconds)
+
+
+def _keep_running() -> bool:
+    """The runner has no stop condition of its own: Ctrl-C ends it."""
+    return True
+
+
+def _render_started(interval: int, stream: TextIO) -> None:
+    _render_runner_code(
+        RunnerCode.WORKER_RUNNER_STARTED,
+        f"Watching every Project of the configured Fibery workspace; idle poll "
+        f"interval {interval} s. Ctrl-C stops the runner.",
+        stream,
+    )
+
+
+def _render_runner_code(code: RunnerCode, message: str, stream: TextIO) -> None:
+    print(code.value, file=stream)
+    print(file=stream)
+    print(message, file=stream)
+    stream.flush()
+
+
+def render_cycle(cycle: CycleReport, out: TextIO, error_out: TextIO) -> None:
+    """One block per cycle: codes and identity only, never Requirement content.
+
+    An idle cycle prints nothing, so an idle runner does not flood its log.
+    The dispatch's own messages are not printed: a worker's message may quote
+    Requirement text.
+    """
+    if cycle.outcome is CycleOutcome.IDLE:
+        return
+    stream = out if cycle.is_normal else error_out
+    print(f"\n{cycle.outcome.value}", file=stream)
+    print(cycle.message, file=stream)
+    record = cycle.requirement
+    if record is not None:
+        print(
+            f"Requirement: {record.requirement_id} (entity {record.id}); Type "
+            f"{record.type_name}; State {record.state}; Processing Status "
+            f"{record.processing_status}",
+            file=stream,
+        )
+    dispatched = cycle.dispatch_result
+    if dispatched is not None:
+        worker = dispatched.worker_result
+        print(
+            f"Dispatch: {dispatched.outcome.value}; worker result "
+            f"{worker.code.value if worker is not None else 'none'}",
+            file=stream,
+        )
+        if dispatched.progressed:
+            print(f"Progressed: {', '.join(dispatched.progressed)}", file=stream)
+    for item in cycle.details:
+        print(f"- {item}", file=stream)
+    stream.flush()
 
 
 def render_apply_result(result: ApplyResult, stream: TextIO) -> None:

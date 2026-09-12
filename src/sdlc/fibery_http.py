@@ -8,6 +8,7 @@ Spaces (``workflow/state``, ``Collaboration~Documents/secret``).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -81,6 +82,19 @@ PROJECT_CODE_COUNT_LIMIT = 2
 EXISTENCE_QUERY_LIMIT = 2
 NAME_AMBIGUITY_LIMIT = 5
 SINGLE_ROW_LIMIT = 1
+
+# Processing Status (Requirement-State-Worker-Contract-v0.1 section 4). Only
+# the worker runner uses it; every other capability works without it.
+FIELD_LABEL_PROCESSING_STATUS = "processing status"
+# How the schema marks a single-select: the Field's type is an enum Database,
+# and the Field is not a collection (a multi-select is one).
+FIELD_META_KEY = "fibery/meta"
+ENUM_TYPE_FLAG = "fibery/enum?"
+COLLECTION_FIELD_FLAG = "fibery/collection?"
+# One eligible-work poll reads at most this many rows. The runner executes one
+# per cycle and an executed row leaves the eligible set, so a larger backlog
+# drains over successive polls.
+ELIGIBLE_QUERY_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -350,6 +364,13 @@ class _RequirementSchema:
     derived_from_field: str | None = None
     depends_on_field: str | None = None
     affects_field: str | None = None
+    # Only the worker runner needs Processing Status. The Field and its option
+    # Database are set only when the schema shows a single-select; otherwise
+    # `processing_status_problem` says why the runner cannot use it, and no
+    # read selects it.
+    processing_status_field: str | None = None
+    processing_status_database: str | None = None
+    processing_status_problem: str | None = None
 
 
 class FiberyRequirementWorkspace:
@@ -558,37 +579,46 @@ class FiberyRequirementWorkspace:
         where: list[Any],
         params: dict[str, Any],
         limit: int,
+        order_by: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {
+            "q/from": self.requirement_database,
+            "q/select": self._requirement_select(schema),
+            "q/where": where,
+            "q/limit": limit,
+        }
+        if order_by is not None:
+            query["q/order-by"] = order_by
         return (
             self._client.command(
-                "fibery.entity/query",
-                {
-                    "query": {
-                        "q/from": self.requirement_database,
-                        "q/select": [
-                            ID_FIELD,
-                            PUBLIC_ID_FIELD,
-                            schema.requirement_id_field,
-                            schema.title_field,
-                            schema.revision_field,
-                            schema.fingerprint_field,
-                            {schema.type_field: [ENUM_NAME_FIELD]},
-                            {WORKFLOW_STATE_FIELD: [ENUM_NAME_FIELD]},
-                            {schema.project_field: [ID_FIELD]},
-                            *(
-                                [{schema.category_field: [ENUM_NAME_FIELD]}]
-                                if schema.category_field
-                                else []
-                            ),
-                        ],
-                        "q/where": where,
-                        "q/limit": limit,
-                    },
-                    "params": params,
-                },
+                "fibery.entity/query", {"query": query, "params": params}
             )
             or []
         )
+
+    def _requirement_select(self, schema: _RequirementSchema) -> list[Any]:
+        """Every Field a RequirementRecord carries; optional Fields only when usable."""
+        return [
+            ID_FIELD,
+            PUBLIC_ID_FIELD,
+            schema.requirement_id_field,
+            schema.title_field,
+            schema.revision_field,
+            schema.fingerprint_field,
+            {schema.type_field: [ENUM_NAME_FIELD]},
+            {WORKFLOW_STATE_FIELD: [ENUM_NAME_FIELD]},
+            {schema.project_field: [ID_FIELD]},
+            *(
+                [{schema.category_field: [ENUM_NAME_FIELD]}]
+                if schema.category_field
+                else []
+            ),
+            *(
+                [{schema.processing_status_field: [ENUM_NAME_FIELD]}]
+                if schema.processing_status_field
+                else []
+            ),
+        ]
 
     def _to_requirement(
         self, schema: _RequirementSchema, row: dict[str, Any]
@@ -606,6 +636,11 @@ class FiberyRequirementWorkspace:
             category=(
                 (row.get(schema.category_field) or {}).get(ENUM_NAME_FIELD)
                 if schema.category_field
+                else None
+            ),
+            processing_status=(
+                (row.get(schema.processing_status_field) or {}).get(ENUM_NAME_FIELD)
+                if schema.processing_status_field
                 else None
             ),
         )
@@ -646,6 +681,9 @@ class FiberyRequirementWorkspace:
         derived_from_field = by_label.get(FIELD_LABEL_DERIVED_FROM)
         depends_on_field = by_label.get(FIELD_LABEL_DEPENDS_ON)
         affects_field = by_label.get(FIELD_LABEL_AFFECTS)
+        status_field, status_database, status_problem = _single_select_field(
+            by_label.get(FIELD_LABEL_PROCESSING_STATUS), schema
+        )
 
         return _RequirementSchema(
             requirement_id_field=_require_field(
@@ -678,6 +716,9 @@ class FiberyRequirementWorkspace:
                 depends_on_field[FIELD_NAME_KEY] if depends_on_field else None
             ),
             affects_field=(affects_field[FIELD_NAME_KEY] if affects_field else None),
+            processing_status_field=status_field,
+            processing_status_database=status_database,
+            processing_status_problem=status_problem,
         )
 
 
@@ -958,3 +999,117 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
                 "entity": {entity_id: [item_id]},
             },
         )
+
+    # -- worker runner --------------------------------------------------
+
+    def validate_processing_status_field(self, options: Sequence[str]) -> None:
+        """Refuse unless Processing Status is a single-select with exactly `options`.
+
+        One row past the expected set is read, enough to see a fifth option.
+        The configured default is not checked: the schema does not reliably
+        expose it, so it is documented as workspace configuration instead.
+        """
+        database = self._processing_status_schema().processing_status_database
+        rows = (
+            self._client.command(
+                "fibery.entity/query",
+                {
+                    "query": {
+                        "q/from": database,
+                        "q/select": [ID_FIELD, ENUM_NAME_FIELD],
+                        "q/limit": len(options) + 1,
+                    }
+                },
+            )
+            or []
+        )
+        found = [row.get(ENUM_NAME_FIELD) for row in rows]
+        if len(found) != len(options) or set(found) != set(options):
+            raise FiberyError(
+                f"{self.requirement_database} Processing Status has the options "
+                f"{found!r}; the worker runner needs exactly {list(options)!r}."
+            )
+
+    def find_eligible_requirements(
+        self, routes: Sequence[tuple[str, str]], status: str
+    ) -> list[RequirementRecord]:
+        """Requirements in every Project at one of `routes` with this status.
+
+        Ordered by `fibery/public-id` ascending and bounded to one page.
+        Cost: one query per poll, at most ELIGIBLE_QUERY_LIMIT rows.
+        """
+        schema = self._processing_status_schema()
+        params: dict[str, Any] = {"$status": status}
+        clauses: list[Any] = []
+        for number, (type_name, state) in enumerate(routes):
+            params[f"$type{number}"] = type_name
+            params[f"$state{number}"] = state
+            clauses.append(
+                [
+                    "q/and",
+                    ["=", [schema.type_field, ENUM_NAME_FIELD], f"$type{number}"],
+                    ["=", [WORKFLOW_STATE_FIELD, ENUM_NAME_FIELD], f"$state{number}"],
+                ]
+            )
+        rows = self._query_requirements(
+            schema,
+            [
+                "q/and",
+                ["=", [schema.processing_status_field, ENUM_NAME_FIELD], "$status"],
+                ["q/or", *clauses],
+            ],
+            params,
+            ELIGIBLE_QUERY_LIMIT,
+            order_by=[[[PUBLIC_ID_FIELD], "q/asc"]],
+        )
+        return [self._to_requirement(schema, row) for row in rows]
+
+    def set_processing_status(self, entity_id: str, status: str) -> None:
+        """Set Processing Status by option name, resolving the option entity first."""
+        field, database = self._processing_status_field()
+        option = self._enum_option(database, status)
+        self._update_requirement(entity_id, {field: {ID_FIELD: option}})
+
+    def _processing_status_schema(self) -> _RequirementSchema:
+        """The resolved schema, refused when Processing Status is unusable."""
+        self._processing_status_field()
+        return self._requirement_schema()
+
+    def _processing_status_field(self) -> tuple[str, str]:
+        """The single-select Field's API name and its option Database."""
+        schema = self._requirement_schema()
+        field = schema.processing_status_field
+        database = schema.processing_status_database
+        if field is None or database is None:
+            raise FiberyError(
+                f"{self.requirement_database} {schema.processing_status_problem}; "
+                "the worker runner needs the single-select Processing Status "
+                "Field."
+            )
+        return field, database
+
+
+def _single_select_field(
+    field: dict[str, Any] | None,
+    # The decoded `fibery.schema/query` result, as the adapter receives it.
+    schema: Any,
+) -> tuple[str | None, str | None, str | None]:
+    """The Field's name and option Database when the schema shows a
+    single-select, or else the reason it is not one."""
+    if field is None:
+        return None, None, "has no 'Processing Status' Field"
+    name = field.get(FIELD_NAME_KEY)
+    option_type = field.get(FIELD_TYPE_KEY)
+    if (field.get(FIELD_META_KEY) or {}).get(COLLECTION_FIELD_FLAG):
+        return None, None, f"has {name!r} as a multi-select, not a single-select"
+    entry = next(
+        (
+            candidate
+            for candidate in (schema or {}).get(TYPES_KEY, [])
+            if candidate.get(FIELD_NAME_KEY) == option_type
+        ),
+        None,
+    )
+    if entry is None or not (entry.get(FIELD_META_KEY) or {}).get(ENUM_TYPE_FLAG):
+        return None, None, f"has {name!r}, but not as a single-select"
+    return name, option_type, None

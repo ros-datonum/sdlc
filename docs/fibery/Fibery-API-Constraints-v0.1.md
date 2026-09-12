@@ -552,3 +552,88 @@ its child and reads normally; the Root stays attached afterwards.
 Consequence: Requirement Root Documents are created with no Folder. Lifecycle
 placement is the Requirement's Type and State; no stage moves a Document.
 Documents created earlier keep their `fibery/Folder` as inert metadata.
+
+## Constraint 28 — Processing Status: schema, query and reset — VERIFIED
+
+Verified live on 2026-09-12 for `RW-O03` (CR-003), on a disposable Project and
+two disposable Requirements, one Raw and one Standard, created for the probe
+and deleted afterwards; all three read back as absent. No production
+Requirement took part, and no runtime code changed.
+
+### Schema representation
+
+`SDLC/Requirement` carries:
+
+```text
+SDLC/Processing Status
+fibery/type: SDLC/Processing Status_SDLC/Requirement
+```
+
+The adapter resolves both names from `fibery.schema/query` by the Field's
+label, never from an assumed prefix. The single-select shows as:
+
+- the Field's `fibery/meta` has no `fibery/collection?` key, which a
+  multi-select sets;
+- the option Database named by the Field's `fibery/type` has `fibery/meta`
+  with `fibery/enum?: true`, beside `app/mixins`, `fibery/domain?`,
+  `fibery/primitive?`, `fibery/secured?` and `fibery/type-component?`.
+
+The Field's `fibery/meta` also holds `fibery/default-value`, a map carrying the
+default option's `fibery/id`, which resolved to `Not Processed`. The schema
+therefore does expose the configured default. The runner still does not
+validate it, which is the RW-O03 boundary decision, not a schema limitation.
+
+### Options, read and write
+
+Querying the option Database for `fibery/id` and `enum/name` returns exactly
+`Not Processed`, `Processing`, `Succeeded` and `Failed`, and the runner
+preflight accepted the workspace.
+
+A status write resolves the option entity by exact `enum/name` and writes
+`{fibery/id}` into the Field, the same shape as Type and State (constraints 6
+and 13). All four option names, written to a Requirement in `Draft`, read back
+exactly through `read_requirement`, and no other Field of the record changed.
+
+### Eligible query
+
+One `fibery.entity/query` on `SDLC/Requirement`:
+
+```text
+q/where     ["q/and", ["=", [<status field>, "enum/name"], "$status"],
+                      ["q/or", <one ["q/and", Type, State] arm per route>]]
+q/order-by  [[["fibery/public-id"], "q/asc"]]
+```
+
+works live. A four-arm `q/or` is accepted, each arm matches its own
+Type + State pair, a single-arm query returns only that pair's row, the
+`enum/name` status filter excludes every other status, and `q/order-by` is
+honoured: `q/asc` returned public ids 87 then 88, `q/desc` returned 88 then
+87.
+
+Ordering was exercised with two-digit public ids only, so whether Fibery
+orders `fibery/public-id` numerically or as text is still unknown. The runner
+re-sorts the returned page numerically and does not depend on it.
+
+### Reset automation
+
+The workspace automation sets Processing Status to `Not Processed` when State
+enters a machine-owned State. From an intentional `Failed`, it converged in
+0.5-2.7 s for every target:
+
+```text
+Raw + Process       Standard + Process
+Standard + Review   Standard + Apply
+```
+
+It does not fire at the human and terminal boundaries `Raw + Review`,
+`Standard + Ready` and `Standard + Applied`: an intentional `Failed` was still
+`Failed` after a 15 s observation window at each. So `Succeeded` survives at
+`Ready` and `Applied`, as RW-C04 section 7 requires.
+
+### One runner cycle
+
+A real `run_cycle` over the model-free Apply route claimed the Requirement and
+wrote the status the contract requires: the worker observed `Processing` at
+call time, the Apply capability refused with its own typed
+`PROJECT_STRUCTURE_INVALID`, and the runner then wrote `Failed` in the claimed
+State and confirmed it by read-back. No model-backed worker ran.
