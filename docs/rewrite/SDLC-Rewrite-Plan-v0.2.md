@@ -1890,7 +1890,7 @@ Before any live AMR mutation:
 
 ## RW-V02 — Re-run the two AMR RAW sources through corrected Requirement pipeline
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTING  
 **Owner:** Human-operated dogfood + independent reviewer  
 **Implementation Actor:** System under test; Claude/Codex do not make human approvals  
 **Depends On:** `RW-R05`, `RW-O04`, `RW-V01`
