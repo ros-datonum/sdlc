@@ -1890,7 +1890,7 @@ Before any live AMR mutation:
 
 ## RW-V02 — Re-run the two AMR RAW sources through corrected Requirement pipeline
 
-**Status:** IMPLEMENTING  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Human-operated dogfood + independent reviewer  
 **Implementation Actor:** System under test; Claude/Codex do not make human approvals  
 **Depends On:** `RW-R05`, `RW-O04`, `RW-V01`
@@ -1930,10 +1930,36 @@ For every produced Standard Requirement ask:
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
-**Blocker:** `RW-R05`, `RW-O04`, `RW-V01`  
-**Execution Notes:** —
+**Implementation Commit:** `027b06537082dae8dad30e36036dd37415abf487`  
+**Implementation Evidence:**
+
+Live non-destructive dogfood recorded in `docs/rewrite/RW-V02-AMR-Corrected-Dogfood-v0.1.md`, run under the corrected procedure `docs/rewrite/RW-V02-Dogfood-Boundary-v0.2.md` at code baseline `c65314fe`. Reference Project `ZZ RW-V02 AMR Corrected Dogfood 0912` / `ZZV02AMR` / `01a096f9-03d7-7cb2-8bf9-c7028e1b249d`, proven free by bounded read-only queries before creation and **retained live for RW-V03**.
+
+- AC1 — no confirmed implementation-leakage blocker. Every technical mechanism retained in a corrected candidate falls under the RW-C01 section 4 source-mandated exception (`argv`-only/never-`shell=True` in `NFR-0094`; no Redis/database/external queue in v1 in `CON-0099`) or the section 6 / Example 6 mandated-external-contract exception (the `ModelRequest`/`ModelResponse` field sets and the status/output-mode enumerations in `FR-0107`, `FR-0108`, `FR-0109`, `FR-0110`), and each is labelled as such in its own Constraints section. Two non-blocking observations are recorded for the independent reviewer: `CON-0093` uses the internal-component phrase "the adapter's derivation" (the system's own Review raised this as INFO and concluded the obligation stands without it), and `CON-0105` carries both an environment constraint and a verification-coverage list in one Requirement, the corpus's weakest point against RW-C01 Example 7.
+- AC2 — no source-mandated obligation lost merely because it is technical. Every mandated mechanism survives as an explicit Constraint, and the old-corpus correspondence table maps all 28 historical Standards onto corrected candidates or onto a named absorbing Constraint. The single old item with no corresponding candidate is `AMR-CON-0086`, a unit-test coverage statement that RW-C01 Example 7 places downstream as Delivery Planning.
+- AC3 — every candidate's boundary is explicable without ad hoc exceptions. All 21 candidates are evaluated individually against the ten frozen semantic dimensions in sections 10 and 11 of the evidence document, each classified either as plain WHAT or under a named RW-C01 exception.
+- AC4 — Technical Solution Architecture retains meaningful HOW decisions: process invocation design, timeout/cancellation/cleanup strategy, concurrency mechanism, failure-signal classification, serialization, schema validation, logging implementation and configuration delivery are all left undecided by the corrected corpus.
+- AC5 — the lifecycle worked through the state-driven normal path. The only human actions were the two authorized `Draft -> Process` transitions on the disposable copies; the runner then performed every machine stage. Totals: 23 `SUCCEEDED` cycles, 21 `HANDED_OFF` cycles, 0 `FAILED`, and exactly one bounded candidate-progression event per RAW naming every candidate of that RAW (15, then 6), matching RW-C04 section 12. No manual `process`/`normalize`/`review`/`approve`/`rework`/`apply` command was issued.
+- AC6 — no new BLOCKING lifecycle defect. No manual worker command was required, the `Ready` boundary was never crossed automatically, no machine failure falsely advanced State, the runner processed no unrelated workspace work (0 eligible before and after), and the historical AMR corpus was not mutated.
+- Source equivalence (v0.2 section 4), both sources PASS: provenance anchor (Requirement ID, stored `Source Fingerprint` equal to the RW-V01 baseline, AMR Project, expected title, exactly one Root Document), reconstruction inserting only an 80-character `Export Metadata` section, then `parse_raw_requirement` PASS, `content_equivalent(parsed.body, historical_root_body)` True and `canonical_markdown` equality True. `AMR-RAW-0053` (`99b622c3…cb871`) → `ZZV02AMR-RAW-0090` (`14765ac3…88d03`); `AMR-RAW-0077` (`a6c160dd…cfc76`) → `ZZV02AMR-RAW-0091` (`01247789…6e6215`). The two fingerprint values differ by design and that difference is expected Fibery round-trip serialization evidence, not semantic source drift.
+- Candidate counts, **observation only and never a success criterion**: source A produced 15 candidates (historical 19), source B produced 6 (historical 9), 21 total (historical 28).
+- Review verdicts, **evidence only**: 17 `NEEDS_WORK`, 4 `PASS` (`CON-0099`, `CON-0106`, `CON-0111`, `CON-0112`), 0 `BLOCKING`. The `NEEDS_WORK` verdicts overwhelmingly record preserved source gaps that the candidates correctly declined to invent answers for. No candidate was reworked or applied; all 21 remain at `Ready`.
+- Protected corpus unchanged: 30/30 entities identical on entity id, Requirement ID, Type, State and `fibery/modification-date`; both historical RAW Root body hashes and stored `Source Fingerprint` values identical before and after.
+- Gates after the live run: `uv sync --locked` OK, `ruff check .` clean, `ruff format --check .` 182 files, `pytest -q` `2271 passed`. Production-code and test-code changes: NONE.
+
+**Blocker:** — (reviewer-authorized dependency clearance: `RW-R05`, `RW-O04` and `RW-V01` are all independently VERIFIED, and `docs/rewrite/RW-V02-Dogfood-Boundary-v0.2.md` freezes the corrected live procedure)  
+**Execution Notes:**
+
+- Baseline `c65314fe`; IMPLEMENTING mark `9bae433`; dogfood evidence `027b065`. Repository files changed: the new evidence document plus these RW-V02 plan fields only.
+- A first attempt under the superseded v0.1 boundary stopped correctly before any mutation because v0.1 required `fingerprint_of(historical_root_body)` to equal the historical `Source Fingerprint`, which Fibery Markdown re-serialization makes unsatisfiable. That attempt created no live state and no commit. v0.2 replaced the proxy with the source-equivalence proof actually used here.
+- `src/sdlc/raw_source.py` was not changed, `fingerprint_of` was not made canonical, and no stored fingerprint was migrated. The fingerprint-contract tension is recorded as a non-blocking observation requiring separate versioning/migration analysis under its own work item.
+- Runner safety preflight before starting: no cooperating local `sdlc worker run` owned the workspace and zero unrelated Requirements were eligible across all four machine routes; the same query returned zero again after shutdown.
+- Runtime roles were the configured ones, unchanged for the experiment: `raw_requirement_processor`, `standard_requirement_processor` and `standard_requirement_reviewer` all on runtime `claude`, `invocation_mode` `print`, transport `local_cli_oauth`, `model` omitted so the local CLI default applies. No override was applied and no auth material is recorded.
+- Persistent `FIBERY_SPACE_ID` is still empty, so the already-verified process-scoped Space-id injection was reused for the CLI/runner processes only. `.env` and user-global Claude/Codex configuration were not edited.
+- The ephemeral reconstructed RAW transport artifacts were deleted after ingestion and their bodies were never committed.
+- Runner stopped cleanly (`WORKER_RUNNER_STOPPED`); no candidate remains `Processing`, none is `Failed`, none is `Applied`. The reference Project and all 23 of its Requirements are retained as RW-V03 comparison data and must not be deleted under RW-V02.
+- No Proposed Change Request arises from the dogfood itself.
+- RW-V02 remains dogfood-complete but **not** independently verified: the system under test generated, processed and reviewed these candidates and does not verify itself.
 
 ### Verification Record
 
