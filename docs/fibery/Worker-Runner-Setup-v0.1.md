@@ -37,9 +37,13 @@ as a single-select (an enum option database, not a collection), and that its
 options are exactly the four above. Otherwise it stops with
 `WORKER_RUNNER_PREFLIGHT_FAILED` before polling or writing anything.
 
-The runner does not check the default. The public schema does not reliably
-show a configured default, so setting it to `Not Processed` is a one-time
-workspace setting the operator confirms (section 3, step 2).
+The runner does not check the default; RW-O03 validates the field and its
+options only. The schema does expose the configured default, as
+`fibery/default-value` in the field's meta, and the live probe of 2026-09-12
+saw it resolve to `Not Processed` (constraint 28 in
+`docs/fibery/Fibery-API-Constraints-v0.1.md`). The runner still does not read
+it, so setting the default stays a one-time workspace setting the operator
+confirms (section 3, step 2).
 
 Every other command (`project init`, `requirement add`, `process`,
 `normalize`, `review`, `approve`, `rework`, `apply`) works whether or not the

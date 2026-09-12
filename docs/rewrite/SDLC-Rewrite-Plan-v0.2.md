@@ -1410,15 +1410,17 @@ The technical transport/mechanism must come from the frozen `RW-C04` technical c
   - Key: SHA-256 of the normalized workspace identity plus the fixed purpose `sdlc worker run`.
   - File: `worker-runner-<key>.lock` in the per-RAW guard's lock directory (`~/.sdlc/locks`, or `SDLC_LOCK_DIR`). It is opened with `O_CLOEXEC` and locked with `LOCK_EX|LOCK_NB`, stays empty and is never unlinked.
   - `raw_execution_guard.py` is not modified; its constants and directory function are imported.
-- Live Fibery: NOT configured and NOT verified.
-  - No Processing Status field or reset automation was created or inspected in any live workspace, and no live probe of the new adapter semantics was run.
-  - The tests use fakes and a stub transport only. See `CR-003`.
-- Assumed from Fibery's public schema representation, not verified live:
+- Live Fibery, at this implementation commit: NOT configured and NOT verified. No live probe had been run, and the tests use fakes and a stub transport only.
+- Live Fibery, verified afterwards on 2026-09-12 by the CR-003 probe (evidence commit of that probe; RW-O03 runtime code unchanged): the field, its four options, the default, the eligible query and the reset automation all behave as the stub tests assume. Recorded in `docs/fibery/Fibery-API-Constraints-v0.1.md` constraint 28 and under `CR-003`.
+  - The probe ran on a disposable Project and two disposable Requirements, deleted afterwards and confirmed absent. No production Requirement took part.
+  - One correction: the schema does expose the configured default as `fibery/default-value`, which resolved to `Not Processed`. RW-O03 still does not validate the default, which its boundary allows; `docs/fibery/Worker-Runner-Setup-v0.1.md` no longer claims the schema hides it.
+  - `FIBERY_SPACE_ID` is empty in the local `.env`, so `sdlc worker run` cannot start from that configuration until the operator sets it. The probe built settings directly and discovered the Space id read-only from existing Requirement Document views.
+- Verified live by that probe, having been assumed from Fibery's public schema representation:
   - single-select detection by `fibery/enum?` and `fibery/collection?`;
   - `q/or` inside `q/where`;
-  - `q/order-by` on `fibery/public-id`.
+  - `q/order-by` on `fibery/public-id`, honoured in both directions.
 
-  The runner re-orders the page numerically in case Fibery orders the id as text. With more than 100 eligible rows the lowest id could then fall outside the page; it is drained on a later poll. A wrong schema assumption fails closed at preflight.
+  Ordering was exercised with two-digit public ids only, so numeric versus text ordering of the public id remains unknown. The runner re-orders the page numerically anyway. With more than 100 eligible rows the lowest id could fall outside the page; it is drained on a later poll. A wrong schema assumption fails closed at preflight.
 - Existing Requirements whose Processing Status is empty are not eligible until a State change into a machine State triggers the reset. The setup document says so.
 - Two functions that were already over 40 lines grow slightly and are not refactored here:
   - `cli.build_parser`, by 2 lines, because the worker parser lives in `_add_worker_commands`;
@@ -2068,6 +2070,39 @@ Proposed decision: Before RW-O04 relies on the live runner:
      tests/test_requirement_runner.py and add a regression for any
      discrepancy.
   4. Record the results in docs/fibery/Fibery-API-Constraints-v0.1.md.
+Live probe result (2026-09-12; RW-O03 runtime code unchanged): the probe ran
+  and passed. The evidence is constraint 28 of
+  docs/fibery/Fibery-API-Constraints-v0.1.md.
+  - Field and options: SDLC/Processing Status resolved from the schema by its
+    label; option Database SDLC/Processing Status_SDLC/Requirement; options
+    exactly Not Processed, Processing, Succeeded and Failed; the real runner
+    preflight accepted the workspace.
+  - Single-select representation: the option Database carries
+    fibery/enum?: true and the Field has no fibery/collection? key, which is
+    what the stub tests assume.
+  - Read, write and read-back: all four option names round-tripped exactly on
+    a disposable Requirement in Draft, and no other Field of it changed.
+  - Eligible query: the four-arm q/or, the enum-name status filter and
+    q/order-by on fibery/public-id all work live; q/asc and q/desc returned
+    the two scratch rows in opposite orders. Numeric versus text ordering of
+    the public id stays unknown, and the runner re-sorts numerically anyway.
+  - Reset automation: every machine target reset an intentional Failed to
+    Not Processed within 0.5 to 2.7 s, while Raw + Review, Standard + Ready
+    and Standard + Applied each kept Failed over a 15 s window.
+  - One real model-free runner cycle on the Apply route confirmed Processing
+    before the worker ran, and Failed after the worker's typed refusal.
+  - Correction to the earlier assumption: the schema does expose the
+    configured default, as fibery/default-value, which resolved to
+    Not Processed. RW-O03 still does not validate the default, which its
+    boundary allows, and the setup document no longer claims otherwise.
+  - Probe data: a disposable Project and two disposable Requirements, deleted
+    afterwards and confirmed absent. No production Requirement took part.
+  - Local configuration gap: FIBERY_SPACE_ID is empty in the operator's .env,
+    so sdlc worker run cannot start from that configuration until it is set.
+    The probe built settings directly and discovered the Space id read-only
+    from existing Requirement Document views.
+  No adapter correction was needed, so no code changed. Whether this CR is now
+  closed remains the human's decision.
 Blocking: NO
 Status: PROPOSED
 ```
