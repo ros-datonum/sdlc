@@ -99,6 +99,34 @@ def initialize_project(
     )
 
 
+def preflight_project_code(
+    workspace: FiberyWorkspace, project_name: str, requested_code: str | None
+) -> str | InitResult:
+    """The exact Code `initialize_project` would attempt, resolved read-only.
+
+    The outer bootstrap needs the final Project Code before it writes
+    `.sdlc/project.yaml`, but it must not create the Project merely to learn
+    it. This reuses the same resolution `initialize_project` performs and
+    reports failures through the same bounded result codes with an empty
+    journal, because nothing here mutates. It creates, writes and validates
+    nothing, and invokes no model.
+
+    Callers use it only after establishing that no Project with this exact
+    Name exists; a Name that already exists carries its own Code.
+    """
+    name = project_name.strip() if project_name else ""
+    if not name:
+        return InitResult(
+            code=ResultCode.INVALID_INPUT,
+            message="Project Name is required.",
+            project_name=name,
+        )
+    try:
+        return _resolve_project_code(workspace, name, requested_code)
+    except _StageFailed as failure:
+        return _failure_result(failure, _Journal(), name, None)
+
+
 def _already_exists_result(existing: ProjectRecord, project_name: str) -> InitResult:
     return InitResult(
         code=ResultCode.PROJECT_ALREADY_EXISTS,
