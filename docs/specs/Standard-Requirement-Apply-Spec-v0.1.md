@@ -16,6 +16,21 @@ Draft -> Process -> Review -> Ready -> Apply -> Applied
 `Process`, `Review` and `Ready` are frozen. This capability performs
 `Apply -> Applied`, and is the last stage of the Standard Requirement workflow.
 
+### Current execution note
+
+```text
+Standard + Apply + Not Processed
+→ state-driven runner claims it
+→ deterministic Apply
+→ Applied + Succeeded
+```
+
+Apply remains deterministic and model-free. The runner is the executor only;
+`State = Apply` is the human approval signal it acts on, and Apply still
+independently revalidates the reviewed binding (section 6) however the
+Requirement reached `Apply`. See
+`docs/architecture/Requirement-Lifecycle-v0.2-Current.md`.
+
 ## 2. What Apply is
 
 ```text

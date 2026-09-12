@@ -4,11 +4,21 @@
 
 Implement only approved specifications under `docs/specs/` and the frozen architecture under `docs/architecture/`.
 
-Current implementation scope:
+Current implementation scope — implemented and independently verified:
 
-1. `sdlc project init`
-2. `sdlc project requirement add`
-3. RAW Requirement Processor
+1. `sdlc project bootstrap` (outer new-project entry point)
+2. `sdlc project init` and `sdlc project requirement add` (deterministic inner primitives)
+3. RAW Requirement Processor / corrected RAW decomposition
+4. Standard Requirement Process, Review, Ready boundary, deterministic Apply
+5. `sdlc worker run` — state-driven dispatcher/runner, Processing Status and reset semantics
+
+Downstream phases (UX/Product Design, Technical Solution Architecture, Delivery
+Planning, Development workflow, System Verification, Release Preparation,
+Deployment, Post-Deploy Validation) are product roadmap only. **No engine exists
+for any of them.**
+
+Current architecture: `docs/architecture/SDLC-MVP-v0.5-Current-Architecture.md`.
+Current lifecycle: `docs/architecture/Requirement-Lifecycle-v0.2-Current.md`.
 
 Do not invent downstream SDLC architecture while implementing these capabilities.
 

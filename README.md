@@ -1,38 +1,159 @@
 # SDLC
 
-Clean bootstrap repository for implementing the first working slice of the SDLC.
+Fibery-backed SDLC tooling. This repository implements the corrected Requirement
+foundation, the state-driven Requirement lifecycle, and project bootstrap.
 
 ## Current implementation scope
 
-Only three capabilities are approved for the first implementation cycle:
+Implemented and independently verified:
 
-1. `sdlc project init`
-2. `sdlc project requirement add`
-3. RAW Requirement Processor
+```text
+project bootstrap                     sdlc project bootstrap
+RAW Requirement ingestion             sdlc project requirement add
+corrected RAW decomposition           RAW Requirement Processor
+Standard Requirement Process
+Standard Requirement Review
+Ready human decision boundary
+deterministic Standard Apply
+state-driven dispatcher/runner        sdlc worker run
+Processing Status / reset semantics
+```
 
-Do not expand the implementation scope unless a current approved specification, an observed failure, or a necessary interface constraint requires it.
+Architecture, delivery planning, development, verification, release, deployment
+and post-deploy validation remain the product roadmap in
+`docs/architecture/SDLC-MVP-v0.5-Current-Architecture.md`. **No engine exists for
+any of them**, and nothing here generates architecture, backlogs, Epics,
+Stories, Tasks, releases or deployments.
+
+Do not expand the implementation scope unless a current approved specification,
+an observed failure, or a necessary interface constraint requires it.
+
+## Requirement abstraction
+
+```text
+Requirement
+= WHAT must be true
+
+Technical Solution Architecture
+= HOW the approved Requirement is satisfied
+
+Delivery Planning
+= solution-specific executable decomposition
+
+Task
+= concrete code / configuration / test / deployment work
+```
+
+Authority: `docs/specs/Standard-Requirement-Abstraction-v0.2.md`.
+
+A Requirement normally stays true when the implementation is replaced by a
+different valid solution. The one exception, which is not simplified away: **a
+technical mechanism explicitly mandated by the source may remain
+Requirement-level truth**, recorded as a Constraint. "Requirements can never
+contain technical detail" is the wrong rule.
 
 ## System boundaries
 
-- Fibery owns project, requirements, planning, design, and delivery state.
-- Source repositories contain code and code-native artifacts only.
-- Global `requirements-export` is installed outside this repository and produces RAW Markdown transport artifacts.
-- `sdlc` must use locally authenticated model CLIs through OAuth/subscription login.
-- Do not use provider SDK/API calls, direct API keys, or OpenRouter for model execution.
-- Model/runtime choice is configurable; OAuth credentials are never stored in this repository.
+- Fibery owns canonical Requirements, Requirement Documents and lifecycle State.
+- Source repositories contain code and code-native artifacts, plus project-local
+  SDLC participation metadata and non-canonical project context.
+- Global `requirements-export` is installed outside this repository and produces
+  RAW Markdown transport artifacts.
+- `sdlc` must use locally authenticated model CLIs through OAuth/subscription
+  login. No provider SDK/API calls, API keys or OpenRouter.
+- Model/runtime choice is configurable; OAuth credentials are never stored here.
 
-## Current specs
+## Starting a new project
 
-- `docs/specs/Project-Init-Spec-v0.3.md`
-- `docs/specs/Project-Requirement-Add-Spec-v0.3.md`
-- `docs/specs/RAW-Requirement-Processor-Decision-v0.1.md`
-- `docs/architecture/SDLC-MVP-v0.4-Frozen-Architecture.md`
-- `docs/fibery/Fibery-Schema-v0.1.md`
-- `docs/runtime/Local-OAuth-Model-Runtime-Spec-v0.1.md`
+The normal entry point is one command:
 
-- `docs/specs/Requirement-Normative-Tree-Binding-v0.1.md` (audit finding A5:
-  normative child Documents reach Process and Review and are bound by Review,
-  Ready and Apply; legacy Root-only evidence is never replayed or certified)
+```bash
+sdlc project bootstrap \
+  --name "<Project Name>" \
+  --requirements <RAW_REQUIREMENTS_FILE.md> \
+  --context <PROJECT_CONTEXT_FILE.md> \
+  [--target <PROJECT_DIRECTORY>] \
+  [--code <PROJECT_CODE>] \
+  [--description "..."]
+```
+
+Both exported artifacts come from one `requirements-export` session. `--target`
+defaults to the current directory.
+
+Verified result:
+
+```text
+consumer repository:
+  .sdlc/project.yaml
+  .sdlc/project-context.md
+  AGENTS.md
+  .claude/CLAUDE.md
+
+Fibery:
+  Project
+  initial Raw Requirement
+  State = Draft
+```
+
+**Bootstrap stops there.** It does not process the Requirement, invoke a model,
+or start any worker. A human decides when the RAW moves `Draft -> Process`.
+
+Rerunning the same command with the same inputs is safe: compatible managed
+files are reused byte-for-byte and the result is
+`PROJECT_ALREADY_BOOTSTRAPPED` with no duplicate Project or Requirement. An
+incompatible existing managed file stops the attempt before anything is
+created.
+
+### Consumer project template
+
+Bootstrap manages exactly four paths:
+
+```text
+.sdlc/project.yaml
+.sdlc/project-context.md
+AGENTS.md
+.claude/CLAUDE.md
+```
+
+It does **not** create:
+
+```text
+.codex/config.toml
+.claude/settings.json
+.agents/
+.claude/agents/
+.claude/skills/
+.agents/skills/
+.env
+a copy of the RAW requirements artifact
+a local canonical Requirements mirror
+```
+
+The descriptor and context are project-local metadata and non-canonical
+context. They never compete with Fibery as Requirement truth, and bootstrap
+never overrides the user's global model, authentication, approval, sandbox or
+edit-policy settings.
+
+Contracts: `docs/architecture/Project-Bootstrap-Contract-v0.1.md`,
+`docs/rewrite/RW-B01-Template-Manifest-v0.1.md`.
+
+### Inner primitives
+
+These remain directly supported deterministic primitives, and bootstrap reuses
+them internally:
+
+```bash
+sdlc project init --name "<Project Name>" [--code <CODE>] [--description "..."]
+sdlc project requirement add --project <CODE_OR_NAME> --source <RAW_FILE.md>
+```
+
+Use them for admin and incremental work. `project requirement add` is the
+normal primitive for adding **another** RAW source to an existing Project —
+re-bootstrapping is not required for that. When you have both exported
+artifacts and are starting a new project, use `project bootstrap` rather than
+running these two by hand.
+
+Both are deterministic and invoke no model.
 
 ## Requirement lifecycle control
 
@@ -49,35 +170,51 @@ Standard  Ready -> Apply      approve: apply the exact reviewed state
 
 Every other normal transition is machine-owned: RAW `Process -> Review`, the
 inherited Standard `Draft -> Process` for candidates of an authorized RAW cycle,
-Standard `Process -> Review -> Ready`, and `Apply -> Applied`. A Review
-verdict, `BLOCKING` included, is evidence for the human at `Ready`, never a
-decision. `State = Apply` is the only approval signal Apply consumes, and Apply
+Standard `Process -> Review -> Ready`, and `Apply -> Applied`. A Review verdict,
+`BLOCKING` included, is evidence for the human at `Ready`, never a decision.
+`State = Apply` is the only approval signal Apply consumes, and Apply
 revalidates the reviewed evidence however that State was reached.
 
-State-driven execution of the machine-owned stages is available through
-`sdlc worker run` (`RW-O03`, `docs/architecture/Requirement-State-Worker-Contract-v0.1.md`),
-but only once the `Processing Status` field and its reset automation have been
-configured and verified in the Fibery workspace
-(`docs/fibery/Worker-Runner-Setup-v0.1.md`).
+The complete current flow, Processing Status values, reset targets and the
+Process → Review handoff are in
+`docs/architecture/Requirement-Lifecycle-v0.2-Current.md`.
 
-The runner is one foreground process per workspace. It polls every Project for
-Requirements at a machine route (`Raw + Process`, `Standard + Process`,
-`Standard + Review`, `Standard + Apply`) whose Processing Status is
-`Not Processed`, and runs the `RW-O02` dispatcher
-(`src/sdlc/requirement_dispatcher.py`) for one of them at a time.
+### Running the worker
 
-The runner validates the field/options, but supported runtime code does not
-prove or create the Fibery automation. The operator must verify that rule before
-production use. The complete end-to-end lifecycle proof belongs to `RW-O04` and
-is not claimed here.
+State-driven execution of the machine-owned stages is `sdlc worker run`
+(`docs/architecture/Requirement-State-Worker-Contract-v0.1.md`).
 
 ```text
 sdlc worker run [--poll-interval-seconds N]   default 5, minimum 1; Ctrl-C stops
 ```
 
-Without the runner, the machine-owned stages are run by hand, including the
-inherited Standard `Draft -> Process` move. The same commands stay available for
-development, diagnosis, recovery and explicit admin use:
+Before normal runner operation the Fibery workspace must already have the
+verified `Processing Status` field and its reset automation configured
+(`docs/fibery/Worker-Runner-Setup-v0.1.md`). The runner validates the field and
+its options at startup; **it does not create the automation**, so the operator
+must verify that rule in the workspace before production use.
+
+The runner is one foreground process per workspace. It polls every Project for
+Requirements at a machine route (`Raw + Process`, `Standard + Process`,
+`Standard + Review`, `Standard + Apply`) whose Processing Status is
+`Not Processed`, and runs the dispatcher
+(`src/sdlc/requirement_dispatcher.py`) for one of them at a time. It is an
+executor, not lifecycle authority, and it is not a distributed orchestration
+system.
+
+Without the runner, automatic machine progression simply stops. Requirements
+stay where they are and nothing is lost. An operator may deliberately use the
+bounded admin/recovery capabilities below, but doing so does not change
+lifecycle ownership: the human State transition is still the decision, and the
+worker still owns the machine stage.
+
+The end-to-end lifecycle is independently verified in
+`docs/rewrite/RW-O04-Verification-v0.1.md`.
+
+## Admin / diagnosis / recovery commands
+
+These exist for development, diagnosis, recovery and explicit admin use. They
+are **not** a parallel normal workflow and they create no lifecycle authority:
 
 ```text
 sdlc project requirement process   --requirement <RAW id>        RAW in Process
@@ -94,7 +231,7 @@ no command. `approve` checks the reviewed evidence first and requires
 safety check of the command, not approval authority, and it cannot make stale
 evidence applicable.
 
-## Running `sdlc project init`
+## Configuration and verification
 
 ```bash
 uv sync
@@ -103,14 +240,7 @@ export FIBERY_HOST=<workspace>.fibery.io
 export FIBERY_TOKEN=<api token>
 export FIBERY_SPACE=<Space holding the SDLC Databases>
 export FIBERY_SPACE_ID=<UUID of that Space>
-
-sdlc project init --name "SDLC" [--code SDLC] [--description "..."]
-
-sdlc project requirement add --project SDLC --source raw-requirements-topic.md
 ```
-
-`project requirement add` ingests one artifact produced by the global
-`requirements-export` skill. It is deterministic and invokes no model.
 
 Configuration is read from the environment only; no credentials are stored in
 this repository.
@@ -126,6 +256,35 @@ uv run pytest
 
 `.python-version` pins 3.12.13 rather than the 3.12.14 named by the shared
 Python standard, because the pinned uv (0.11.21) publishes no 3.12.14 download.
+
+## Current specs and contracts
+
+```text
+docs/architecture/SDLC-MVP-v0.5-Current-Architecture.md
+docs/architecture/Requirement-Lifecycle-v0.2-Current.md
+docs/architecture/Requirement-Lifecycle-Ownership-v0.2.md
+docs/architecture/Requirement-State-Worker-Contract-v0.1.md
+docs/architecture/Project-Bootstrap-Contract-v0.1.md
+docs/specs/Standard-Requirement-Abstraction-v0.2.md
+docs/specs/Project-Init-Spec-v0.3.md
+docs/specs/Project-Requirement-Add-Spec-v0.3.md
+docs/specs/Standard-Requirement-Process-Spec-v0.1.md
+docs/specs/Standard-Requirement-Review-Spec-v0.1.md
+docs/specs/Standard-Requirement-Ready-Spec-v0.1.md
+docs/specs/Standard-Requirement-Apply-Spec-v0.1.md
+docs/specs/RAW-Requirement-Processor-Decision-v0.1.md
+docs/fibery/Fibery-Schema-v0.1.md
+docs/fibery/Worker-Runner-Setup-v0.1.md
+docs/runtime/Local-OAuth-Model-Runtime-Spec-v0.1.md
+```
+
+`docs/specs/Requirement-Normative-Tree-Binding-v0.1.md` (audit finding A5:
+normative child Documents reach Process and Review and are bound by Review,
+Ready and Apply; legacy Root-only evidence is never replayed or certified).
+
+Historical, retained and not rewritten:
+`docs/architecture/SDLC-MVP-v0.4-Frozen-Architecture.md`,
+`docs/architecture/Requirement-Lifecycle-v0.1-Checkpoint.md`.
 
 ## Fibery interface notes
 
@@ -172,9 +331,11 @@ distinction that the recovery paths rely on are unaffected.
 
 ## Model runtime
 
-The RAW Requirement Processor is the first capability allowed to invoke a model.
-Execution goes through the user's locally authenticated `claude` or `codex` CLI;
-there is no API-key, provider-SDK or OpenRouter path, and no fallback.
+The reasoning stages — RAW Process, Standard Process and Standard Review — are
+the capabilities allowed to invoke a model. Execution goes through the user's
+locally authenticated `claude` or `codex` CLI; there is no API-key,
+provider-SDK or OpenRouter path, and no fallback. Apply is deterministic and
+model-free.
 
 Runtime and model selection live in `config/sdlc.toml` (TOML, read with stdlib
 `tomllib`, so the project keeps zero runtime dependencies). Precedence:
@@ -261,6 +422,10 @@ workspace and RAW entity id, never by branch or working directory; a process
 that dies releases its lock automatically and nothing needs manual cleanup.
 This covers cooperating local invocations only: other machines, other OS
 users, direct Fibery edits and the other pipeline stages are not coordinated.
+
+The worker runner has its own workspace-scoped guard: one cooperating
+`sdlc worker run` per workspace on one host/user. Multi-host exclusion is
+unsupported.
 
 ## Recovering an empty Result Document
 

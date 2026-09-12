@@ -1,11 +1,15 @@
 # Standard Requirement Process Specification v0.1
 
-**Status:** Approved contract. Not yet implemented.  
+**Status:** APPROVED. Implemented and independently verified.  
 **Amended by:** `RW-R03` (SDLC Rewrite v0.2): normalization and analysis at the
 Requirement level (section 3.1) and the `IMPLEMENTATION_LEAKAGE` finding
 (section 6); `RW-O02` adds the authorized new machine cycle (section 11). The
 amendments' status is tracked in
 `docs/rewrite/SDLC-Rewrite-Plan-v0.2.md`.
+
+Verification: `docs/rewrite/RW-R03-Verification-v0.1.md` (abstraction),
+`docs/rewrite/RW-O02-Verification-v0.1.md` (dispatch) and
+`docs/rewrite/RW-O04-Verification-v0.1.md` (end-to-end lifecycle).
 
 Defines `Requirement.Type = Standard` + `Requirement.State = Process`.
 
@@ -17,6 +21,25 @@ Draft -> Process -> Review -> Ready -> Apply -> Applied
 
 A Standard Requirement reaches `Draft` from the RAW Requirement Processor. This
 capability performs `Process -> Review`.
+
+### Current control surface
+
+```text
+Normal:
+State-driven runner/dispatcher invokes Process.
+
+Candidate from authorized RAW:
+Draft -> Process is dispatcher-owned.
+
+Manual normalize command:
+admin / development / diagnosis / recovery surface;
+not normal lifecycle authority.
+```
+
+A candidate produced by an authorized RAW processing cycle inherits that
+authorization; the dispatcher re-reads it and progresses it `Draft -> Process`.
+No per-candidate human transition is required or expected. See
+`docs/architecture/Requirement-Lifecycle-v0.2-Current.md`.
 
 ## 2. Stage boundary
 
