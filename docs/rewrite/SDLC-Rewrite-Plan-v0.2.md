@@ -1630,7 +1630,7 @@ All evidence is in `tests/test_consumer_template.py` (70 tests) over `src/sdlc/c
 
 ## RW-B03 — Implement project descriptor contract
 
-**Status:** BLOCKED  
+**Status:** IMPLEMENTING  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B01`
 
