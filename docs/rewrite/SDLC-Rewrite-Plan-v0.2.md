@@ -1442,7 +1442,7 @@ The technical transport/mechanism must come from the frozen `RW-C04` technical c
 
 ## RW-O04 — Requirement lifecycle end-to-end automation test
 
-**Status:** IMPLEMENTING  
+**Status:** IMPLEMENTED_UNVERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-O03`
 
@@ -1481,10 +1481,32 @@ The test must cover at least:
 
 ### Implementation Record
 
-**Implementation Commit:** —  
-**Implementation Evidence:** —  
-**Blocker:** `RW-O03`  
-**Execution Notes:** —
+**Implementation Commit:** `ce3aad07feb32a698ab908a3575ccb0263ce9cc6`  
+**Implementation Evidence:**
+
+Both scenarios live in `tests/test_requirement_lifecycle_e2e.py` and drive the real stack only: `requirement_runner.run_cycle` -> RW-O02 dispatcher -> the real RAW Processor, Standard Process, Standard Review and deterministic Apply. The doubles are the existing Fibery fake, one bounded `FakeModelRuntime` per role, and the RW-O03/CR-003 reset automation. No CLI command is invoked anywhere in the journey.
+
+- AC1 — state-driven machine processing. `test_the_complete_state_driven_requirement_lifecycle` runs the whole journey as repeated `run_cycle` calls, with the human appearing only as three State writes (`Raw Draft -> Process`, `Ready -> Process`, `Ready -> Apply`). Each stage is asserted through its own typed result: `RAW_REQUIREMENT_PROCESSED` (RAW claimed, Processing Result persisted, candidate created, `Process -> Review`, `Succeeded`), the RW-O02 inherited progression of exactly that result's candidate (`progressed == (candidate,)`, `Draft -> Process`), `REQUIREMENT_PROCESSED` iteration 1, `REQUIREMENT_REVIEWED`, and `REQUIREMENT_APPLIED`. The claim precedes every worker write: the first mutation of each cycle is `set_processing_status <id> Processing`.
+- AC2 — human boundary observable and uncrossable. Phase 1: a cycle at Raw Draft returns `IDLE` with a byte-identical mutation log and no model call. Phase 4: two consecutive cycles at Ready return `IDLE` with identical Document and Requirement snapshots, and Ready advances only after the test performs the human State write. The scenario never inspects the Review verdict as authority; `PASS` is the incidental outcome of the bounded review response.
+- AC3 — rework history preserved. Process Result 1 and Review Result 1 are captured by node id and body before the unedited `Ready -> Process`. After iteration 2 of both stages, those ids still exist and their bodies are byte-identical, and artifact names parse to iterations `[1, 2]` for Process and Review. This is CR-002 proven across the full runner stack: `worker_result.iteration == 2` with the model invoked exactly once for it, although the normative tree still equalled iteration 1's output.
+- AC4 — Apply revalidates the reviewed state. Unchanged reviewed content reaches `REQUIREMENT_APPLIED` / `Applied` / `Succeeded`. `test_stale_reviewed_content_fails_closed_on_state_driven_apply` reaches Ready through runner cycles, performs `Ready -> Apply`, edits the reviewed Root content, and the next cycle returns `WORKER_FAILED` with `REVIEW_RESULT_STALE`; State stays `Apply` and no relation edge is written. Red check B (Apply's staleness comparison disabled on a scratch copy of `src`) fails that scenario, proving it is gated on Apply's own validation.
+- AC5 — replay duplicates nothing. Extra cycles at Ready (two) and after Applied (three) all return `IDLE` and leave Document, Requirement and relation snapshots identical. Across the journey the RAW cycle stays singular: one Processing Result with an unchanged body, `produces(raw)` unchanged, and one RAW model call. Final durable counts: 1 Processing Result, 1 candidate, 2 Process Results, 2 Review Results, unchanged edges.
+- AC6 — Processing Status semantics visible. The O04 fake appends `automation_reset <id> Not Processed` to the same ordered mutation log as the runner's writes, so the sequence `State transition -> automation reset -> Processing claim -> final status` is assertable. The Standard's full history is asserted exactly: `[Not Processed, Processing, Not Processed, Processing, Succeeded, Not Processed, Processing, Not Processed, Processing, Succeeded, Not Processed, Processing, Succeeded]`; the RAW's is `[Not Processed, Processing, Succeeded]`; the stale scenario ends `[Not Processed, Processing, Failed]`. The Process -> Review cycle is pinned further: its slice starts with the claim, ends with the automation reset, and contains no `Succeeded` write.
+- AC7 — failure does not advance State. The stale Apply cycle settles `Failed` while the Requirement stays in `Apply`, writes no relation and creates no artifact; two further cycles return `IDLE` with identical Documents, so `Failed` is never retried.
+
+**Blocker:** — (`RW-O03` is reviewer-verified: `docs/rewrite/RW-O03-Verification-v0.1.md`, 2026-09-12)  
+**Execution Notes:**
+
+- Base `7ab2a5d`; IMPLEMENTING mark `be6fe07`; implementation `ce3aad0`.
+- Status moved `BLOCKED -> IMPLEMENTING` because the blocker `RW-O03` was verified and merged before work began. That transition is outside the frozen implementation-agent list, the same administrative deviation class the RW-O03 verification recorded; no frozen normative text changed.
+- Changed files: `tests/test_requirement_lifecycle_e2e.py` only. No production file changed, which is the boundary's expectation; the composed lifecycle satisfied the frozen contract with no correction.
+- Two scenarios, 382 lines: `test_the_complete_state_driven_requirement_lifecycle` and `test_stale_reviewed_content_fails_closed_on_state_driven_apply`.
+- The O04-only `LifecycleWorkspace` subclasses RW-O03's `StatusWorkspace` purely to append the automation reset to the ordered mutation log. Reset targets and non-targets are RW-O03's, which CR-003 verified live. No worker transition is faked and no replay marker exists in the fake.
+- Model use is bounded and deterministic: RAW 1 call, Standard Process 2, Standard Review 2, Apply model-free. No live Fibery, runner process, `.env`, wall-clock delay or live model is involved.
+- Red checks on scratch copies of `src`, with the repository untouched: (A) the runner writing `Succeeded` after Standard Process fails both scenarios; (B) disabling Apply's staleness check fails the stale scenario. The unpatched control passes.
+- Gates: dedicated E2E `2 passed`; focused Block C over 32 files `977 passed`; full `uv sync --locked`, `ruff check .`, `ruff format --check .` (158 files), `pytest -q` `1996 passed`.
+- Not claimed here, by design: live Fibery and live model behaviour (RW-O03/CR-003 owns that evidence), CLI surfaces, multi-candidate RAW decomposition, and Block B abstraction quality.
+- No Proposed Change Request.
 
 ### Verification Record
 
