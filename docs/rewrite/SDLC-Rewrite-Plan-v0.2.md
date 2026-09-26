@@ -651,7 +651,7 @@ No implementation item in this block starts before `RW-C01 = VERIFIED`.
 
 ## RW-R01 — Update Standard Requirement Document Schema
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-C01`
 
@@ -731,15 +731,15 @@ At minimum:
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-R01-Verification-v0.1.md`.  
+**Verified Commit:** `22f00894c05b5d5281adf428486a5d41e65c7ffd`
 
 ---
 
 ## RW-R02 — Correct RAW decomposition contract
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R01`
 
@@ -827,15 +827,15 @@ At minimum inspect/change as required:
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-R02-Verification-v0.1.md`.  
+**Verified Commit:** `ce76831b8196b73b4413faecdfa8b6c21ec6f402`
 
 ---
 
 ## RW-R03 — Correct Standard Process normalization and analysis
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R01`, `RW-R02`
 
@@ -917,15 +917,15 @@ At minimum:
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-R03-Verification-v0.1.md`.  
+**Verified Commit:** `a4243ba03a99608d591439907aa8d217e78c8c20`
 
 ---
 
 ## RW-R04 — Correct Standard Review abstraction checks
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R03`
 
@@ -1008,15 +1008,15 @@ At minimum:
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-R04-Verification-v0.1.md`.  
+**Verified Commit:** `ef918f2e9b0b766236dc760d96bc9db91c1b5fe1`
 
 ---
 
 ## RW-R05 — Build Requirement abstraction regression corpus
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-R02`, `RW-R03`, `RW-R04`
 
@@ -1088,9 +1088,9 @@ Tests/fixtures only, plus supporting documentation if needed.
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-R05-Verification-v0.1.md`.  
+**Verified Commit:** `4dfa8d1450b9560c79924c1d8ee945192c805d01`
 
 ---
 
@@ -1102,7 +1102,7 @@ No code item in this block starts before `RW-C02` and `RW-C04` are `VERIFIED`.
 
 ## RW-O01 — Separate normal lifecycle control from admin CLI invocation
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-C02`
 
@@ -1175,15 +1175,15 @@ At minimum inspect/change as required:
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-O01-Verification-v0.1.md`.  
+**Verified Commit:** `5433c3c676a9326a31621ba1493367dd4d562cb3`
 
 ---
 
 ## RW-O02 — Implement bounded Requirement worker dispatcher
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-C04`, `RW-O01`
 
@@ -1254,15 +1254,15 @@ Exact module/file location must be the one frozen in `RW-C04` before this item b
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-O02-Verification-v0.1.md`.  
+**Verified Commit:** `a1ee1fb849d668222ebbf0213c97e8076eef03df`
 
 ---
 
 ## RW-O03 — Implement state-change trigger entrypoint
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-O02`
 
@@ -1434,15 +1434,15 @@ The technical transport/mechanism must come from the frozen `RW-C04` technical c
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-O03-Verification-v0.1.md`.  
+**Verified Commit:** `38f702d3c2bae189192c9db343ac8789aceb4fb9`
 
 ---
 
 ## RW-O04 — Requirement lifecycle end-to-end automation test
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-O03`
 
@@ -1510,9 +1510,9 @@ Both scenarios live in `tests/test_requirement_lifecycle_e2e.py` and drive the r
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-O04-Verification-v0.1.md`.  
+**Verified Commit:** `ce3aad07feb32a698ab908a3575ccb0263ce9cc6`
 
 ---
 
@@ -1524,7 +1524,7 @@ No bootstrap code starts before `RW-C03 = VERIFIED`.
 
 ## RW-B01 — Freeze reusable consumer project template contents
 
-**Status:** PLANNED  
+**Status:** VERIFIED  
 **Owner:** Human + independent design reviewer  
 **Implementation Actor:** NONE  
 **Depends On:** `RW-C03`
@@ -1553,15 +1553,15 @@ Exact files, merge/copy behavior, placeholders, and optional files must be liste
 
 ### Verification
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-B01-Verification-v0.1.md`.  
+**Verified Commit:** `d08dc613459ba39bdae6b54bb7a4dcd3b872e169`
 
 ---
 
 ## RW-B02 — Implement reusable consumer project template
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B01`
 
@@ -1622,15 +1622,15 @@ All evidence is in `tests/test_consumer_template.py` (70 tests) over `src/sdlc/c
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-B02-Verification-v0.1.md`.  
+**Verified Commit:** `a686beb312059405a9b229ffb7a679badb9bb946`
 
 ---
 
 ## RW-B03 — Implement project descriptor contract
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B01`
 
@@ -1694,15 +1694,15 @@ All evidence is in `tests/test_project_descriptor.py` (126 tests) over `src/sdlc
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-B03-Verification-v0.1.md`.  
+**Verified Commit:** `4189f2c273799d44286ef8f7f135cd9099705c01`
 
 ---
 
 ## RW-B04 — Implement one outer project bootstrap action
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B02`, `RW-B03`, `RW-C03`
 
@@ -1782,15 +1782,15 @@ All evidence is in `tests/test_project_bootstrap.py` (50 tests) and `tests/test_
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-B04-Verification-v0.1.md`.  
+**Verified Commit:** `7a4c6b2d6117545768d56694d4b4827fda7f4684`
 
 ---
 
 ## RW-B05 — Bootstrap end-to-end test on disposable project
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** `RW-B04`
 
@@ -1843,9 +1843,9 @@ RW-B05 is a live acceptance gate, not an implementation item: no production code
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-B05-Verification-v0.1.md`.  
+**Verified Commit:** `9ab69b36fe859feadde4fa4ad3cf38b14c6f0103`
 
 ---
 
@@ -1855,7 +1855,7 @@ RW-B05 is a live acceptance gate, not an implementation item: no production code
 
 ## RW-V01 — Preserve old AMR corpus as baseline evidence
 
-**Status:** PLANNED  
+**Status:** VERIFIED  
 **Owner:** Human + independent reviewer  
 **Implementation Actor:** NONE  
 **Depends On:** none
@@ -1882,15 +1882,15 @@ Before any live AMR mutation:
 
 ### Verification
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-V01-Verification-v0.1.md`.  
+**Verified Commit:** `307a95ae10189e0a9a5fe4b6e329f9f014303776`
 
 ---
 
 ## RW-V02 — Re-run the two AMR RAW sources through corrected Requirement pipeline
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Human-operated dogfood + independent reviewer  
 **Implementation Actor:** System under test; Claude/Codex do not make human approvals  
 **Depends On:** `RW-R05`, `RW-O04`, `RW-V01`
@@ -1963,15 +1963,15 @@ Live non-destructive dogfood recorded in `docs/rewrite/RW-V02-AMR-Corrected-Dogf
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-V02-Verification-v0.1.md`.  
+**Verified Commit:** `027b06537082dae8dad30e36036dd37415abf487`
 
 ---
 
 ## RW-V03 — Human-reviewed cleanup of obsolete AMR dogfood requirements
 
-**Status:** BLOCKED  
+**Status:** VERIFIED  
 **Owner:** Human-operated cleanup + independent reviewer  
 **Implementation Actor:** NONE unless a bounded cleanup helper is explicitly authorized  
 **Depends On:** `RW-V02`
@@ -2012,9 +2012,9 @@ After `RW-V02` verifies the corrected Requirement pipeline:
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-V03-Verification-v0.1.md`.  
+**Verified Commit:** `988fb45d85fa7c6bfd9cd990118c7276f3bee050`
 
 ---
 
@@ -2024,7 +2024,7 @@ After `RW-V02` verifies the corrected Requirement pipeline:
 
 ## RW-D01 — Reconcile canonical docs and README
 
-**Status:** IMPLEMENTED_UNVERIFIED  
+**Status:** VERIFIED  
 **Owner:** Implementation Agent  
 **Depends On:** all implementation items in Blocks B–D `VERIFIED`, `RW-V03`
 
@@ -2104,9 +2104,9 @@ Gates: `uv sync --locked` OK; `uv run ruff check .` clean; `uv run ruff format -
 
 ### Verification Record
 
-**Verification:** NOT_RUN  
-**Review Evidence:** —  
-**Verified Commit:** —
+**Verification:** PASS  
+**Review Evidence:** Independent verification recorded in `docs/rewrite/RW-D01-Verification-v0.1.md`.  
+**Verified Commit:** `0e30f6bc944b90be729997311f54b95ac342be26`
 
 ---
 
