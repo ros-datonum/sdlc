@@ -420,7 +420,7 @@ def test_a_write_that_lands_but_raises_is_not_repeated():
     clock = FakeClock()
     opener = Storing(clock, [None])
     client = FiberyClient(SETTINGS, url_opener=opener, clock=clock, sleeper=clock.sleep)
-    workspace = FiberyRequirementWorkspace(client, "SDLC", "space-uuid")
+    workspace = FiberyRequirementWorkspace(client, "SDLC")
 
     with pytest.raises(FiberyError, match="Could not reach"):
         workspace.write_document_content("secret-1", "# once")
@@ -438,7 +438,7 @@ def adapter(outcomes, schema=True):
     client, opener, clock = build(
         [*([ok(REQUIREMENT_SCHEMA)] if schema else []), *outcomes]
     )
-    return FiberyRequirementWorkspace(client, "SDLC", "space-uuid"), opener, clock
+    return FiberyRequirementWorkspace(client, "SDLC"), opener, clock
 
 
 def test_a_transient_rate_limit_during_a_preflight_read_recovers():

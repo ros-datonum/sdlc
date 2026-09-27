@@ -15,7 +15,7 @@ import pytest
 
 from apply_fake import build_apply_workspace, proposal
 from sdlc import cli
-from sdlc.config import ENV_HOST, ENV_SPACE, ENV_SPACE_ID, ENV_TOKEN
+from sdlc.config import ENV_HOST, ENV_SPACE, ENV_TOKEN, ConfigurationError
 from sdlc.model_runtime_config import (
     RAW_REQUIREMENT_PROCESSOR_ROLE,
     STANDARD_REQUIREMENT_PROCESSOR_ROLE,
@@ -41,7 +41,6 @@ ENVIRONMENT = {
     ENV_HOST: "example.fibery.io",
     ENV_TOKEN: "test-token",
     ENV_SPACE: "SDLC",
-    ENV_SPACE_ID: "space-uuid",
 }
 
 
@@ -163,11 +162,7 @@ def test_the_runner_uses_the_configured_workspace_and_stops_on_ctrl_c(monkeypatc
     assert error_out == ""
     assert sleeps == [DEFAULT_POLL_INTERVAL_SECONDS]
     [settings] = built
-    assert (settings.host, settings.space, settings.space_id) == (
-        "example.fibery.io",
-        "SDLC",
-        "space-uuid",
-    )
+    assert (settings.host, settings.space) == ("example.fibery.io", "SDLC")
     assert ws.mutations == []
 
 
@@ -289,6 +284,30 @@ def test_missing_fibery_configuration_builds_no_workspace(monkeypatch):
         RunnerCode.WORKER_RUNNER_CONFIGURATION_INVALID.value
     )
     assert built == []
+
+
+def test_an_unresolvable_space_stops_the_runner_before_the_lock(monkeypatch):
+    """The runner locks by Space id, so it resolves one before it can start."""
+    for name, value in ENVIRONMENT.items():
+        monkeypatch.setenv(name, value)
+
+    def unresolvable(settings):
+        raise ConfigurationError("FIBERY_SPACE='SDLC' names 0 of this workspace's 4")
+
+    monkeypatch.setattr(cli, "_runner_workspace", unresolvable)
+    monkeypatch.setattr(cli, "hold_workspace", _no_lock)
+    out, error_out = io.StringIO(), io.StringIO()
+    arguments = parse()
+
+    assert arguments.handler(arguments, out, error_out) == cli.EXIT_FAILURE
+    assert error_out.getvalue().startswith(
+        RunnerCode.WORKER_RUNNER_CONFIGURATION_INVALID.value
+    )
+    assert "names 0 of" in error_out.getvalue()
+
+
+def _no_lock(scope):
+    raise AssertionError("no lock may be taken before the Space id resolves")
 
 
 # -- rendering ----------------------------------------------------------------------

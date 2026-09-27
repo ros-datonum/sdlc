@@ -29,6 +29,12 @@ coordination; the supported rule is one active SDLC command per workspace.
 
 The URL opener, clock and sleeper are injected so the transport and its
 policy can be exercised without network access or real waiting.
+
+One thing beyond transport lives here: the identity of the workspace being
+spoken to. `resolve_space_id` reads the configured Space's UUID from the
+workspace once per client, because that id is not configuration and everything
+that needs it — a Document's container, the worker lock scope — must get the
+same one.
 """
 
 from __future__ import annotations
@@ -37,11 +43,12 @@ import json
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Callable, Sequence
 from email.utils import parsedate_to_datetime
 from typing import Any
 
-from sdlc.config import FiberySettings
+from sdlc.config import ENV_SPACE, ConfigurationError, FiberySettings
 from sdlc.fibery_workspace import FiberyError
 
 COMMANDS_PATH = "/api/commands"
@@ -85,6 +92,16 @@ MAX_RETRY_WAIT_SECONDS = 10.0
 # The only operations known to be replay-safe. Fibery uses POST for queries
 # and mutations alike, so the HTTP method says nothing; these names do.
 READ_ONLY_COMMANDS = frozenset({"fibery.schema/query", "fibery.entity/query"})
+
+# Resolving the configured Space's UUID. Fibery publishes no Space-name-to-id
+# command, but the Spaces are entities of their own Database, so the id is read
+# from the row whose name is exactly FIBERY_SPACE. Verified read-only against a
+# live workspace on 2026-09-26.
+ENTITY_QUERY_COMMAND = "fibery.entity/query"
+SPACE_DATABASE = "fibery/app"
+SPACE_ID_FIELD = "fibery/id"
+SPACE_NAME_FIELD = "fibery/name"
+NO_LIMIT = "q/no-limit"
 READ_ONLY_VIEW_METHODS = frozenset({"query-folders", "query-views"})
 
 CATEGORY_READ_ONLY = "read-only"
@@ -121,6 +138,21 @@ class RequestPacer:
         self._next_start = now + self._interval
 
 
+def _space_uuid(value: Any, name: str) -> str:
+    """The matched row's id, or a refusal; never a substitute."""
+    if not isinstance(value, str):
+        raise ConfigurationError(
+            f"The Space matching {ENV_SPACE}={name!r} carries no id; {WITHHELD}."
+        )
+    try:
+        uuid.UUID(value)
+    except ValueError as error:
+        raise ConfigurationError(
+            f"The id of the Space matching {ENV_SPACE}={name!r} is not a UUID."
+        ) from error
+    return value
+
+
 class FiberyClient:
     """Speaks Fibery's HTTP protocols and raises FiberyError on any failure."""
 
@@ -138,11 +170,85 @@ class FiberyClient:
         self._sleep = sleeper
         self._wall_clock = wall_clock
         self._pacer = RequestPacer(min_interval_seconds, clock, sleeper)
+        self._space_id: str | None = None
 
     @property
     def workspace_identity(self) -> str:
-        """Host and Space id, the stable non-secret identity of this workspace."""
-        return f"{self._settings.host.strip().lower()}/{self._settings.space_id}"
+        """Host and Space id, the stable non-secret identity of this workspace.
+
+        The Space id must be resolved: without it every Space on the host would
+        share one identity, and a caller that has it would take a different
+        lock from one that does not.
+        """
+        host = self._settings.host.strip().lower()
+        return f"{host}/{self.space_id}"
+
+    @property
+    def space_id(self) -> str:
+        """The resolved UUID of the configured Space.
+
+        Reading it before `resolve_space_id` is a programming error, not a
+        configuration one the operator can fix, so it fails rather than
+        standing in a blank: a blank would place Documents nowhere and collapse
+        every Space on the host into one lock scope.
+        """
+        if self._space_id is None:
+            raise ConfigurationError(
+                "The Space UUID is not resolved. A command that creates a "
+                "Document or takes the workspace lock resolves it before its "
+                "first call."
+            )
+        return self._space_id
+
+    def resolve_space_id(self) -> str:
+        """Read the configured Space's UUID from the workspace, once.
+
+        `fibery/app` is the Database of Spaces; the SDLC Space is the row whose
+        name equals `FIBERY_SPACE` exactly. Exactly one row must match, because
+        a Space id is what places every Document and scopes the worker lock, so
+        a guess is worse than a refusal. The answer is remembered, so one
+        invocation looks it up once however many Documents it writes and
+        however many cycles it polls.
+        """
+        if self._space_id is None:
+            self._space_id = self._read_space_id()
+        return self._space_id
+
+    def _read_space_id(self) -> str:
+        name = self._settings.space
+        try:
+            rows = self.command(
+                ENTITY_QUERY_COMMAND,
+                {
+                    "query": {
+                        "q/from": SPACE_DATABASE,
+                        "q/select": [SPACE_ID_FIELD, SPACE_NAME_FIELD],
+                        "q/limit": NO_LIMIT,
+                    }
+                },
+            )
+        except FiberyError as error:
+            raise ConfigurationError(
+                f"Could not read this workspace's Spaces to resolve "
+                f"{ENV_SPACE}={name!r}: {error}"
+            ) from error
+        if not isinstance(rows, list):
+            raise ConfigurationError(
+                f"Resolving {ENV_SPACE}={name!r} returned no list of Spaces; "
+                f"{WITHHELD}."
+            )
+        matches = [
+            row.get(SPACE_ID_FIELD)
+            for row in rows
+            if isinstance(row, dict) and row.get(SPACE_NAME_FIELD) == name
+        ]
+        if len(matches) != 1:
+            raise ConfigurationError(
+                f"{ENV_SPACE}={name!r} names {len(matches)} of this "
+                f"workspace's {len(rows)} Spaces; exactly one Space must "
+                "match the name, character for character."
+            )
+        return _space_uuid(matches[0], name)
 
     def command(self, name: str, args: dict[str, Any] | None = None) -> Any:
         """Run one Commands API command and return its unwrapped result."""

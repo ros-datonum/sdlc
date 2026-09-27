@@ -3,6 +3,9 @@
 Fibery credentials and workspace coordinates are user and environment
 specific, so they are read from the environment only and never from a tracked
 file.
+
+The whole user-facing configuration is the host, the Space name and the token.
+Anything else Fibery needs is read from the workspace itself.
 """
 
 from __future__ import annotations
@@ -14,7 +17,6 @@ from dataclasses import dataclass
 ENV_HOST = "FIBERY_HOST"
 ENV_TOKEN = "FIBERY_TOKEN"
 ENV_SPACE = "FIBERY_SPACE"
-ENV_SPACE_ID = "FIBERY_SPACE_ID"
 ENV_TIMEOUT_SECONDS = "FIBERY_TIMEOUT_SECONDS"
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -28,15 +30,15 @@ class ConfigurationError(Exception):
 class FiberySettings:
     """Everything needed to reach one Fibery workspace.
 
-    `space` qualifies Database names (``<space>/Project``). `space_id` is the
-    separate UUID the Views API needs as a container, and Fibery exposes no
-    documented mapping between the two, so both are configured.
+    `space` qualifies Database names (``<space>/Project``). The Space's UUID,
+    which the Views API needs as a Document's container and which scopes the
+    worker lock, is not configured: `FiberyClient.resolve_space_id` reads it
+    from the workspace by this Space name.
     """
 
     host: str
     token: str
     space: str
-    space_id: str
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
     @property
@@ -52,7 +54,7 @@ def load_fibery_settings(
 
     values = {
         name: (source.get(name) or "").strip()
-        for name in (ENV_HOST, ENV_TOKEN, ENV_SPACE, ENV_SPACE_ID)
+        for name in (ENV_HOST, ENV_TOKEN, ENV_SPACE)
     }
     missing = sorted(name for name, value in values.items() if not value)
     if missing:
@@ -64,7 +66,6 @@ def load_fibery_settings(
         host=values[ENV_HOST],
         token=values[ENV_TOKEN],
         space=values[ENV_SPACE],
-        space_id=values[ENV_SPACE_ID],
         timeout_seconds=_read_timeout(source),
     )
 

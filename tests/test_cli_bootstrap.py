@@ -14,7 +14,7 @@ import pathlib
 import pytest
 
 from sdlc import cli
-from sdlc.config import ENV_HOST, ENV_SPACE, ENV_SPACE_ID, ENV_TOKEN
+from sdlc.config import ENV_HOST, ENV_SPACE, ENV_TOKEN
 from sdlc.consumer_template import MANAGED_PATHS
 from sdlc.project_bootstrap import BootstrapCode, BootstrapResult
 from test_project_bootstrap import (
@@ -29,7 +29,6 @@ ENVIRONMENT = {
     ENV_HOST: "example.fibery.io",
     ENV_TOKEN: "test-token",
     ENV_SPACE: "SDLC",
-    ENV_SPACE_ID: "space-uuid",
 }
 
 
@@ -248,6 +247,9 @@ def test_missing_fibery_configuration_stops_before_any_work(
     assert built == []
 
 
+SPACE_ID = "11111111-2222-4333-8444-555555555555"
+
+
 def test_both_workspace_adapters_share_one_client_and_settings(monkeypatch, exports):
     for name, value in ENVIRONMENT.items():
         monkeypatch.setenv(name, value)
@@ -256,14 +258,19 @@ def test_both_workspace_adapters_share_one_client_and_settings(monkeypatch, expo
     class RecordingClient:
         def __init__(self, settings):
             self.settings = settings
+            self.lookups = 0
             clients.append(self)
 
-    def project_adapter(client, space, space_id):
-        adapters.append(("project", client, space, space_id))
+        def resolve_space_id(self):
+            self.lookups += 1
+            return SPACE_ID
+
+    def project_adapter(client, space):
+        adapters.append(("project", client, space))
         return "project-workspace"
 
-    def requirement_adapter(client, space, space_id):
-        adapters.append(("requirement", client, space, space_id))
+    def requirement_adapter(client, space):
+        adapters.append(("requirement", client, space))
         return "requirement-workspace"
 
     monkeypatch.setattr(cli, "FiberyClient", RecordingClient)
@@ -285,11 +292,10 @@ def test_both_workspace_adapters_share_one_client_and_settings(monkeypatch, expo
         arguments.handler(arguments, io.StringIO(), io.StringIO()) == cli.EXIT_SUCCESS
     )
     assert len(clients) == 1, "one client for both adapters"
+    assert clients[0].lookups == 1, "one Space lookup for the whole command"
     assert [kind for kind, *_ in adapters] == ["project", "requirement"]
     assert {client for _, client, *_ in adapters} == {clients[0]}
-    assert {(space, space_id) for *_, space, space_id in adapters} == {
-        (ENVIRONMENT[ENV_SPACE], ENVIRONMENT[ENV_SPACE_ID])
-    }
+    assert {space for *_, space in adapters} == {ENVIRONMENT[ENV_SPACE]}
     assert captured["workspaces"] == ("project-workspace", "requirement-workspace")
 
 

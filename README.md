@@ -239,7 +239,26 @@ uv sync
 export FIBERY_HOST=<workspace>.fibery.io
 export FIBERY_TOKEN=<api token>
 export FIBERY_SPACE=<Space holding the SDLC Databases>
-export FIBERY_SPACE_ID=<UUID of that Space>
+```
+
+Those three are the whole configuration. There is no `FIBERY_SPACE_ID`: an old
+one left in a shell or a `.env` is not read.
+
+The Space's UUID is still what `create-views` takes as a Document's container
+and what scopes the worker lock. It is read from the workspace instead of being
+set by hand: the Spaces are entities of the `fibery/app` Database, and the
+runtime takes the id of the one whose name is exactly `FIBERY_SPACE`. Exactly
+one Space must match, character for character, or the command stops before it
+writes anything.
+
+The lookup runs once per invocation, only in the commands that use the id:
+
+```text
+resolves the Space id   project bootstrap, requirement add,
+                        requirement process, requirement normalize,
+                        requirement review, worker run
+does not                project init, requirement approve,
+                        requirement rework, requirement apply
 ```
 
 Configuration is read from the environment only; no credentials are stored in

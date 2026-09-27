@@ -104,16 +104,36 @@ Consequence: an object this run created must be read back by its own id.
 Resolving by `(name, parent)` returned the older Folder and produced a false
 `VALIDATION_FAILED` while the created hierarchy was correct.
 
-## Constraint 3 — a Space name and a Space id are both needed
+## Constraint 3 — a Space name and a Space id are both needed — VERIFIED
 
 Database names are qualified by Space *name* (`SDLC/Project`), while
 `create-views` and `create-folders` need the Space *id* (a UUID). Fibery
-publishes no command mapping one to the other, so both are configured
-(`FIBERY_SPACE`, `FIBERY_SPACE_ID`).
+publishes no command named for that mapping, but it does not have to: the
+Spaces are entities of a Database of their own, so the id is queryable by name.
+Confirmed read-only against the live workspace on 2026-09-26:
 
-Deriving the id is still possible: every View and Folder carries
-`fibery/container-app`. `scripts/fibery_document_probe.py` reports the candidate
-ids using only `FIBERY_HOST` and `FIBERY_TOKEN`.
+```text
+fibery.entity/query
+  q/from   "fibery/app"
+  q/select ["fibery/id", "fibery/name"]
+  q/limit  "q/no-limit"
+```
+
+Matching `fibery/name` to `FIBERY_SPACE` exactly returned one row carrying a
+valid UUID.
+
+`FIBERY_SPACE_ID` is therefore no longer configuration, and is not read at all.
+`FiberyClient.resolve_space_id` runs that query once per invocation, in the
+commands that use the id — Document creation and the worker lock scope — before
+the first mutation and before the lock. Exactly one row must match by exact
+name and carry a valid UUID; zero rows, several rows, a malformed answer or an
+API failure stop the command instead of substituting anything. An operation
+that addresses Databases by qualified name and creates no Document,
+`project init` among them, resolves nothing.
+
+Every View and Folder also carries `fibery/container-app`, which is how the id
+was first discovered; `scripts/fibery_document_probe.py` still reports the ids
+that way as a diagnostic.
 
 For this workspace the SDLC Space is `19c62a00-7a47-11f1-aba7-67039973deac`.
 
