@@ -6,7 +6,6 @@ from sdlc import cli
 from sdlc.config import (
     ENV_HOST,
     ENV_SPACE,
-    ENV_SPACE_ID,
     ENV_TIMEOUT_SECONDS,
     ENV_TOKEN,
     ConfigurationError,
@@ -14,12 +13,13 @@ from sdlc.config import (
 )
 from sdlc.results import InitResult, ResultCode
 
-COMPLETE_ENVIRONMENT = {
+REQUIRED_ENVIRONMENT = {
     ENV_HOST: "example.fibery.io",
     ENV_TOKEN: "test-token",
     ENV_SPACE: "SDLC",
-    ENV_SPACE_ID: "space-uuid",
 }
+# Retired configuration. It is named here only to prove it is never read.
+OBSOLETE_SPACE_ID_VARIABLE = "FIBERY_SPACE_ID"
 
 
 def render(result):
@@ -128,28 +128,41 @@ def test_only_the_two_specified_outcomes_are_normal(code, normal):
 
 
 def test_settings_are_read_from_the_environment():
-    settings = load_fibery_settings(COMPLETE_ENVIRONMENT)
+    settings = load_fibery_settings(REQUIRED_ENVIRONMENT)
 
     assert settings.base_url == "https://example.fibery.io"
-    assert settings.space_id == "space-uuid"
+    assert settings.space == "SDLC"
 
 
-@pytest.mark.parametrize("missing", sorted(COMPLETE_ENVIRONMENT))
-def test_missing_configuration_names_the_variable(missing):
-    environment = {k: v for k, v in COMPLETE_ENVIRONMENT.items() if k != missing}
+@pytest.mark.parametrize("value", [None, "", "   "])
+@pytest.mark.parametrize("missing", sorted(REQUIRED_ENVIRONMENT))
+def test_missing_configuration_names_the_variable(missing, value):
+    environment = dict(REQUIRED_ENVIRONMENT)
+    if value is None:
+        del environment[missing]
+    else:
+        environment[missing] = value
 
     with pytest.raises(ConfigurationError, match=missing):
         load_fibery_settings(environment)
 
 
 def test_missing_configuration_stops_the_command_before_it_runs(monkeypatch):
-    for name in COMPLETE_ENVIRONMENT:
+    for name in (*REQUIRED_ENVIRONMENT, OBSOLETE_SPACE_ID_VARIABLE):
         monkeypatch.delenv(name, raising=False)
 
     assert cli.main(["project", "init", "--name", "SDLC"]) == cli.EXIT_FAILURE
 
 
+@pytest.mark.parametrize("value", ["stale-uuid", "", "   "])
+def test_the_retired_space_id_variable_is_not_configuration(value):
+    """Whatever an old shell or .env still exports, it is not read."""
+    stale = {**REQUIRED_ENVIRONMENT, OBSOLETE_SPACE_ID_VARIABLE: value}
+
+    assert load_fibery_settings(stale) == load_fibery_settings(REQUIRED_ENVIRONMENT)
+
+
 @pytest.mark.parametrize("value", ["not-a-number", "0", "-1"])
 def test_invalid_timeout_is_rejected(value):
     with pytest.raises(ConfigurationError, match=ENV_TIMEOUT_SECONDS):
-        load_fibery_settings({**COMPLETE_ENVIRONMENT, ENV_TIMEOUT_SECONDS: value})
+        load_fibery_settings({**REQUIRED_ENVIRONMENT, ENV_TIMEOUT_SECONDS: value})

@@ -8,7 +8,7 @@ import pytest
 
 from apply_fake import build_apply_workspace, proposal
 from sdlc import cli
-from sdlc.config import ENV_HOST, ENV_SPACE, ENV_SPACE_ID, ENV_TOKEN
+from sdlc.config import ENV_HOST, ENV_SPACE, ENV_TOKEN
 from sdlc.results import ApplyResult
 from sdlc.results import ApplyResultCode as Code
 
@@ -16,7 +16,6 @@ ENVIRONMENT = {
     ENV_HOST: "example.fibery.io",
     ENV_TOKEN: "test-token",
     ENV_SPACE: "SDLC",
-    ENV_SPACE_ID: "space-uuid",
 }
 
 

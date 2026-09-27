@@ -12,7 +12,7 @@ import pytest
 
 from ready_fake import build_ready_workspace
 from sdlc import cli
-from sdlc.config import ENV_HOST, ENV_SPACE, ENV_SPACE_ID, ENV_TOKEN
+from sdlc.config import ENV_HOST, ENV_SPACE, ENV_TOKEN
 from sdlc.results import ReadyDecisionResult
 from sdlc.results import ReadyDecisionResultCode as Code
 
@@ -20,7 +20,6 @@ ENVIRONMENT = {
     ENV_HOST: "example.fibery.io",
     ENV_TOKEN: "test-token",
     ENV_SPACE: "SDLC",
-    ENV_SPACE_ID: "space-uuid",
 }
 
 

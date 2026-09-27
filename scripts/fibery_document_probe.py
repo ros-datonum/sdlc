@@ -11,9 +11,11 @@ It answers the three open integration questions from
 2. whether ``fibery/type: "document"`` is the value this workspace uses;
 3. what the ``Project.Documents Root`` Field type is and what it stores.
 
-Only FIBERY_HOST and FIBERY_TOKEN are required. Section 0 reports the
-candidate FIBERY_SPACE_ID values, because Fibery documents no command that maps
-a Space name to its UUID:
+Only FIBERY_HOST and FIBERY_TOKEN are required. Section 0 reports the Space id
+of every Space that owns a View. The runtime no longer needs it: since the
+Space-name lookup was confirmed, `FiberyClient.resolve_space_id` reads the
+configured Space's id itself, and nothing is configured by hand. Section 0
+survives as a diagnostic for a workspace whose Spaces do not answer:
 
     uv run python scripts/fibery_document_probe.py
 """
@@ -51,9 +53,8 @@ SEPARATOR = "=" * 72
 def main() -> int:
     """Probe the workspace read-only.
 
-    Only FIBERY_HOST and FIBERY_TOKEN are required. FIBERY_SPACE_ID is
-    deliberately not required: discovering it is one of the things the probe
-    is for, and Fibery documents no command mapping a Space name to its id.
+    Only FIBERY_HOST and FIBERY_TOKEN are required; the probe never needed a
+    Space id, and neither does the runtime any more.
     """
     host = (os.environ.get(ENV_HOST) or "").strip()
     token = (os.environ.get(ENV_TOKEN) or "").strip()
@@ -67,9 +68,7 @@ def main() -> int:
         print("\nThe probe only reads. It writes nothing.", file=sys.stderr)
         return 1
 
-    client = FiberyClient(
-        FiberySettings(host=host, token=token, space=space, space_id="")
-    )
+    client = FiberyClient(FiberySettings(host=host, token=token, space=space))
     try:
         views = _report_views(client)
         _report_space_ids(views)
@@ -86,13 +85,14 @@ def main() -> int:
 
 
 def _report_space_ids(views: list[dict[str, Any]]) -> None:
-    """Answer 'what is my FIBERY_SPACE_ID?' from the views themselves.
+    """Report each Space's UUID from the views themselves.
 
     Every View names the Space that contains it, so grouping Views by their
     container yields each Space's UUID. The View names printed under each id
-    identify which Space it is.
+    identify which Space it is. This is a diagnostic, not the runtime's route:
+    the runtime reads the id from the Space entity by name.
     """
-    _heading("0. Space ids (candidate FIBERY_SPACE_ID values)")
+    _heading("0. Space ids, by the Views each Space contains")
     by_space: dict[str | None, list[str]] = {}
     for view in views:
         container = view.get(CONTAINER_APP_KEY)
@@ -110,12 +110,13 @@ def _report_space_ids(views: list[dict[str, Any]]) -> None:
         return
 
     for space_id, names in sorted(by_space.items(), key=lambda item: -len(item[1])):
-        print(f"\n  FIBERY_SPACE_ID = {space_id}   ({len(names)} views)")
+        print(f"\n  Space id = {space_id}   ({len(names)} views)")
         for name in sorted(names)[:VIEWS_PER_SPACE]:
             print(f"      - {name}")
         if len(names) > VIEWS_PER_SPACE:
             print(f"      ... and {len(names) - VIEWS_PER_SPACE} more")
-    print("\n  Pick the id whose view names match the Space holding your Databases.")
+    print("\n  The id whose view names match the Space holding your Databases")
+    print("  is the one FIBERY_SPACE resolves to.")
 
 
 def _report_views(client: FiberyClient) -> list[dict[str, Any]]:

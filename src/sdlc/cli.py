@@ -383,11 +383,7 @@ def _run_project_init(
         print(str(error), file=error_out)
         return EXIT_FAILURE
 
-    workspace = FiberyHttpWorkspace(
-        client=FiberyClient(settings),
-        space=settings.space,
-        space_id=settings.space_id,
-    )
+    workspace = FiberyHttpWorkspace(client=FiberyClient(settings), space=settings.space)
     result = initialize_project(
         workspace,
         name=arguments.name,
@@ -398,6 +394,23 @@ def _run_project_init(
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
 
 
+def _client_with_space_id(settings: FiberySettings) -> FiberyClient:
+    """One client for the invocation, with its Space UUID already resolved.
+
+    A command that creates a Document or takes the workspace lock needs the
+    Space id. It is read here, before that command's first mutation and before
+    the lock, so an unresolvable Space stops the run instead of interrupting a
+    half-written Requirement. Resolving on the client that does the rest of the
+    work means one lookup per invocation, shared by every adapter built on it.
+
+    A command that creates no Document and takes no lock builds its client
+    directly and never makes this call.
+    """
+    client = FiberyClient(settings)
+    client.resolve_space_id()
+    return client
+
+
 def _bootstrap_workspaces(
     settings: FiberySettings,
 ) -> tuple[FiberyHttpWorkspace, FiberyRequirementWorkspace]:
@@ -406,14 +419,10 @@ def _bootstrap_workspaces(
     Both are built from the same settings and the same client, so bootstrap
     cannot end up composing two different Fibery workspaces.
     """
-    client = FiberyClient(settings)
+    client = _client_with_space_id(settings)
     return (
-        FiberyHttpWorkspace(
-            client=client, space=settings.space, space_id=settings.space_id
-        ),
-        FiberyRequirementWorkspace(
-            client=client, space=settings.space, space_id=settings.space_id
-        ),
+        FiberyHttpWorkspace(client=client, space=settings.space),
+        FiberyRequirementWorkspace(client=client, space=settings.space),
     )
 
 
@@ -427,11 +436,11 @@ def _run_project_bootstrap(
     """
     try:
         settings = load_fibery_settings()
+        project_workspace, requirement_workspace = _bootstrap_workspaces(settings)
     except ConfigurationError as error:
         print(str(error), file=error_out)
         return EXIT_FAILURE
 
-    project_workspace, requirement_workspace = _bootstrap_workspaces(settings)
     result = bootstrap_project(
         project_workspace,
         requirement_workspace,
@@ -516,11 +525,13 @@ def _run_requirement_add(
         print(f"\nCould not read {source}: {error}", file=error_out)
         return EXIT_FAILURE
 
-    workspace = FiberyRequirementWorkspace(
-        client=FiberyClient(settings),
-        space=settings.space,
-        space_id=settings.space_id,
-    )
+    try:
+        client = _client_with_space_id(settings)
+    except ConfigurationError as error:
+        print(str(error), file=error_out)
+        return EXIT_FAILURE
+
+    workspace = FiberyRequirementWorkspace(client=client, space=settings.space)
     result = add_raw_requirement(
         workspace, project=arguments.project, source_text=source_text
     )
@@ -540,15 +551,12 @@ def _run_requirement_process(
             runtime_override=arguments.runtime,
             model_override=arguments.model,
         )
+        client = _client_with_space_id(settings)
     except (ConfigurationError, ModelRuntimeConfigError) as error:
         print(str(error), file=error_out)
         return EXIT_FAILURE
 
-    workspace = FiberyRawProcessorWorkspace(
-        client=FiberyClient(settings),
-        space=settings.space,
-        space_id=settings.space_id,
-    )
+    workspace = FiberyRawProcessorWorkspace(client=client, space=settings.space)
     result = process_raw_requirement(
         workspace,
         LocalCliModelRuntime(selection),
@@ -586,15 +594,12 @@ def _run_standard_process(
                 model_override=arguments.model,
             )
             model = LocalCliModelRuntime(selection)
+        client = _client_with_space_id(settings)
     except (ConfigurationError, ModelRuntimeConfigError) as error:
         print(str(error), file=error_out)
         return EXIT_FAILURE
 
-    workspace = FiberyRawProcessorWorkspace(
-        client=FiberyClient(settings),
-        space=settings.space,
-        space_id=settings.space_id,
-    )
+    workspace = FiberyRawProcessorWorkspace(client=client, space=settings.space)
     result = process_standard_requirement(
         workspace,
         model,
@@ -618,15 +623,12 @@ def _run_standard_review(
             runtime_override=arguments.runtime,
             model_override=arguments.model,
         )
+        client = _client_with_space_id(settings)
     except (ConfigurationError, ModelRuntimeConfigError) as error:
         print(str(error), file=error_out)
         return EXIT_FAILURE
 
-    workspace = FiberyRawProcessorWorkspace(
-        client=FiberyClient(settings),
-        space=settings.space,
-        space_id=settings.space_id,
-    )
+    workspace = FiberyRawProcessorWorkspace(client=client, space=settings.space)
     result = review_standard_requirement(
         workspace,
         LocalCliModelRuntime(selection),
@@ -707,9 +709,10 @@ def _poll_interval_seconds(text: str) -> int:
 def _run_worker(arguments: argparse.Namespace, out: TextIO, error_out: TextIO) -> int:
     """`sdlc worker run`: the foreground state-driven runner, until Ctrl-C.
 
-    Configuration and every model role resolve before the lock is taken, and
-    the lock and the Processing Status preflight before the first poll, so
-    none of their failures can leave a Requirement claimed.
+    Configuration, the Space UUID the lock is scoped by, and every model role
+    resolve before the lock is taken, and the lock and the Processing Status
+    preflight before the first poll, so none of their failures can leave a
+    Requirement claimed.
     """
     try:
         settings = load_fibery_settings()
@@ -764,10 +767,13 @@ def _run_guarded(
 
 
 def _runner_workspace(settings: FiberySettings) -> FiberyRawProcessorWorkspace:
+    """The runner's adapter, on the one client it uses for its whole life.
+
+    The Space UUID is resolved here, before the runner lock scoped by it and
+    before the first poll, and is then remembered: no cycle looks it up again.
+    """
     return FiberyRawProcessorWorkspace(
-        client=FiberyClient(settings),
-        space=settings.space,
-        space_id=settings.space_id,
+        client=_client_with_space_id(settings), space=settings.space
     )
 
 
@@ -892,10 +898,13 @@ def render_apply_result(result: ApplyResult, stream: TextIO) -> None:
 
 
 def _ready_workspace(settings: FiberySettings) -> FiberyRawProcessorWorkspace:
+    """The adapter for approve, rework and apply.
+
+    None of the three creates a Document or takes a lock, so none resolves a
+    Space UUID and none pays for the lookup.
+    """
     return FiberyRawProcessorWorkspace(
-        client=FiberyClient(settings),
-        space=settings.space,
-        space_id=settings.space_id,
+        client=FiberyClient(settings), space=settings.space
     )
 
 

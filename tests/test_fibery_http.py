@@ -15,8 +15,16 @@ SETTINGS = FiberySettings(
     host="example.fibery.io",
     token="test-token",
     space="SDLC",
-    space_id="space-uuid",
 )
+
+# The workspace's Spaces, as `fibery.entity/query` over `fibery/app` answers.
+# The ids are synthetic; only their shape matters.
+SPACE_ID = "11111111-2222-4333-8444-555555555555"
+OTHER_SPACE_ID = "99999999-8888-4777-8666-555555555555"
+SPACE_ROWS = [
+    {"fibery/id": OTHER_SPACE_ID, "fibery/name": "Collaboration~Documents"},
+    {"fibery/id": SPACE_ID, "fibery/name": "SDLC"},
+]
 
 PROJECT_SCHEMA = {
     "fibery/types": [
@@ -96,6 +104,16 @@ def build_views_workspace(payloads):
     return _build(payloads)
 
 
+def resolved_client(opener, settings=SETTINGS):
+    """A client that has resolved its Space id, as every real invocation does.
+
+    The opener must answer the Space query first: `ok(SPACE_ROWS)`.
+    """
+    client = FiberyClient(settings, url_opener=opener, **unpaced())
+    client.resolve_space_id()
+    return client
+
+
 def unpaced():
     """Client keyword arguments that satisfy pacing without real waiting."""
     return {"clock": lambda: 0.0, "sleeper": lambda seconds: None}
@@ -104,9 +122,7 @@ def unpaced():
 def _build(payloads):
     opener = StubOpener(payloads)
     workspace = FiberyHttpWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()),
-        space=SETTINGS.space,
-        space_id=SETTINGS.space_id,
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), space=SETTINGS.space
     )
     return workspace, opener
 
@@ -175,7 +191,7 @@ def test_field_names_are_resolved_from_the_workspace_schema():
 def test_missing_project_database_is_reported():
     opener = StubOpener([ok({"fibery/types": []})])
     workspace = FiberyHttpWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
 
     with pytest.raises(FiberyError, match="SDLC/Project"):
@@ -196,7 +212,7 @@ def test_missing_required_field_is_reported():
     }
     opener = StubOpener([ok(schema)])
     workspace = FiberyHttpWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
 
     with pytest.raises(FiberyError, match="'code'"):
@@ -246,7 +262,7 @@ def test_a_project_database_without_the_legacy_root_folder_field_still_resolves(
     }
     opener = StubOpener([ok(schema), ok([{"fibery/id": "p1", "SDLC/Code": "SDLC"}])])
     workspace = FiberyHttpWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
 
     assert workspace.find_project_by_name("SDLC").code == "SDLC"

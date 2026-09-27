@@ -1132,7 +1132,7 @@ def schema_with(field=STATUS_FIELD, option_type=STATUS_OPTION_TYPE):
 def http_workspace(payloads, schema=None):
     opener = StubOpener([ok(schema_with() if schema is None else schema), *payloads])
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
     return workspace, opener
 

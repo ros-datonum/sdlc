@@ -5,16 +5,24 @@ import json
 import pytest
 
 from sdlc import cli
-from sdlc.config import ENV_HOST, ENV_SPACE, ENV_SPACE_ID, ENV_TOKEN
+from sdlc.config import ENV_HOST, ENV_SPACE, ENV_TIMEOUT_SECONDS, ENV_TOKEN
 from sdlc.fibery_client import FiberyClient
 from test_fibery_http import PROJECT_SCHEMA, StubResponse
 
-ENVIRONMENT = {
+# The whole configuration: Database names are qualified by Space name, and the
+# command creates no Document and no View, so it resolves no Space UUID.
+REQUIRED_ENVIRONMENT = {
     ENV_HOST: "example.fibery.io",
     ENV_TOKEN: "test-token",
     ENV_SPACE: "SDLC",
-    ENV_SPACE_ID: "space-uuid",
 }
+# Retired configuration, exported by some shells and .env files still.
+OBSOLETE_SPACE_ID_VARIABLE = "FIBERY_SPACE_ID"
+FIBERY_VARIABLES = (
+    *REQUIRED_ENVIRONMENT,
+    ENV_TIMEOUT_SECONDS,
+    OBSOLETE_SPACE_ID_VARIABLE,
+)
 
 PROJECT_DATABASE = "SDLC/Project"
 PLANNED_STATE_ID = "state-planned"
@@ -28,9 +36,12 @@ class FiberyStandIn:
             record["fibery/id"]: dict(record) for record in existing_projects
         }
         self.views_calls = []
+        self.requested_urls = []
+        self.commands = []
         self.next_id = 1
 
     def __call__(self, request, timeout):
+        self.requested_urls.append(request.full_url)
         body = json.loads(request.data.decode("utf-8"))
         if request.full_url.endswith("/api/commands"):
             payload = [{"success": True, "result": self._command(body[0])}]
@@ -40,6 +51,7 @@ class FiberyStandIn:
 
     def _command(self, envelope):
         name, args = envelope["command"], envelope.get("args", {})
+        self.commands.append((name, args.get("query", {}).get("q/from")))
         if name == "fibery.schema/query":
             return PROJECT_SCHEMA
         if name == "fibery.entity/query":
@@ -80,10 +92,16 @@ class FiberyStandIn:
         raise AssertionError(f"Unexpected views method {body['method']}")
 
 
-@pytest.fixture
-def fibery(monkeypatch):
+def install_fibery(monkeypatch, environment):
+    """Point the CLI at an in-process Fibery, with exactly this environment.
+
+    Every Fibery variable is cleared first, so a value in the developer's
+    shell or in `.env` can never stand in for one a test deliberately omits.
+    """
     stand_in = FiberyStandIn()
-    for name, value in ENVIRONMENT.items():
+    for name in FIBERY_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(
         cli,
@@ -93,6 +111,21 @@ def fibery(monkeypatch):
         ),
     )
     return stand_in
+
+
+@pytest.fixture
+def fibery(monkeypatch):
+    """The reported configuration: host, Space name and token, nothing else."""
+    return install_fibery(monkeypatch, REQUIRED_ENVIRONMENT)
+
+
+@pytest.fixture
+def fibery_with_a_stale_space_id(monkeypatch):
+    """The same, plus the retired variable an old .env may still export."""
+    return install_fibery(
+        monkeypatch,
+        {**REQUIRED_ENVIRONMENT, OBSOLETE_SPACE_ID_VARIABLE: "stale-uuid"},
+    )
 
 
 def run(argv, capsys):
@@ -144,3 +177,72 @@ def test_supplied_code_already_in_use_fails_on_stderr(fibery, capsys):
 
     assert exit_code == cli.EXIT_FAILURE
     assert err.splitlines()[0] == "PROJECT_CODE_COLLISION"
+
+
+# -- no Space UUID is required ---------------------------------------------
+
+
+def test_init_runs_with_host_space_and_token_only(fibery, capsys):
+    """The real entry point, through the real configuration check.
+
+    `load_fibery_settings` is not stubbed: the point of the test is that the
+    configuration check itself accepts an environment without a Space UUID.
+    """
+    exit_code, out, err = run(["project", "init", "--name", "SDLC"], capsys)
+
+    assert (exit_code, err) == (cli.EXIT_SUCCESS, "")
+    assert out.splitlines()[0] == "PROJECT_INITIALIZED"
+
+
+def test_rerunning_without_a_space_id_makes_no_further_mutation(fibery, capsys):
+    run(["project", "init", "--name", "SDLC"], capsys)
+    before = json.dumps(fibery.projects, sort_keys=True)
+
+    exit_code, out, _ = run(["project", "init", "--name", "SDLC"], capsys)
+
+    assert exit_code == cli.EXIT_SUCCESS
+    assert out.splitlines()[0] == "PROJECT_ALREADY_EXISTS"
+    assert json.dumps(fibery.projects, sort_keys=True) == before
+
+
+def test_init_resolves_no_space_id_and_calls_no_views_api(fibery, capsys):
+    """No lookup replaces the removed requirement: init has no use for the id.
+
+    Both interfaces that expose a Space UUID stay untouched — the `fibery/app`
+    Database the resolver reads, and the Views API a Document would need.
+    """
+    run(["project", "init", "--name", "SDLC"], capsys)
+
+    assert fibery.views_calls == []
+    assert all(url.endswith("/api/commands") for url in fibery.requested_urls)
+    assert all(database != "fibery/app" for _, database in fibery.commands)
+
+
+def test_a_stale_space_id_in_the_environment_changes_nothing(
+    fibery_with_a_stale_space_id, capsys
+):
+    """The retired variable is not read, so an old .env cannot steer the run."""
+    exit_code, out, err = run(["project", "init", "--name", "SDLC"], capsys)
+
+    assert (exit_code, err) == (cli.EXIT_SUCCESS, "")
+    assert out.splitlines()[0] == "PROJECT_INITIALIZED"
+    assert fibery_with_a_stale_space_id.views_calls == []
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+@pytest.mark.parametrize("missing", sorted(REQUIRED_ENVIRONMENT))
+def test_a_required_variable_stops_init_before_any_request(
+    monkeypatch, capsys, missing, value
+):
+    environment = dict(REQUIRED_ENVIRONMENT)
+    if value is None:
+        del environment[missing]
+    else:
+        environment[missing] = value
+    stand_in = install_fibery(monkeypatch, environment)
+
+    exit_code, _, err = run(["project", "init", "--name", "SDLC"], capsys)
+
+    assert exit_code == cli.EXIT_FAILURE
+    assert missing in err
+    assert stand_in.requested_urls == []

@@ -527,10 +527,8 @@ def test_no_generic_force_or_bypass_option_exists():
 
 def test_a_cli_resume_selects_no_runtime(monkeypatch):
     calls = {}
-    monkeypatch.setattr(
-        cli, "load_fibery_settings", lambda: Namespace(space="s", space_id="i")
-    )
-    monkeypatch.setattr(cli, "FiberyClient", lambda settings: object())
+    monkeypatch.setattr(cli, "load_fibery_settings", lambda: Namespace(space="s"))
+    monkeypatch.setattr(cli, "_client_with_space_id", lambda settings: object())
     monkeypatch.setattr(cli, "FiberyRawProcessorWorkspace", lambda **kw: object())
 
     def no_config():

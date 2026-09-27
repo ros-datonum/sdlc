@@ -108,12 +108,16 @@ class _ProjectSchema:
 
 
 class FiberyHttpWorkspace:
-    """Reads and writes the Project bootstrap state in a Fibery workspace."""
+    """Reads and writes the Project bootstrap state in a Fibery workspace.
 
-    def __init__(self, client: FiberyClient, space: str, space_id: str) -> None:
+    Only the Space *name* is needed: every call this adapter makes addresses
+    the Project Database by qualified name, and it creates no Document, View
+    or Folder, so it never needs the Space id.
+    """
+
+    def __init__(self, client: FiberyClient, space: str) -> None:
         self._client = client
         self._space = space
-        self._space_id = space_id
         self._schema: _ProjectSchema | None = None
 
     @property
@@ -378,13 +382,16 @@ class FiberyRequirementWorkspace:
 
     Shares the transport with FiberyHttpWorkspace but keeps its own schema
     resolution, so the frozen `project init` adapter is untouched.
+
+    The Space id a Document is created in comes from the client, which resolved
+    it once for this invocation, so the adapter and the lock scope can never
+    name two different Spaces.
     """
 
-    def __init__(self, client: FiberyClient, space: str, space_id: str) -> None:
+    def __init__(self, client: FiberyClient, space: str) -> None:
         self._client = client
         self._space = space
-        self._space_id = space_id
-        self._projects = FiberyHttpWorkspace(client, space, space_id)
+        self._projects = FiberyHttpWorkspace(client, space)
         self._schema: _RequirementSchema | None = None
 
     @property
@@ -496,7 +503,7 @@ class FiberyRequirementWorkspace:
                         VIEW_NAME_KEY: name,
                         VIEW_TYPE_KEY: DOCUMENT_VIEW_TYPE,
                         VIEW_META_KEY: {DOCUMENT_SECRET_META_KEY: secret},
-                        VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._space_id},
+                        VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._client.space_id},
                         VIEW_CONTAINER_TYPE_KEY: CONTAINER_TYPE_OBJECT,
                         VIEW_CONTAINER_ENTITY_TYPE_KEY: {
                             ID_FIELD: self._requirement_schema().type_id
@@ -809,7 +816,7 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
                         VIEW_NAME_KEY: name,
                         VIEW_TYPE_KEY: DOCUMENT_VIEW_TYPE,
                         VIEW_META_KEY: {DOCUMENT_SECRET_META_KEY: secret},
-                        VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._space_id},
+                        VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._client.space_id},
                         VIEW_PARENT_PAGE_KEY: parent_document_id,
                     }
                 ]

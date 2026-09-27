@@ -2,10 +2,20 @@
 
 import pytest
 
+from sdlc.config import ConfigurationError
 from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_http import FiberyRawProcessorWorkspace, FiberyRequirementWorkspace
 from sdlc.fibery_workspace import FiberyError
-from test_fibery_http import SETTINGS, StubOpener, ok, rpc, unpaced
+from test_fibery_http import (
+    SETTINGS,
+    SPACE_ID,
+    SPACE_ROWS,
+    StubOpener,
+    ok,
+    resolved_client,
+    rpc,
+    unpaced,
+)
 
 REQUIREMENT_TYPE_ID = "0cbb35c1-b71f-4429-b45e-4a9fd5ada7c2"
 
@@ -40,7 +50,7 @@ REQUIREMENT_SCHEMA = {
 def build(payloads):
     opener = StubOpener([ok(REQUIREMENT_SCHEMA), *payloads])
     workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
     return workspace, opener
 
@@ -49,7 +59,7 @@ def build_views(payloads):
     """For view operations that never resolve the Requirement schema."""
     opener = StubOpener(list(payloads))
     workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
     return workspace, opener
 
@@ -90,7 +100,7 @@ def test_missing_source_fingerprint_field_is_reported():
     }
     opener = StubOpener([ok(schema)])
     workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
 
     with pytest.raises(FiberyError, match="source fingerprint"):
@@ -195,7 +205,8 @@ def test_document_is_created_contained_by_the_requirement_with_no_folder():
             else None
         )
         if request.full_url.endswith("/api/commands"):
-            payload = ok(REQUIREMENT_SCHEMA)
+            resolving = body[0]["command"] == "fibery.entity/query"
+            payload = ok(SPACE_ROWS) if resolving else ok(REQUIREMENT_SCHEMA)
         elif body["method"] == "create-views":
             sent["view"] = body["params"]["views"][0]
             payload = rpc([])
@@ -203,9 +214,7 @@ def test_document_is_created_contained_by_the_requirement_with_no_folder():
             payload = rpc([dict(sent["view"])])
         return StubResponse(_json.dumps(payload).encode("utf-8"))
 
-    workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=echoing, **unpaced()), "SDLC", "space-uuid"
-    )
+    workspace = FiberyRequirementWorkspace(resolved_client(echoing), "SDLC")
 
     node = workspace.create_requirement_document("SDLC-RAW-0001 — T", "7")
 
@@ -214,6 +223,7 @@ def test_document_is_created_contained_by_the_requirement_with_no_folder():
     # Verified live: a contained Document created without fibery/Folder is
     # attached, written and nested normally. Placement is Type + State.
     assert "fibery/Folder" not in view
+    assert view["fibery/container-app"] == {"fibery/id": SPACE_ID}
     assert view["fibery/container-type"] == "object"
     assert view["fibery/container-entity-type"] == {"fibery/id": REQUIREMENT_TYPE_ID}
     assert view["fibery/container-entity-id"] == "7"
@@ -226,7 +236,8 @@ def test_document_is_created_contained_by_the_requirement_with_no_folder():
 
 
 def test_created_document_is_read_back_not_assumed():
-    workspace, _ = build([rpc([]), rpc([])])
+    opener = StubOpener([ok(SPACE_ROWS), ok(REQUIREMENT_SCHEMA), rpc([]), rpc([])])
+    workspace = FiberyRequirementWorkspace(resolved_client(opener), "SDLC")
 
     with pytest.raises(FiberyError, match="could not be read back"):
         workspace.create_requirement_document("N", "7")
@@ -328,21 +339,78 @@ def test_document_is_created_with_a_client_supplied_secret():
             else None
         )
         if request.full_url.endswith("/api/commands"):
-            return StubResponse(_json.dumps(ok(REQUIREMENT_SCHEMA)).encode())
+            resolving = body[0]["command"] == "fibery.entity/query"
+            answer = ok(SPACE_ROWS) if resolving else ok(REQUIREMENT_SCHEMA)
+            return StubResponse(_json.dumps(answer).encode())
         if body["method"] == "create-views":
             seen["view"] = body["params"]["views"][0]
             return StubResponse(_json.dumps(rpc([])).encode())
         return StubResponse(_json.dumps(rpc([dict(seen["view"])])).encode())
 
-    workspace = FiberyRequirementWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
-    )
+    workspace = FiberyRequirementWorkspace(resolved_client(opener), "SDLC")
 
     first = workspace.create_requirement_document("A", "7")
     second = workspace.create_requirement_document("B", "8")
 
     assert first.secret and second.secret
     assert first.secret != second.secret
+
+
+def test_child_document_is_created_in_the_configured_space_under_its_parent():
+    """The Space id still places a nested Document; only init stopped needing one."""
+    import json as _json
+
+    from test_fibery_http import StubResponse
+
+    sent = {}
+
+    def echoing(request, timeout):
+        body = _json.loads(request.data.decode("utf-8"))
+        if request.full_url.endswith("/api/commands"):
+            payload = ok(SPACE_ROWS)
+        elif body["method"] == "create-views":
+            sent["view"] = body["params"]["views"][0]
+            payload = rpc([])
+        else:
+            payload = rpc([dict(sent["view"])])
+        return StubResponse(_json.dumps(payload).encode("utf-8"))
+
+    workspace = FiberyRawProcessorWorkspace(resolved_client(echoing), "SDLC")
+
+    node = workspace.create_child_document("Processing Result 0001", "parent-doc")
+
+    view = sent["view"]
+    assert view["fibery/container-app"] == {"fibery/id": SPACE_ID}
+    assert view["fibery/parent-page-id"] == "parent-doc"
+    assert view["fibery/type"] == "document"
+    assert node.id == view["fibery/id"]
+
+
+# -- lock identity ---------------------------------------------------------
+
+
+def test_the_lock_scope_is_the_host_and_the_resolved_space_id():
+    """The identity format is unchanged, so one Space keeps one lock."""
+    workspace = FiberyRawProcessorWorkspace(
+        resolved_client(StubOpener([ok(SPACE_ROWS)])), "SDLC"
+    )
+
+    assert workspace.lock_scope == f"example.fibery.io/{SPACE_ID}"
+
+
+def test_an_unresolved_space_id_is_no_lock_scope_to_share():
+    """Two processes for one workspace must never take independent locks.
+
+    A blank Space id would make every Space on the host one scope, and would
+    give a caller that has the id a different lock from one that does not, so
+    the identity is refused instead of degraded.
+    """
+    workspace = FiberyRawProcessorWorkspace(
+        FiberyClient(SETTINGS, url_opener=StubOpener([]), **unpaced()), "SDLC"
+    )
+
+    with pytest.raises(ConfigurationError, match="not resolved"):
+        assert workspace.lock_scope
 
 
 # -- existing relations, read for the independent reviewer -----------------
@@ -364,7 +432,7 @@ RELATION_SCHEMA = {
 def build_with_relations(payloads):
     opener = StubOpener([ok(RELATION_SCHEMA), *payloads])
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
     return workspace, opener
 
@@ -430,7 +498,7 @@ def test_a_database_without_the_relation_fields_reads_no_relations():
     """Requirement add must keep working against a Database lacking them."""
     opener = StubOpener([ok(REQUIREMENT_SCHEMA)])
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
     relations = workspace.requirement_relations("std-1")
 
@@ -506,7 +574,7 @@ def test_affects_is_added_with_add_collection_items():
 def test_a_database_without_the_relation_field_cannot_add_an_edge():
     opener = StubOpener([ok(REQUIREMENT_SCHEMA)])
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
     with pytest.raises(FiberyError):
         workspace.add_depends_on("std-1", "dep-1")
@@ -517,7 +585,7 @@ def build_apply_views(payloads):
     """View operations of the processor workspace that never touch the schema."""
     opener = StubOpener(list(payloads))
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
     return workspace, opener
 
@@ -568,7 +636,7 @@ def build_with_category(payloads):
 
     opener = StubOpener([ok(CATEGORY_SCHEMA), *payloads])
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
     return workspace, opener
 
@@ -592,7 +660,7 @@ def test_an_absent_category_field_leaves_category_unspecified():
 
     opener = StubOpener([ok(REQUIREMENT_SCHEMA), ok([standard_row(1)])])
     workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC", "space-uuid"
+        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )
 
     [record] = workspace.standard_requirements_in_project("project-1")
