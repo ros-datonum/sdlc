@@ -634,3 +634,109 @@ def test_the_review_prompt_stays_structured_verdictless_and_non_prescriptive():
     assert (
         "do not recommend an implementation, a design or replacement wording." in PROMPT
     )
+
+
+# -- 12. a result that contradicts itself about an open product decision -------
+#
+# BS0927-NFR-0120 Process Result 0001 acknowledged an unresolved product
+# decision in its analysis and in a MISSING_EDGE_CASE finding while recording
+# "None." under Open Questions. Review reports that contradiction; it never
+# repairs the document, and the question stays a human decision.
+
+ACKNOWLEDGED_QUESTION = (
+    "The source does not settle what the user sees after a failed save: the "
+    "unsaved change or the last saved state."
+)
+CONTRADICTION = (
+    "The analysis acknowledges an unresolved decision about WHAT the user sees "
+    "after a failed save — the unsaved change or the last saved state — while "
+    "Open Questions records none."
+)
+
+
+def test_a_prepared_contradiction_report_is_recorded_and_repairs_nothing():
+    """Handling and authority, not detection.
+
+    The reviewed Process Result carries a finding that acknowledges an unmade
+    product decision while its Open Questions stays "None.", so the input is
+    the real contradiction shape. The reviewer's answer is still a prepared
+    fake: this pins what deterministic code does with such a report and what
+    the reviewer is allowed to touch. Whether a live model spots the
+    contradiction is not tested here and cannot be.
+    """
+    run = review(
+        TIMEOUT_REQUIREMENT,
+        TIMEOUT_SOURCE,
+        review_output(
+            finding_verifications=[confirm(0, "WARNING", "The decision is unmade.")],
+            new_findings=[new_finding("INCONSISTENT", "WARNING", CONTRADICTION)],
+        ),
+        findings=[finding(FindingKind.MISSING_EDGE_CASE, ACKNOWLEDGED_QUESTION)],
+    )
+
+    stored = reviewed(run)
+    # Exactly one verification for the one Process finding supplied.
+    assert [v.outcome.value for v in stored.finding_verifications] == ["CONFIRMED"]
+    assert new_kinds(stored) == [(FindingKind.INCONSISTENT, "WARNING", None)]
+    assert "Open Questions records none" in stored.new_findings[0].detail
+    # `reviewed` already asserts the Root is never rewritten; state it here too,
+    # because the tempting repair for this finding is exactly such a rewrite.
+    assert run.ws.content[run.root.secret] == run.before.root
+    root = run.ws.content[run.root.secret]
+    open_questions = root.split("## Open Questions\n\n", 1)[1].split("\n\n## ", 1)[0]
+    assert open_questions.strip() == NO_OPEN_QUESTIONS, (
+        "Review adds no question of its own to the Root"
+    )
+
+
+def test_the_review_prompt_names_the_open_questions_contradiction():
+    assert (
+        "INCONSISTENT when the work under review contradicts itself about an "
+        "open product decision" in PROMPT
+    )
+    assert "while the Requirement's Open Questions section records none" in PROMPT
+    assert (
+        "You do not rewrite the document to add the question, and you do not "
+        "answer it." in PROMPT
+    )
+
+
+def test_an_open_question_alone_is_not_a_defect():
+    """The "not a defect" half stays where non-defects are listed."""
+    not_defects = PROMPT.split("Not defects:", 1)[1].split("Rules:", 1)[0]
+
+    assert (
+        "An unresolved product question is not a defect merely because it "
+        "exists, and its existence alone is never grounds for BLOCKING." in not_defects
+    )
+    # The pre-existing rule that a still-open decision is not itself a defect
+    # must survive: only the contradiction is reportable.
+    assert "do not report it merely because it is unresolved" in not_defects
+
+
+def test_severity_judgement_sits_with_the_rules_for_confirmed_findings():
+    """Rating a confirmed finding is a Rule, not an entry under Not defects."""
+    rules = PROMPT.split("Rules:", 1)[1]
+
+    assert (
+        "Decide independently whether a defect is real, then rate what it puts "
+        "at risk under these same rules." in rules
+    )
+    # No automatic BLOCKING, and no ban on a justified one either.
+    assert (
+        "An open product question earns no automatic severity, and nothing here "
+        "forbids a justified BLOCKING when the unmade product decision genuinely "
+        "warrants it." in rules
+    )
+    assert (
+        "A question you are the first to notice is a new finding and stays here "
+        "as evidence for a human: it does not enter the Requirement document, "
+        "and it is not by itself a demand for more work." in rules
+    )
+    # The severity classes and the rule that only CONFIRMED carries one are
+    # untouched; the verdict is still derived, never stated.
+    assert (
+        "Give a severity only when you CONFIRM a finding, and always when you do."
+        in rules
+    )
+    assert "Do not state an overall verdict" in rules

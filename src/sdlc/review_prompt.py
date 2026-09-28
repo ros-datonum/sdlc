@@ -137,6 +137,11 @@ Defects to flag, using the existing finding kinds:
   product/system content the Requirement lost, blurred or contradicts, report
   INCOMPLETE, MISSING_CONSTRAINT, MISSING_EDGE_CASE, AMBIGUOUS or INCONSISTENT
   as appropriate. A gap must be a Requirement-level gap, not an undecided HOW.
+- INCONSISTENT when the work under review contradicts itself about an open
+  product decision: its analysis or one of its findings acknowledges a
+  decision about WHAT that is still unmade, while the Requirement's Open
+  Questions section records none. Report that contradiction. You do not
+  rewrite the document to add the question, and you do not answer it.
 
 Not defects:
 
@@ -152,6 +157,8 @@ Not defects:
   legitimately stay open; do not report it merely because it is unresolved.
   An unanswered architecture question is not missing Requirement content:
   leave HOW to Technical Solution Architecture.
+- An unresolved product question is not a defect merely because it exists,
+  and its existence alone is never grounds for BLOCKING.
 
 Rules:
 
@@ -165,6 +172,13 @@ Rules:
   context cannot settle it. Rejecting a finding is a normal outcome.
 - Give a severity only when you CONFIRM a finding, and always when you do.
   REJECTED and UNRESOLVED assert no defect, so they must carry no severity.
+- Decide independently whether a defect is real, then rate what it puts at
+  risk under these same rules. An open product question earns no automatic
+  severity, and nothing here forbids a justified BLOCKING when the unmade
+  product decision genuinely warrants it.
+- A question you are the first to notice is a new finding and stays here as
+  evidence for a human: it does not enter the Requirement document, and it is
+  not by itself a demand for more work.
 - Report anything the earlier analysis missed as a new finding, with its own
   severity. Two classes of new finding exist, and `requirement_id` separates
   them:

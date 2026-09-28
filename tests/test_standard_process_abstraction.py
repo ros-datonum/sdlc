@@ -599,3 +599,109 @@ def test_the_prompt_shape_is_the_unchanged_closed_contract():
 
     assert set(re.findall(r'"(\w+)":', normalized)) == NORMALIZED_KEYS
     assert set(re.findall(r'"(\w+)":', analysis)) == ANALYSIS_KEYS
+
+
+# -- an open product question the analysis found itself ----------------------
+#
+# BS0927-NFR-0120 Process Result 0001 recorded `open_questions: "None."` while
+# its completeness analysis and a MISSING_EDGE_CASE finding both acknowledged
+# an unresolved product decision. Nothing in the prompt connected the two: the
+# section was anchored to the source, so omitting it was compliant and code
+# then filled the schema's fixed "None.".
+
+
+def test_the_prompt_places_a_self_identified_product_question_in_open_questions():
+    prompt = " ".join(INSTRUCTIONS.split())
+
+    assert "They need not come from the source." in prompt
+    assert (
+        "A product decision your own analysis leaves unresolved — you could not "
+        "tell which outcome the WHAT requires and the source does not settle it "
+        "— belongs here too, in the same unanswered form." in prompt
+    )
+    assert (
+        "Do not acknowledge such a question in the analysis or in a finding "
+        "while this section says there is none" in prompt
+    )
+    # Still never answered, which is what made the section trustworthy.
+    assert "Preserve each as a question and never answer it." in prompt
+
+
+def test_the_prompt_resolves_the_contradiction_by_recording_the_question():
+    """The cheaper repair — dropping the finding — is ruled out explicitly."""
+    prompt = " ".join(INSTRUCTIONS.split())
+
+    assert (
+        "For a genuine unresolved product question, resolve that inconsistency "
+        "by recording the question here, not by deleting or suppressing a valid "
+        "analytical observation or finding." in prompt
+    )
+    assert "Preserve the question unanswered." in prompt
+    # A mistaken observation is still droppable: this is not a duty to keep
+    # findings the analysis itself disproved.
+    assert (
+        "An observation you found to be wrong, or that your own analysis "
+        "settled, is not a question: drop it because it is mistaken, never to "
+        "keep this section empty." in prompt
+    )
+
+
+def test_the_prompt_does_not_make_every_finding_an_open_question():
+    prompt = " ".join(INSTRUCTIONS.split())
+
+    assert "Do not copy every finding into Open Questions." in prompt
+    assert (
+        "A defect you already repaired, an undecided HOW, and a weak acceptance "
+        "example do not by themselves establish an open product decision, and "
+        "neither does a duplicate or conflict finding." in prompt
+    )
+    # The architecture-only exclusion is unchanged, not widened.
+    assert "leave architecture-only questions out" in prompt
+
+
+def test_a_conflict_needing_a_product_decision_may_raise_an_open_question():
+    """The exclusion is "not by itself", not "never": a real choice qualifies."""
+    prompt = " ".join(INSTRUCTIONS.split())
+
+    assert (
+        "when a conflict exposes a still-unresolved, in-scope choice about "
+        "required product behavior, record that choice here as an unanswered "
+        "question as well as reporting the finding." in prompt
+    )
+    # Raising the question must not become deciding it, or inventing scope.
+    assert (
+        "Do not choose between the conflicting behaviors, do not invent a "
+        "resolution, and do not treat a peer that is not Applied as approved "
+        "authority." in prompt
+    )
+    assert (
+        "The question must arise from the product scope you are analyzing; it "
+        "never introduces a new capability or an invented requirement." in prompt
+    )
+
+
+def test_code_still_derives_no_open_question_from_a_finding():
+    """The fix is an instruction, not a heuristic: code invents nothing.
+
+    An output that reports MISSING_EDGE_CASE while omitting `open_questions`
+    is still accepted and still renders the schema's fixed text. If a
+    deterministic rule ever turned findings into questions, this fails.
+    """
+    acknowledged = {
+        "kind": FindingKind.MISSING_EDGE_CASE.value,
+        "detail": (
+            "The source does not settle what the user sees after a failed save: "
+            "the unsaved change or the last saved state."
+        ),
+    }
+
+    run = process(
+        document(OVERRIDE_TITLE, requirement=OVERRIDE_REQUIREMENT),
+        OVERRIDE_SOURCE,
+        {"title": OVERRIDE_TITLE, "requirement": OVERRIDE_REQUIREMENT},
+        findings=[acknowledged],
+    )
+
+    assert section(run.root, "Open Questions") == NO_OPEN_QUESTIONS
+    assert "unsaved change" not in run.root, "code wrote no question of its own"
+    assert kinds(run) == [(FindingKind.MISSING_EDGE_CASE, None)]

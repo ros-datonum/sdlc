@@ -42,7 +42,7 @@ Shape:
     "acceptance_verification": "observable evidence of satisfaction, or omit",
     "constraints_edge_cases": "boundaries or source-mandated constraints, or omit",
     "non_goals": "explicitly excluded behavior or scope, or omit",
-    "open_questions": "unresolved product questions from the source, or omit"
+    "open_questions": "unresolved product questions affecting WHAT, or omit"
   },
   "analysis": {
     "completeness": "...", "clarity": "...", "atomicity": "...",
@@ -146,8 +146,31 @@ Sections:
   Preserve each as a question and never answer it. A missing architecture
   decision is not a product gap unless the source makes that decision part of
   WHAT: leave architecture-only questions out.
-- Omit a section, or leave it empty, when the source does not establish it.
-  Deterministic code fills those in; inventing content is worse than omitting it.
+  They need not come from the source. A product decision your own analysis
+  leaves unresolved — you could not tell which outcome the WHAT requires and
+  the source does not settle it — belongs here too, in the same unanswered
+  form. Do not acknowledge such a question in the analysis or in a finding
+  while this section says there is none: that contradicts your own output.
+  For a genuine unresolved product question, resolve that inconsistency by
+  recording the question here, not by deleting or suppressing a valid
+  analytical observation or finding. Preserve the question unanswered. An
+  observation you found to be wrong, or that your own analysis settled, is
+  not a question: drop it because it is mistaken, never to keep this section
+  empty.
+  Do not copy every finding into Open Questions. A defect you already
+  repaired, an undecided HOW, and a weak acceptance example do not by
+  themselves establish an open product decision, and neither does a
+  duplicate or conflict finding. But when a conflict exposes a
+  still-unresolved, in-scope choice about required product behavior, record
+  that choice here as an unanswered question as well as reporting the
+  finding. Do not choose between the conflicting behaviors, do not invent a
+  resolution, and do not treat a peer that is not Applied as approved
+  authority. The question must arise from the product scope you are
+  analyzing; it never introduces a new capability or an invented
+  requirement.
+- Omit a section, or leave it empty, when the source does not establish it;
+  open_questions follows its own rule above. Deterministic code fills those
+  in; inventing content is worse than omitting it.
 - Code owns the document structure. The title is a single line, and section
   content must not contain a level-1 or level-2 Markdown heading (a # or ##
   line, or text directly underlined with = or -) outside a fenced code block.
