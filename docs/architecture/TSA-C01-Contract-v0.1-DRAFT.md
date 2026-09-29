@@ -19,7 +19,8 @@ Three kinds of statement are kept apart on purpose.
 |---|---|
 | **FROZEN** | A decision this contract settles. An implementation MUST follow it; changing it requires a new contract version. |
 | **OBLIGATION** | Work an implementation MUST perform to satisfy a FROZEN decision. The mechanism is bounded here, the code is not written here. |
-| **DEFERRED** | Explicitly not decided by this contract. An implementation agent MUST NOT choose it unilaterally. |
+| **DEFERRED** | An authority, policy or semantics question this contract does not decide. It needs a human decision or a new contract version; an implementation agent MUST NOT choose it unilaterally. |
+| **IMPLEMENTATION-SPEC** | The authority is frozen here; only the mechanism is open. It belongs in the implementation specification a bounded work item would carry, and an implementation agent MUST NOT choose it silently. |
 
 `MUST`, `MUST NOT` and `MAY` are used in the RFC-2119 sense. `MUST NOT` is a
 prohibition on the engine, not advice.
@@ -131,7 +132,7 @@ immutable **Input Manifest**.
 | Full normative-tree manifest v2 and fingerprints | Per Requirement, exactly as read. |
 | Process Result identity, iteration and payload digest | Per Requirement. |
 | Review Result identity and payload digest | Per Requirement. |
-| UX prerequisite evidence | Section 4, in full. |
+| UX prerequisite evidence | Section 4 in full: for `APPLICABLE`, the Document id, content digest, exact scope and human approval of that digest for that scope; for `NOT_APPLICABLE`, the decision, reason and input binding. |
 | Creation timestamp | |
 | Digest of the complete manifest | Section 11.2. |
 | Explicit human input acceptance | Bound to that digest (section 3.3). |
@@ -156,35 +157,103 @@ recorded against a different digest is not acceptance of this manifest and
 
 **FROZEN.** The UX prerequisite has exactly two admissible values.
 
-**APPLICABLE** — the manifest MUST carry:
-- the exact approved UX artifact identity;
-- its content digest or version;
-- the exact scope binding (which part of this Requirement set it covers);
-- explicit approval evidence.
+### 4.1 `APPLICABLE` — the admissible evidence interface
 
-**NOT_APPLICABLE** — the manifest MUST carry:
-- an explicit human decision;
-- a reason;
-- a binding to the exact Requirement input digest it was decided against.
+**FROZEN.** The UX source is **one exact readable Fibery Document**, supplied or
+resolved by its **Fibery Document ID**. The engine **MUST** read that Document's
+complete supported content; it **MUST NOT** accept a reference it cannot read.
 
-**FROZEN.** A model **MUST NOT** write `NOT_APPLICABLE`. A model **MAY** propose
-a classification as evidence for the human; the recorded value **MUST** come from
-a human decision. The absence of a graphical UI is **not** evidence that UX does
-not apply.
+**FROZEN.** The Input Manifest **MUST** bind all four of:
 
-**FROZEN.** No separate UX entity is created for TSA-C01. The UX engine is not in
-this slice, and this contract does not remove UX from the product lifecycle or
-permit skipping it silently.
+| Bound value | Rule |
+|---|---|
+| UX Fibery Document ID | The machine identity. A name or URL is not identity. |
+| Current content digest | Computed over the content actually read. |
+| Exact Requirement-scope coverage | Which of this cycle's Requirements the UX covers. |
+| Explicit human approval | Of **this** content digest for **this** scope. |
 
-**DEFERRED.** Where an approved UX artifact physically lives, and how its
-approval evidence is produced, is not decided here.
+**FROZEN.** An arbitrary version label **MUST NOT** substitute for a content
+digest. A URL, a document name or a version string without readable content is
+**insufficient** and **MUST** fail admission.
+
+**FROZEN.** UX that is missing, unreadable, deleted, replaced,
+digest-mismatched or scope-mismatched **MUST** fail admission **before the
+Architect is invoked**. This is an admission check, not only a later drift
+check.
+
+**FROZEN.** Revalidation (section 10) **MUST** detect later content change,
+deletion, replacement and scope drift of that Document, under the single
+definition in section 4.4.
+
+**FROZEN.** The approval TSA records is **TSA-local evidence** with exactly this
+meaning: *this exact UX content digest is approved for this exact Requirement
+scope*. It **MUST NOT** be described, in code, output or artifact, as proof that
+the UX artifact was historically approved through any UX process. This mirrors
+the input-acceptance limit in section 2.2.
+
+### 4.2 `NOT_APPLICABLE`
+
+**FROZEN.** The manifest MUST carry an explicit human decision, a reason, and a
+binding to the exact Requirement input digest it was decided against.
+
+**FROZEN.** This branch **MUST NOT** require a UX Document. The absence of a UX
+Document under `NOT_APPLICABLE` is the **expected** state, never missing
+evidence, and **MUST NOT** be reported as an unreadable or deleted UX artifact.
+
+### 4.3 Authority and boundaries
+
+**FROZEN.** A model **MUST NOT** write `NOT_APPLICABLE`, and **MUST NOT** record
+an `APPLICABLE` approval. A model **MAY** propose a classification as evidence
+for the human; every recorded value **MUST** come from a human decision. The
+absence of a graphical UI is **not** evidence that UX does not apply.
+
+**FROZEN.** No separate UX entity and no UX engine is created for TSA-C01. This
+contract does not remove UX from the product lifecycle or permit skipping it
+silently.
+
+**OBLIGATION.** Reading a UX Document by id, and computing its content digest,
+reuse the existing document read and canonical-fingerprint mechanisms. The
+physical adapter work is **IMPLEMENTATION-SPEC**, tracked with `U-3`; the
+**authority semantics above are frozen here** and are not an open question.
+
+### 4.4 UX currentness — one discriminator-aware definition
+
+**FROZEN.** UX currentness is defined **once**, here, and the recorded
+prerequisite value is the authoritative discriminator. Every consumer — admission
+(section 2), freshness revalidation (section 10), the Recovery Validation Gate
+(section 14.1), approval (section 9) and a downstream consumer's currentness
+check — **MUST** apply this definition and **MUST NOT** define a competing one.
+
+**When the recorded value is `APPLICABLE`**, UX is current only when **all** of:
+
+1. the bound UX Fibery Document **identity** is unchanged;
+2. that Document is still **readable**;
+3. its **complete supported content** can be read;
+4. the **current content digest equals the bound digest**;
+5. the **exact Requirement-scope coverage** still matches;
+6. the **human approval evidence is still bound to this digest for this scope**.
+
+Missing, unreadable, deleted or replaced Document, digest mismatch, or scope
+mismatch ⇒ **stale or invalid**.
+
+**When the recorded value is `NOT_APPLICABLE`**, UX is current only when **all**
+of:
+
+1. the **same explicit human `NOT_APPLICABLE` decision** is present;
+2. the **same reason and evidence record** is present;
+3. its binding still matches the **exact current Requirement-input digest**.
+
+**FROZEN.** Under `NOT_APPLICABLE` the checks of the `APPLICABLE` branch
+**MUST NOT** be applied: there is no Document to read, no digest to compare and
+no scope coverage to match. Drift of the **Requirement input** is what makes a
+`NOT_APPLICABLE` decision stale.
 
 ## 5. Canonical storage
 
 **FROZEN.** The canonical location is Fibery **Project-contained Documents**:
 
 ```text
-Project Root Document
+Project entity  (Project.Documents containment)
 └── <Project Code> — TSA <cycle-id> — Architecture
     ├── TSA <cycle-id> — Input Manifest
     ├── TSA <cycle-id> — Process Result NNNN
@@ -192,13 +261,17 @@ Project Root Document
     └── TSA <cycle-id> — Human Decision NNNN
 ```
 
+**FROZEN.** There is **no additional canonical Project Root Document concept**
+in TSA-C01. The Architecture Document is contained **directly** by the Project
+entity through `Project.Documents`. The **Project entity id** is the
+authoritative container identity.
+
 ### 5.1 Ownership, uniqueness, parentage
 
 **FROZEN.**
 
 - The **Architecture Document** is the single canonical architecture for its
-  cycle. Exactly one exists per cycle. It is contained by the Project entity and
-  parented under the Project Root Document.
+  cycle. Exactly one exists per cycle, contained directly by the Project entity.
 - **Input Manifest**: exactly one per cycle, parented under that cycle's
   Architecture Document.
 - **Process Result NNNN**, **Review Result NNNN**, **Human Decision NNNN**:
@@ -206,9 +279,28 @@ Project Root Document
   the cycle, parented under that cycle's Architecture Document.
 - A cycle's children **MUST NOT** be parented under another cycle's Architecture
   Document, and **MUST NOT** be attached to a Requirement entity.
-- Document names are the identity used by humans; the engine **MUST** resolve
-  documents by their Fibery ids, never by name (Folder and document names are
+- Document names are human and navigation metadata, never machine identity.
+  The engine **MUST** resolve documents by their Fibery ids (document names are
   not unique — Fibery API constraint 2a).
+
+### 5.1.1 Rediscovery after an unknown create outcome
+
+**FROZEN.** A name or cycle id **MAY** be used to **discover candidates** after a
+create whose outcome is unknown. A candidate **MUST NOT** be accepted as machine
+identity until it is validated on all three of:
+
+1. containment by the expected **Project entity**;
+2. the expected **cycle metadata** in its payload;
+3. **uniqueness** among the candidates found.
+
+Outcomes, and only these:
+
+| Candidates for the cycle | Action |
+|---|---|
+| zero valid | Create is permitted. |
+| exactly one valid | Adopt its Fibery id as the cycle's Architecture identity. |
+| more than one plausible or valid | **Refuse.** Do not pick one, do not create another. |
+| any candidate owned by a different Project | **Refuse.** |
 
 ### 5.2 Writability
 
@@ -227,9 +319,11 @@ an independent canonical architecture. Where the two disagree, the Architecture
 Document is canonical for content and the Process Result is canonical for what
 the model returned.
 
-**OBLIGATION.** Creating a Project-contained Document is **not** supported by the
-current adapter (section 17.3). An implementation MUST add it, and MUST verify
-the container semantics against the live workspace before relying on them.
+**OBLIGATION / IMPLEMENTATION-SPEC (`U-3`).** Creating a Project-contained
+Document is **not** supported by the current adapter (section 17.3). An
+implementation MUST add it, and MUST verify the container semantics against the
+live workspace before relying on them. The containment authority above is frozen;
+only the adapter mechanism is open.
 
 ## 6. TSA-local lifecycle
 
@@ -251,7 +345,10 @@ Semantic states, and the artifact pattern that defines each:
 - **REWORK** is an immutable human decision that authorizes the next iteration
   **for the same Input Manifest**. It does not change scope (section 3.2).
 - **APPROVE** is an immutable human decision bound to the exact Architecture,
-  Review and inputs (section 9).
+  Review and inputs (section 9). It **closes the cycle to writes**: after it,
+  the engine **MUST NOT** write the Architecture Document or any further
+  artifact for that cycle, and a `REWORK` for that cycle **MUST** be refused.
+  Further architecture work needs a new cycle (section 3.2).
 - `Project.State` and `Project Phase.State` are **not** TSA lifecycle authority
   and **not** approval authority. The engine **MUST NOT** read them as such and
   **MUST NOT** write them.
@@ -358,7 +455,7 @@ an Architect classification.
 - iteration ordinal;
 - Architecture Document identity **and** content fingerprint;
 - Input Manifest digest;
-- UX evidence digest;
+- UX evidence digest — the content digest of section 4.1 with its scope binding, or the `NOT_APPLICABLE` record digest;
 - Process Result identity and payload digest;
 - Review Result identity and payload digest;
 - the accepted finding and risk dispositions, each named individually.
@@ -411,6 +508,13 @@ normative-tree manifests.
 5. after approval is recorded;
 6. whenever a downstream consumer validates an approval.
 
+**FROZEN.** UX currentness is **not** defined here. Section 4.4 holds the one
+discriminator-aware definition, and revalidation **MUST** apply it as written:
+the `APPLICABLE` checks when the recorded value is `APPLICABLE`, the
+`NOT_APPLICABLE` checks when it is `NOT_APPLICABLE`. A recovery path **MUST NOT**
+use a weaker definition, and no path **MUST** demand a UX Document under
+`NOT_APPLICABLE`.
+
 **FROZEN.** This is **optimistic validation, not an atomic transaction**. Several
 Fibery reads do not form a snapshot. The engine **MUST NOT** claim protection
 against all concurrent external edits; it detects a changed input and refuses,
@@ -429,8 +533,10 @@ contract does not extend, reinterpret or re-version them.
 **OBLIGATION.** Each TSA artifact carries its own schema version and its own
 canonical digest definition, declared in the implementation specification.
 
-**DEFERRED.** The exact digest algorithm, field ordering and serialization of the
-TSA JSON artifacts. An implementation agent **MUST NOT** choose them silently.
+**IMPLEMENTATION-SPEC (`U-4`).** The exact digest algorithm, field ordering and
+serialization of the TSA JSON artifacts. That each artifact carries its own
+version and its own canonical digest is frozen above; only the mechanism is
+open, and an implementation agent **MUST NOT** choose it silently.
 
 ## 12. Execution commands
 
@@ -451,8 +557,24 @@ reviewed against a concrete surface.
 **MUST NOT** be extended for TSA-C01, and no TSA work is dispatched by the
 state-driven runner.
 
-**DEFERRED.** Exact flags, scope-selection syntax for `start`, and output
-rendering.
+### 12.1 Start idempotency
+
+**FROZEN.** The semantic identity of a start operation is fixed **before the
+first Fibery mutation**:
+
+- every start **MUST** carry a stable, caller-supplied **cycle id**, known
+  before the first remote mutation;
+- the cycle id **is** the start idempotency key;
+- retrying `start` with the same cycle id refers to **the same** TSA cycle, and
+  resolves to one of the bootstrap states in section 14.4;
+- starting another cycle **MUST** use a different cycle id, even when the
+  Requirement scope is identical;
+- the engine **MUST NOT** generate a local-only cycle identity after it has
+  begun remote mutations, because such an identity cannot be recovered.
+
+**IMPLEMENTATION-SPEC (`U-7`).** Exact flags, scope-selection syntax for
+`start`, and output rendering. The command set and the start idempotency key are
+frozen above and in section 12.1; only the spelling is open.
 
 ## 13. Single writer
 
@@ -468,8 +590,127 @@ exactly:
 
 ## 14. Recovery
 
-**FROZEN.** Every case below is defined. In all of them the engine **MUST NOT**
-blindly retry a mutation after an unknown transport result (case 9).
+### 14.1 The Recovery Validation Gate
+
+**FROZEN.** Before **any** of the cases in section 14.3 is applied, the engine
+**MUST** establish a Recovery Validation Gate. The cases are the action table
+**after** the gate, never an alternative to it.
+
+**FROZEN — the gate failure rule.** This rule governs both stages below and
+admits no exception. If **either** the bootstrap validation gate (14.1.2) or the
+normal recovery validation gate (14.1.1) fails, the engine:
+
+- **MUST** perform **no mutation** — not a recovery write, not a bootstrap
+  write, not any other write;
+- **MUST** perform **no model call**;
+- **MUST** return a controlled refusal, naming the offending artifact by
+  controlled identity.
+
+A bootstrap write is permitted **only after the bootstrap gate succeeds**. No
+clause elsewhere in this contract authorizes a mutation once a gate has failed.
+
+**FROZEN.** The gate has **two stages**, selected by whether a valid accepted
+Input Manifest exists. The distinction is not a relaxation: each stage validates
+every fact that already exists at that point.
+
+| Stage | When | Gate |
+|---|---|---|
+| **Bootstrap gate** | No valid accepted Input Manifest yet — states A–C of section 14.4 | Section 14.1.2 |
+| **Normal gate** | A valid accepted Input Manifest exists — state D onward | Section 14.1.1 |
+
+#### 14.1.1 Normal gate
+
+**FROZEN.** Applies to every recovery **after** a valid accepted Input Manifest
+exists. It **MUST** validate at least:
+
+1. exact cycle identity;
+2. expected Project ownership;
+3. artifact uniqueness;
+4. required parentage and containment;
+5. schema and payload parsing;
+6. declared payload digests;
+7. Input Manifest integrity and its human-acceptance binding;
+8. exact Process / Review / Decision lineage;
+9. Requirement input currentness;
+10. UX input currentness, under the discriminator-aware definition of
+    section 4.4 — and only the branch the recorded value selects;
+11. the Architecture fingerprint the candidate case needs;
+12. absence of conflicting Human Decisions.
+
+**FROZEN.** A failure of this gate is governed by the gate failure rule in
+section 14.1: no mutation, no model call, controlled refusal.
+
+**FROZEN.** Three consequences that follow from the gate and are stated so they
+cannot be argued away case by case:
+
+- A persisted Process output **MUST NOT** be replayed when the current
+  Requirement or UX inputs are stale. Recovery **MUST NOT** bypass freshness.
+- A Review Result **MUST NOT** restore the `Human Decision` state unless it is
+  bound to the exact current Process, Architecture and input tuple.
+- An `APPROVE` decision **MAY** remain as history while currentness is stale.
+  `resume` **MUST NOT** make a stale historical approval current.
+
+**FROZEN.** Duplicate Process Results or duplicate Review Results for one
+iteration, and conflicting `REWORK`/`APPROVE` decisions for one iteration, fail
+the gate (criteria 3, 8 and 12) **before** any recovery action is chosen.
+
+#### 14.1.2 Bootstrap gate
+
+**FROZEN.** Applies to states A–C of section 14.4, **before** a valid accepted
+Input Manifest exists.
+
+**FROZEN.** The absence of an Input Manifest, or of human acceptance, is **not**
+a gate failure at this stage: those artifacts are precisely what bootstrap is
+creating. Criteria 7, 8, 9, 10 and 11 of the normal gate are therefore not yet
+applicable.
+
+**FROZEN.** Everything that already exists **MUST** still be validated. The
+bootstrap gate **MUST** check at least:
+
+1. a stable cycle id;
+2. exact Project ownership;
+3. Architecture candidate uniqueness;
+4. candidate containment by that Project entity;
+5. cycle metadata consistency;
+6. no conflicting or malformed non-empty bootstrap artifact;
+7. no evidence that this cycle was already completed under another state.
+
+**FROZEN.** **Once the bootstrap gate has succeeded**, only the **minimum
+bootstrap write** needed to advance A → B → C → accepted Manifest is permitted
+at this stage. A failed bootstrap gate permits **zero** writes.
+
+**FROZEN.** Before a valid accepted Input Manifest exists, the engine **MUST
+NOT**:
+
+- make an Architect model call;
+- replay a persisted Process output;
+- make a Reviewer call;
+- record a human `APPROVE`;
+- enter any normal recovery case that requires accepted inputs.
+
+**FROZEN.** Once a valid accepted Input Manifest exists, bootstrap classification
+**ends** and the normal gate of section 14.1.1 applies in full.
+
+**FROZEN.** A failure of this gate is governed by the gate failure rule in
+section 14.1: no mutation, no model call, controlled refusal. Neither stage
+introduces a second state store or a journal — both classify from durable Fibery
+state alone.
+
+### 14.2 Mutation discipline
+
+**FROZEN.** Around every recovery mutation:
+
+- **before** the write, revalidate the preconditions immediately, not once at
+  the start of the command;
+- **after** the write, read back and validate the intended result;
+- if drift is observed on read-back, the engine **MUST NOT** report a successful
+  or current transition.
+
+### 14.3 Case table
+
+**FROZEN.** Every case below is defined, and each is reached only through the
+gate. In all of them the engine **MUST NOT** blindly retry a mutation after an
+unknown transport result (case 9).
 
 | # | Observed state | Required behaviour |
 |---|---|---|
@@ -483,6 +724,38 @@ blindly retry a mutation after an unknown transport result (case 9).
 | 8 | A non-empty Result exists but is malformed | Refuse. Do not repair it, do not overwrite it, do not treat it as absent. Report its identity. |
 | 9 | Create or write returned an unknown outcome (timeout, dropped connection) | Re-read before any further write. Classify into cases 1–8 from what is actually there. **MUST NOT** retry the mutation blind. |
 | 10 | Restart at a human boundary (`Review` complete, no decision) | Present the exact iteration's evidence again. Do not re-invoke any model. Do not assume the previous presentation implies a decision. |
+
+### 14.4 Initial bootstrap states
+
+**FROZEN.** A cycle is classified by its cycle id into one of these durable
+states. States A–C precede a valid accepted Input Manifest and are reached
+through the bootstrap gate (section 14.1.2); state D leaves bootstrap entirely.
+
+| | Durable state | Required behaviour |
+|---|---|---|
+| **A** | No Architecture Document for this cycle id | Create the Architecture Document, contained directly by the Project entity. |
+| **B** | Exactly one valid Architecture shell for this cycle, no valid Input Manifest | Resume bootstrap for that **same** cycle, only after validating Project ownership and cycle identity. |
+| **C** | Architecture shell exists, Input Manifest or human acceptance never completed | The shell's existence **MUST NOT** imply acceptance. Explicit human manifest acceptance is still required before any Architect call. |
+| **D** | Valid, accepted Input Manifest exists | **Bootstrap is complete.** Run the **normal recovery classification** of section 14.3 under the normal gate (14.1.1). State D **MUST NOT** be read as "case 1". |
+| **E** | Multiple candidates, wrong Project ownership, conflicting metadata, or malformed non-empty bootstrap state | **Refuse.** Do not create a second cycle under the same cycle id. |
+
+**FROZEN.** In state D, section 14.3 decides the case from durable state, not
+from the fact that a command was re-issued: case 1 **only** when no valid
+Process Result exists; cases 2 or 3 when a Process Result exists; case 5 when a
+Review Result exists; case 6 when a Human Decision exists; cases 4, 7, 8 and 9
+on the divergences they name.
+
+**FROZEN.** A repeated `start` for the same cycle id **MUST** therefore recover
+the **actual durable state**, never assume `Draft`. In particular:
+
+- retry after Review ⇒ the `Human Decision` boundary, and **no model call**;
+- retry after `APPROVE` ⇒ approved / historical-currentness handling, with **no
+  writes and no rework**;
+- retry **never** creates a second cycle for the same cycle id.
+
+**FROZEN.** After an unknown create or write outcome during bootstrap, the
+engine **MUST** first rediscover and re-read by cycle id (section 5.1.1), then
+classify one of A–E. **No blind duplicate create.**
 
 **FROZEN.** Recovery is driven by **reading durable state**, never by a local
 journal or remembered intent.
@@ -514,7 +787,9 @@ with Claude as the runtime, following the existing selection precedence.
 
 This matrix covers every scenario of the independent design review's section 5
 (28 scenarios), reconciled row by row in section 16.1, plus the recovery cases
-frozen in section 14 and obligations this contract adds.
+frozen in section 14 and obligations this contract adds. Rows 36–49 were added
+by the `CONTRACT_CHANGES_REQUIRED` review of candidate `5d7f609`; they are
+corrections to this matrix, not further section 5 scenarios.
 
 Three evidence classes are kept apart, because they prove different things.
 
@@ -532,15 +807,15 @@ Three evidence classes are kept apart, because they prove different things.
 | 4 | Duplicate id in the selection, or a set spanning two Projects → admission refusal **before any model call** | review §5, §2.1 | D |
 | 5 | Selected Requirement not `Applied` → refused | §2.1 | D |
 | 6 | Requirement Root **or** child changed, added, deleted, renamed or reparented after freeze → tree mismatch; refused at the next revalidation; inputs are never auto-refreshed | review §5 | D |
-| 7 | Changed UX evidence after freeze → approval unavailable | brief §8 | D |
+| 7 | `APPLICABLE` UX content, Document identity or scope changed after freeze → stale under §4.4; approval unavailable | brief §5, §4.4 | D |
 | 8 | Architecture Document changed after review → approval unavailable | brief §8 | D |
-| 9 | Repeat `start`, `resume` or `approve` → same cycle, iteration and decision; no duplicate artifacts and no further model call when the output is already complete | review §5 | D |
+| 9 | Repeat `start`, `resume` or `approve` for one cycle id → the actual durable state is recovered, never assumed `Draft`: after Process, cases 2/3; after Review, the human boundary with no model call; after `APPROVE`, no write and no rework. Same cycle, no duplicate artifacts | review §5, §14.4 | D |
 | 10 | Incomplete write / partial persistence → recovery cases 1–9 | brief §8, §14 | D |
 | 11 | No human decision recorded → nothing advances, nothing is inferred | brief §8, §14 case 10 | D |
 | 12 | Requirement set changed → new cycle required, REWORK refused | §3.2 | D |
 | 13 | Architect omits an included Requirement from traceability → refused | §8.1 | D |
 | 14 | Architect marks an included Requirement N/A → refused | §8.1 | D |
-| 15 | Architect emits a Task/Epic/estimate/code → refused | §8.2 | D for the validator; M for whether the model complies |
+| 15 | Architect emits a structurally recognisable Task, Epic, estimate or code block → refused by the validator | §8.2 | D |
 | 16 | Material unresolved WHAT → approval unavailable, not waivable | §7.4, §9.3 | D |
 | 17 | Contradiction between admitted Requirements → all sources surfaced, no silent winner | §7.5 | D for surfacing; M for detection |
 | 18 | Reviewer attempts to rewrite the Architecture Document → refused | §7.2 | D |
@@ -548,22 +823,49 @@ Three evidence classes are kept apart, because they prove different things.
 | 20 | Approval with an accepted technical risk → recorded, approval proceeds | §9.2 | D |
 | 21 | Two cooperating commands, same host and user → mutual exclusion | §13 | D |
 | 22 | External Fibery UI edit during a cycle → detected at revalidation, refused | §13, §10 | F |
-| 23 | Project-contained Document creation and nesting behave as assumed | §5.2, §16.3 | F |
+| 23 | Project-contained Document creation and nesting behave as assumed | §5.2, §17.3 | F |
 | 24 | Architect produces one integrated architecture, not a catalogue | §7.1 | M |
 | 25 | Reviewer independently disagrees with a real Architect output | §7.2 | M |
 | 26 | Only the selected ids enter the manifest; no other Applied or Draft Requirement is added | review §5 | D |
 | 27 | Admitted Requirement carries missing, legacy (Result 0.1/0.2, manifest v1) or incoherent evidence → refusal; no backfill and no Requirement processing is triggered | review §5 | D |
 | 28 | `Applied` set by hand, with otherwise matching Process/Review → admitted only on explicit human input acceptance; no output or artifact claims historical Apply | review §5, §2.2 | D |
-| 29 | UX `NOT_APPLICABLE` carrying a human decision, a reason and the input binding → accepted | review §5, §4 | D |
+| 29 | UX `NOT_APPLICABLE` carrying a human decision, a reason and the input binding → accepted and **current with no UX Document present**; absence of a Document is not missing evidence | review §5, §4.2, §4.4 | D |
 | 30 | Architect answers a product question instead of producing HOW → the invention is visible in evidence, no Requirement changes, approval unavailable | review §5 | D for the refusal; M for detection |
 | 31 | Human REWORK → immutable decision, iteration N+1 on the same manifest, earlier iterations intact | review §5, §6 | D |
 | 32 | Human APPROVE → the exact bound tuple is revalidated at decision time, then an immutable Decision is written | review §5, §9 | D |
 | 33 | Model invocation fails → no false success; exactly one explicit retry, and only after the inputs are rechecked | review §5 | D |
 | 34 | Approval persisted, then a bound input drifts → the approval stays as history, is not current, and a downstream consumer refuses it | review §5, §10 | D |
 | 35 | Whole cycle leaves zero downstream side effects: no Epic, Story or Task, no code, no deployment, no Requirement, Project or Project Phase state mutation | review §5, §8.2 | D |
+| 36 | Task, Epic or product invention embedded in otherwise allowed prose → detected | §8.2 | M |
+| 37 | UX content digest or scope already mismatched **at admission** → refused before the Architect call | §4.1 | D |
+| 38 | UX Document id unreadable, deleted or replaced at admission → refused | §4.1 | D |
+| 39 | Zero valid Architecture candidates for a cycle id → create permitted; more than one plausible candidate, or one owned by another Project → refusal | §5.1.1 | D |
+| 40 | Bootstrap states A–C without an accepted Input Manifest → the missing Manifest is not a gate failure; only the minimum bootstrap write advances A→B→C; no Architect call, no Process replay, no Reviewer call, no `APPROVE`. Shell existence never implies acceptance | §14.1.2, §14.4 | D |
+| 41 | Persisted Process output present but Requirement or UX inputs stale → replay refused | §14.1 | D |
+| 42 | Duplicate Process Results, duplicate Review Results, or conflicting `REWORK`/`APPROVE` for one iteration → gate failure before any recovery action | §14.1 | D |
+| 43 | Process output payload digest invalid → gate failure, no replay, no overwrite | §14.1 | D |
+| 44 | Review Result bound to a different Process payload → does not restore the human boundary | §14.1 | D |
+| 45 | Reviewer reports a defect on a valid cycle → Review evidence persisted, Architecture Document unchanged, cycle stops at the human boundary | review §5, §7.2 | D |
+| 46 | Human manifest acceptance missing, or bound to a different manifest digest → treated as absent; Architect call refused | §3.3 | D |
+| 47 | `resume` on an approved cycle → no write, no model call; a stale historical approval is not made current | §14.1 | D |
+| 48 | `REWORK` after `APPROVE` → refused; the cycle is closed to writes | §6, §9 | D |
+| 49 | Accepted finding or risk disposition references an unknown or duplicated id → refused | §9.2 | D |
+| 50 | Requirement input digest drifts while UX is `NOT_APPLICABLE` → the N/A decision goes stale under §4.4; approval unavailable, with no UX Document ever consulted | §4.2, §4.4 | D |
 
 **FROZEN.** A `D` test **MUST NOT** be reported as evidence for an `M` or `F`
 row. An implementation is not complete on `D` alone.
+
+**FROZEN.** Rows 15 and 36 split one prohibition on purpose. A deterministic
+validator proves only **structural** rejection: an output shaped as a Task, an
+Epic, an estimate or a code block. A Task, an Epic or an invented product
+obligation expressed inside otherwise allowed prose is a **semantic** defect;
+only `M` evidence can show it is detected. An implementation **MUST NOT** claim
+that the row 15 validator proves the row 36 recognition.
+
+**OBLIGATION.** Row 49 becomes testable once the finding and risk disposition
+identifier schema exists. That schema is implementation-spec work under `U-4`;
+the row is stated now so it is not forgotten, and it **MUST NOT** be reported as
+passing before that schema is defined.
 
 ### 16.1 Review section 5 → contract section 16
 
@@ -627,17 +929,28 @@ to row 10, which is itself defined by the ten cases of section 14 — row 10 is 
 pointer to that table, not a summary of it.
 
 **Rows without a direct §5 counterpart.** Rows 12, 13, 14, 15, 19, 20, 23 and 24
-come from other parts of the same review — §3 group 1 (a changed Requirement set
-starts a new cycle), §4.3 (deterministic coverage validation, the forbidden-output
-list), §4.4 (approval binding and explicit risk acceptance), §4.2 (one integrated
-architecture) and §7 STILL UNVERIFIED (live Project-document containment). No row
-is orphaned.
+come from other parts of the same review. Throughout this paragraph the section
+numbers are the **review's**, not this contract's: review §3 group 1 (a changed
+Requirement set starts a new cycle), review §4.3 (deterministic coverage
+validation, the forbidden-output list), review §4.4 (approval binding and
+explicit risk acceptance), review §4.2 (one integrated architecture) and review
+§7 STILL UNVERIFIED (live Project-document containment). No row is orphaned.
 
 **Live-probe caveat.** The review closes §5 by noting that fake tests prove
 contract handling and authority boundaries, while a live model's ability to
 detect product invention, coverage gaps and conflicts needs separate controlled
-probes. That caveat is carried by rows 24, 25 and 30, and by the `M` half of
-rows 15 and 17.
+probes. That caveat is carried by rows 24, 25, 30 and 36, and by the `M` half of
+row 17. Row 15 no longer carries an `M` half: the second review split it, and
+the semantic case is row 36.
+
+**Rows added by the second review.** Rows 36–49 close gaps the
+`CONTRACT_CHANGES_REQUIRED` review found in this matrix: admission-time UX
+mismatch (37, 38), Architecture candidate resolution (39), partial bootstrap
+(40), freshness before replay (41), duplicate and conflicting artifacts (42, 44),
+invalid output digest (43), the ordinary Reviewer-defect path (45), manifest
+acceptance binding (46), approved-cycle `resume` (47), `REWORK` after `APPROVE`
+(48), and disposition-reference validity (49). They map to sections 4.1, 5.1.1,
+14.1 and 14.4 rather than to review §5.
 
 ## 17. Verified repository facts
 
@@ -682,29 +995,49 @@ roles do not exist and are an obligation, not a fact.
 
 ## 18. Unresolved items
 
-These are **DEFERRED**. An implementation agent **MUST NOT** decide them alone.
+Two classes are kept apart, because they carry different risk. An
+implementation agent **MUST NOT** decide either alone, but only the first is an
+open **authority** question.
 
-`U-1` (reconcile section 16 with the review's section 5) was **closed** on
+- **DEFERRED** — an authority, policy or semantics question this contract does
+  not answer. It **MUST** be answered by a human decision or a new contract
+  version before the affected behaviour is built.
+- **IMPLEMENTATION-SPEC** — the authority is frozen here; what remains is the
+  mechanism, and it belongs in the implementation specification that a bounded
+  work item would carry. It is not an open question about *what is allowed*.
+
+### 18.1 Closed
+
+`U-1` (reconcile section 16 with the review's section 5) was closed on
 2026-09-28: the review was read in full and all 28 of its section 5 scenarios
-are mapped in section 16.1. The identifiers below keep their original numbers so
-earlier references stay valid.
+are mapped in section 16.1.
 
-| # | Item | Why it is open |
-|---|---|---|
-| `U-2` | Apply-time provenance | No artifact binds approved content to the Apply transition (17.2). Section 2.2 works around it with explicit human acceptance; a durable fix is out of scope. |
-| `U-3` | Project-contained Document creation and nesting semantics | Not implemented, not probed (17.3). |
-| `U-4` | TSA JSON artifact digest algorithm and serialization | Section 11.2. |
-| `U-5` | Storage and approval evidence of an approved UX artifact | Section 4. |
-| `U-6` | Authenticated approver identity | Section 9.4. |
-| `U-7` | Exact CLI flags and scope-selection syntax | Section 12. |
-| `U-8` | Whether `Project Phase` is written at all by a future slice | This contract only forbids using it as TSA authority (section 6); it does not decide its future use. |
+`U-5` (admissible UX evidence) was closed on 2026-09-29 by the
+`CONTRACT_CHANGES_REQUIRED` review of candidate `5d7f609`. Section 4.1 now
+freezes the interface: one readable Fibery Document resolved by id, complete
+content read, a manifest binding of id + content digest + exact scope + explicit
+human approval of that digest for that scope, no version label as a substitute,
+admission failure before the Architect call, and drift detection on
+revalidation. The remaining adapter mechanics are tracked as
+IMPLEMENTATION-SPEC under `U-3`, not as an open authority question.
 
-The review does not close any of these. The review's own STILL UNVERIFIED list
-independently names `U-2` (historical Apply provenance), `U-3` (real
-Project-document containment and discovery in the working Fibery), `U-5`
-(external UX artifacts and their fitness for exact version binding) and live
-model and runtime behaviour, so they remain DEFERRED here on the review's own
-evidence rather than despite it.
+Identifiers keep their original numbers so earlier references stay valid.
+
+### 18.2 Open
+
+| # | Item | Class | Why |
+|---|---|---|---|
+| `U-2` | Apply-time provenance | DEFERRED | No artifact binds approved content to the Apply transition (17.2). Section 2.2 works around it with explicit human acceptance; no historical Apply proof is added by this contract. |
+| `U-3` | Project-contained Document adapter, nesting API semantics, read-back verification, live Fibery probe | IMPLEMENTATION-SPEC | Containment authority is frozen in section 5; the adapter does not exist and the behaviour is unprobed (17.3). |
+| `U-4` | Canonical TSA JSON serialization and digest algorithm | IMPLEMENTATION-SPEC | Section 11.2. Row 49 of section 16 depends on the disposition identifier schema this settles. |
+| `U-6` | Authenticated approver identity | DEFERRED | Section 9.4. The runtime supplies none; the contract forbids claiming one. |
+| `U-7` | Exact CLI flags and scope-selection syntax | IMPLEMENTATION-SPEC | Section 12. The command semantics and the start idempotency key are frozen in 12.1; only the spelling is open. |
+| `U-8` | Whether `Project Phase` is written at all by a future slice | DEFERRED | This contract only forbids using it as TSA authority (section 6); it does not decide its future use. |
+
+The first review closed none of these; its own STILL UNVERIFIED list
+independently names `U-2`, `U-3` and live model and runtime behaviour. The
+second review closed `U-5` and reclassified `U-3`, `U-4` and `U-7` as mechanism
+rather than authority. No item was closed silently.
 
 ## 19. Sources
 
