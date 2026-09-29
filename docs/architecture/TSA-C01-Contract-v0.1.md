@@ -1,9 +1,9 @@
-# TSA-C01 — Technical Solution Architecture Contract v0.1 DRAFT
+# TSA-C01 — Technical Solution Architecture Contract v0.1
 
-**Status:** DRAFT. Not APPROVED, not VERIFIED.
+**Status:** FROZEN.
 **Implementation authorized:** NO.
 **Rewrite/work item:** `TSA-C01`.
-**Repository baseline:** `ros-datonum/sdlc`, `main` at `a38d2c3b446961d1a8cf53770d998819d27e5480`.
+**Repository baseline:** `ros-datonum/sdlc`, `main` at `8ebbca99aaea22e2b5fd621b609619462961b135`.
 
 This document converts the proposed design into one bounded, internally
 consistent contract for the **first Technical Solution Architecture vertical
