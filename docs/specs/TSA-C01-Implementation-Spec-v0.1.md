@@ -1,6 +1,6 @@
-# TSA-C01 — Implementation Specification v0.1 DRAFT
+# TSA-C01 — Implementation Specification v0.1
 
-**Status:** DRAFT. Not APPROVED, not VERIFIED.
+**Status:** FROZEN.
 **Implementation authorized:** NO.
 **Authority source:** `docs/architecture/TSA-C01-Contract-v0.1.md` (frozen).
 **Repository baseline:** `ros-datonum/sdlc`, `main` at `8916d900eec390e9d36673d27755a4a567b6a642`.
