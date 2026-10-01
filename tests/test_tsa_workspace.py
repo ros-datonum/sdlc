@@ -1138,24 +1138,37 @@ def test_a_container_type_object_without_an_id_stays_none():
 
 
 # ==========================================================================
-# The fake's duplicate-id behaviour is an assumption, not evidence
+# The fake's duplicate-id behaviour is live-confirmed by P-1
 # ==========================================================================
 
 
-def test_fake_duplicate_id_behaviour_is_labelled_provisional():
+def test_fake_duplicate_id_behaviour_cites_the_p1_evidence():
+    """The behaviour is live-confirmed, so the comment must cite it, not guess."""
     import inspect
 
     import architecture_fake
 
     source = inspect.getsource(architecture_fake)
-    assert "PROVISIONAL ASSUMPTION, pending P-1" in source
     # The claim is a wrapped comment block, so strip the markers and the line
     # breaks before asserting on it.
     flattened = " ".join(source.replace("#", " ").split())
-    assert (
-        "Nothing here is evidence that the live Views API behaves this way" in flattened
+    assert "Live-confirmed by P-1 (I03)" in flattened
+    assert "docs/specs/TSA-C01-I03-P1-Live-Evidence-v0.1.md" in flattened
+    # The superseded provisional wording is gone.
+    assert "PROVISIONAL ASSUMPTION" not in source
+
+
+def test_the_fake_still_refuses_a_duplicate_caller_supplied_id():
+    """Behaviour coverage, independent of how the comment is worded."""
+    workspace = fake()
+    workspace.create_project_document(
+        ARCHITECTURE_ID, "Architecture", PROJECT_PUBLIC_ID
     )
-    assert "BEFORE the capability is recorded as verified" in flattened
+
+    with pytest.raises(FiberyError, match="already exists"):
+        workspace.create_project_document(
+            ARCHITECTURE_ID, "Architecture", PROJECT_PUBLIC_ID
+        )
 
 
 # ==========================================================================

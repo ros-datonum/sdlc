@@ -121,14 +121,12 @@ class FakeArchitectureWorkspace:
         self, document_id: str, name: str, **placement: str | None
     ) -> DocumentNode:
         if document_id in self.documents:
-            # PROVISIONAL ASSUMPTION, pending P-1 (I03). The frozen
-            # deterministic-id semantics need a second create at the same id to
-            # be refused, and the D-class tests model that. Nothing here is
-            # evidence that the live Views API behaves this way: `create-views`
-            # has not been probed with a duplicate `fibery/id`. If P-1 shows
-            # Fibery accepting or silently updating instead, this fake is
-            # corrected and a regression test added BEFORE the capability is
-            # recorded as verified.
+            # Live-confirmed by P-1 (I03): `create-views` rejects a duplicate
+            # caller-supplied `fibery/id` and leaves the existing Document
+            # untouched — name, placement and content all unchanged. That is
+            # what makes a retry at a deterministic id safe after an unknown
+            # write outcome. Evidence:
+            # docs/specs/TSA-C01-I03-P1-Live-Evidence-v0.1.md
             raise FiberyError(f"Document {document_id!r} already exists.")
         self.mutations.append(f"create:{document_id}")
         if self.swallow_creates:
