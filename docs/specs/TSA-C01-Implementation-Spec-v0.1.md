@@ -87,7 +87,7 @@ class ArchitectureWorkspace(Protocol):
 
     def documents_attached_to_project(
         self, project_public_id: str
-    ) -> list[DocumentNode]: ...
+    ) -> list[DocumentPlacement]: ...   # DocumentPlacement is defined in 2.2.1
 
     # -- reused, unchanged ----------------------------------------------
     def create_child_document(
@@ -353,8 +353,8 @@ not design authority and does not choose a storage model.
 **PROBE — `P-1`.** Nothing in this section may be claimed verified until a
 read-only-then-narrow-write probe on a scratch Project confirms, on the live
 workspace: that a Document can be created contained by a Project entity; that
-`documents_attached_to_project` returns it; that `create_child_document` nests
-under it; that `child_documents` returns the child; and that content survives
+`documents_attached_to_project` returns it; that `create_tsa_child_document`
+nests under it; that `child_documents` returns the child; and that content survives
 write → read-back byte-exact inside the `` ```json `` fence.
 
 **SPEC — fake-vs-live discrepancy rule.** The in-memory fake used by `D` tests
