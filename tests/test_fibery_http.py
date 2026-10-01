@@ -26,9 +26,11 @@ SPACE_ROWS = [
     {"fibery/id": SPACE_ID, "fibery/name": "SDLC"},
 ]
 
+PROJECT_TYPE_ID = "7c9f1b5e-2a44-4c8d-9f31-0b6e5d2a4c10"
 PROJECT_SCHEMA = {
     "fibery/types": [
         {
+            "fibery/id": PROJECT_TYPE_ID,
             "fibery/name": "SDLC/Project",
             "fibery/fields": [
                 {"fibery/name": "fibery/id", "fibery/type": "fibery/uuid"},
@@ -183,7 +185,8 @@ def test_field_names_are_resolved_from_the_workspace_schema():
 
     query = opener.requests[1]["body"][0]["args"]["query"]
     assert query["q/from"] == "SDLC/Project"
-    assert query["q/select"][1:3] == ["SDLC/Name", "SDLC/Code"]
+    assert query["q/select"][1] == "fibery/public-id"
+    assert query["q/select"][2:4] == ["SDLC/Name", "SDLC/Code"]
     assert "SDLC/Documents Root Folder ID" not in query["q/select"]
     assert query["q/where"] == ["=", ["SDLC/Name"], "$name"]
 
@@ -202,6 +205,7 @@ def test_missing_required_field_is_reported():
     schema = {
         "fibery/types": [
             {
+                "fibery/id": PROJECT_TYPE_ID,
                 "fibery/name": "SDLC/Project",
                 "fibery/fields": [
                     {"fibery/name": "SDLC/Name", "fibery/type": "fibery/text"},
@@ -229,6 +233,7 @@ def test_project_rows_are_mapped_onto_records():
                 [
                     {
                         "fibery/id": "p1",
+                        "fibery/public-id": "1",
                         "SDLC/Name": "SDLC",
                         "SDLC/Code": "SDLC",
                         "SDLC/Documents Root Folder ID": "folder-1",
@@ -251,6 +256,7 @@ def test_a_project_database_without_the_legacy_root_folder_field_still_resolves(
     schema = {
         "fibery/types": [
             {
+                "fibery/id": PROJECT_TYPE_ID,
                 "fibery/name": "SDLC/Project",
                 "fibery/fields": [
                     {"fibery/name": "SDLC/Name", "fibery/type": "fibery/text"},
@@ -260,7 +266,12 @@ def test_a_project_database_without_the_legacy_root_folder_field_still_resolves(
             }
         ]
     }
-    opener = StubOpener([ok(schema), ok([{"fibery/id": "p1", "SDLC/Code": "SDLC"}])])
+    opener = StubOpener(
+        [
+            ok(schema),
+            ok([{"fibery/id": "p1", "fibery/public-id": "1", "SDLC/Code": "SDLC"}]),
+        ]
+    )
     workspace = FiberyHttpWorkspace(
         FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
     )

@@ -75,7 +75,14 @@ class FiberyStandIn:
         assert args["type"] == PROJECT_DATABASE
         project_id = f"project-{self.next_id}"
         self.next_id += 1
-        self.projects[project_id] = {"fibery/id": project_id, **args["entity"]}
+        # Fibery allocates the public id atomically on create; it is a
+        # different value from the entity uuid and is what a contained
+        # Document's container-entity-id carries.
+        self.projects[project_id] = {
+            "fibery/id": project_id,
+            "fibery/public-id": str(self.next_id - 1),
+            **args["entity"],
+        }
         return {"fibery/id": project_id}
 
     def _update(self, args):

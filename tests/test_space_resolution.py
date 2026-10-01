@@ -183,10 +183,12 @@ def test_the_client_and_its_adapters_read_one_resolved_id():
 
 # -- the command that needs it ---------------------------------------------
 
+PROJECT_TYPE_ID = "7c9f1b5e-2a44-4c8d-9f31-0b6e5d2a4c10"
 REQUIREMENT_TYPE_ID = "0cbb35c1-b71f-4429-b45e-4a9fd5ada7c2"
 SCHEMA = {
     "fibery/types": [
         {
+            "fibery/id": PROJECT_TYPE_ID,
             "fibery/name": "SDLC/Project",
             "fibery/fields": [
                 {"fibery/name": "SDLC/Name", "fibery/type": "fibery/text"},

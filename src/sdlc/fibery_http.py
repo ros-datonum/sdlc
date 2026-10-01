@@ -16,6 +16,7 @@ from sdlc.comparison_context import COMPARISON_RECORD_LIMIT
 from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_workspace import (
     DocumentNode,
+    DocumentPlacement,
     FiberyError,
     ProjectRecord,
     RequirementRecord,
@@ -105,6 +106,10 @@ class _ProjectSchema:
     code_field: str
     description_field: str | None
     state_type: str
+    # The Database's own Fibery type id, which is what a Document's
+    # container-entity-type carries. Resolved from the schema, never assumed
+    # to equal the Database's qualified name.
+    type_id: str
 
 
 class FiberyHttpWorkspace:
@@ -119,6 +124,11 @@ class FiberyHttpWorkspace:
         self._client = client
         self._space = space
         self._schema: _ProjectSchema | None = None
+
+    @property
+    def project_type_id(self) -> str:
+        """The Project Database's own Fibery type id, from the live schema."""
+        return self._project_schema().type_id
 
     @property
     def project_database(self) -> str:
@@ -261,6 +271,7 @@ class FiberyHttpWorkspace:
                         "q/from": self.project_database,
                         "q/select": [
                             ID_FIELD,
+                            PUBLIC_ID_FIELD,
                             schema.name_field,
                             schema.code_field,
                             {WORKFLOW_STATE_FIELD: [ENUM_NAME_FIELD]},
@@ -275,11 +286,20 @@ class FiberyHttpWorkspace:
         )
 
     def _to_record(self, schema: _ProjectSchema, row: dict[str, Any]) -> ProjectRecord:
+        public_id = row.get(PUBLIC_ID_FIELD)
+        if not public_id:
+            # Every Fibery entity has one, and a Document's container-entity-id
+            # is this value. Returning an empty one would hand a caller an
+            # identity that silently matches nothing.
+            raise FiberyError(
+                f"Project {row.get(ID_FIELD)!r} came back without a {PUBLIC_ID_FIELD}."
+            )
         return ProjectRecord(
             id=row[ID_FIELD],
             name=row.get(schema.name_field) or "",
             code=row.get(schema.code_field),
             state=(row.get(WORKFLOW_STATE_FIELD) or {}).get(ENUM_NAME_FIELD),
+            public_id=str(public_id),
         )
 
     def _project_schema(self) -> _ProjectSchema:
@@ -288,9 +308,10 @@ class FiberyHttpWorkspace:
         return self._schema
 
     def _resolve_project_schema(self) -> _ProjectSchema:
-        fields = _project_type_fields(
+        entry = _database_entry(
             self._client.command("fibery.schema/query"), self.project_database
         )
+        fields = entry.get(FIELDS_KEY, [])
         by_label = _index_fields_by_label(fields, self._space)
         by_name = {field.get(FIELD_NAME_KEY): field for field in fields}
 
@@ -313,13 +334,30 @@ class FiberyHttpWorkspace:
                 else None
             ),
             state_type=state_field[FIELD_TYPE_KEY],
+            type_id=_require_database_type_id(entry, self.project_database),
         )
 
 
-def _project_type_fields(schema: Any, database: str) -> list[dict[str, Any]]:
+def _require_database_type_id(entry: dict[str, Any], database: str) -> str:
+    """The Database's own type id, refused unless the schema really carries one.
+
+    It ends up inside `container-entity-type`, so a missing or empty value would
+    otherwise be sent as part of a create and bind a Document to nothing.
+    """
+    type_id = entry.get(ID_FIELD)
+    if not isinstance(type_id, str) or not type_id.strip():
+        raise FiberyError(
+            f"Database {database!r} has no usable {ID_FIELD} in the workspace "
+            f"schema (found {type_id!r})."
+        )
+    return type_id
+
+
+def _database_entry(schema: Any, database: str) -> dict[str, Any]:
+    """The schema entry for one Database, carrying both its fields and its id."""
     for entry in (schema or {}).get(TYPES_KEY, []):
         if entry.get(FIELD_NAME_KEY) == database:
-            return entry.get(FIELDS_KEY, [])
+            return entry
     raise FiberyError(f"Database {database!r} was not found in the workspace schema.")
 
 
@@ -737,7 +775,422 @@ def _to_document(view: dict[str, Any]) -> DocumentNode:
         folder_id=(view.get(VIEW_FOLDER_KEY) or {}).get(ID_FIELD),
         entity_public_id=view.get(VIEW_CONTAINER_ENTITY_ID_KEY),
         secret=meta.get(DOCUMENT_SECRET_META_KEY),
+        # The field has always been declared; the view has always carried the
+        # value. Leaving it None made the record lie about a nested Document.
+        parent_document_id=view.get(VIEW_PARENT_PAGE_KEY),
     )
+
+
+def _optional_scalar(view: dict[str, Any], key: str) -> str | None:
+    """A placement scalar: absent stays absent, a wrong shape is a refusal."""
+    value = view.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise FiberyError(
+            f"Document view {view.get(ID_FIELD)!r} carries {key} as "
+            f"{type(value).__name__}; a scalar was expected."
+        )
+    return value
+
+
+def _optional_mapping(view: dict[str, Any], key: str) -> dict[str, Any]:
+    """A placement sub-object: absent reads as empty, a wrong shape refuses."""
+    value = view.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise FiberyError(
+            f"Document view {view.get(ID_FIELD)!r} carries {key} as "
+            f"{type(value).__name__}; an object was expected."
+        )
+    return value
+
+
+@dataclass(frozen=True)
+class _ParsedView:
+    """One Views API row, every field validated once.
+
+    Both TSA records are built from this, so a malformed response is refused
+    identically whichever one a caller asked for.
+    """
+
+    document_id: str
+    name: str
+    secret: str | None
+    folder_id: str | None
+    container_entity_type: str | None
+    container_entity_id: str | None
+    parent_document_id: str | None
+
+
+def _parse_view(view: object) -> _ParsedView:
+    """Validate one raw view. Absent stays absent; a wrong shape refuses.
+
+    Nothing is inferred: an optional field the Views API omits comes back
+    `None`. A field it returns in an unexpected shape is a `FiberyError` rather
+    than an `AttributeError`, `KeyError` or `TypeError` escaping into a caller.
+    """
+    if not isinstance(view, dict):
+        raise FiberyError(
+            f"A view came back as {type(view).__name__}; an object was expected."
+        )
+    document_id = view.get(ID_FIELD)
+    if not isinstance(document_id, str) or not document_id:
+        raise FiberyError(
+            f"A Document view came back without a usable {ID_FIELD} "
+            f"(found {document_id!r})."
+        )
+    name = view.get(VIEW_NAME_KEY)
+    if name is not None and not isinstance(name, str):
+        raise FiberyError(
+            f"Document view {document_id!r} carries {VIEW_NAME_KEY} as "
+            f"{type(name).__name__}; a scalar was expected."
+        )
+    secret = _optional_mapping(view, VIEW_META_KEY).get(DOCUMENT_SECRET_META_KEY)
+    if secret is not None and not isinstance(secret, str):
+        raise FiberyError(
+            f"Document view {document_id!r} carries a non-scalar "
+            f"{DOCUMENT_SECRET_META_KEY}."
+        )
+    container_type = _optional_mapping(view, VIEW_CONTAINER_ENTITY_TYPE_KEY).get(
+        ID_FIELD
+    )
+    if container_type is not None and not isinstance(container_type, str):
+        raise FiberyError(
+            f"Document view {document_id!r} carries a non-scalar container "
+            "entity type id."
+        )
+    folder_id = _optional_mapping(view, VIEW_FOLDER_KEY).get(ID_FIELD)
+    if folder_id is not None and not isinstance(folder_id, str):
+        raise FiberyError(
+            f"Document view {document_id!r} carries a non-scalar folder id."
+        )
+    return _ParsedView(
+        document_id=document_id,
+        name=name or "",
+        secret=secret,
+        folder_id=folder_id,
+        container_entity_type=container_type,
+        container_entity_id=_optional_scalar(view, VIEW_CONTAINER_ENTITY_ID_KEY),
+        parent_document_id=_optional_scalar(view, VIEW_PARENT_PAGE_KEY),
+    )
+
+
+def _require_view_rows(result: object) -> list[dict[str, Any]]:
+    """The rows of a `query-views` result, or a refusal.
+
+    `views_rpc` hands back `response["result"]`, which is `None` when the
+    JSON-RPC envelope carries none; every adapter in this module already reads
+    that as "no rows", so it stays an empty list. Any other non-list shape is a
+    refusal rather than something to iterate: iterating a `dict` would silently
+    walk its keys, and iterating a `str` its characters.
+    """
+    if result is None:
+        return []
+    if not isinstance(result, list):
+        raise FiberyError(
+            f"{QUERY_VIEWS_METHOD} returned {type(result).__name__}; a list of "
+            "views was expected."
+        )
+    for row in result:
+        if not isinstance(row, dict):
+            raise FiberyError(
+                f"{QUERY_VIEWS_METHOD} returned a row of type "
+                f"{type(row).__name__}; an object was expected."
+            )
+    return result
+
+
+def _require_view_id(view: dict[str, Any]) -> str:
+    """The row's own id, refused when the API did not really supply one.
+
+    A row whose id is missing, null, empty or not a string is malformed, and
+    must never be classified as "some other Document": that would turn a broken
+    response into an apparent absence, and an absence is what authorises a
+    create at that id.
+    """
+    document_id = view.get(ID_FIELD)
+    if not isinstance(document_id, str) or not document_id.strip():
+        raise FiberyError(
+            f"A view came back without a usable {ID_FIELD} (found {document_id!r})."
+        )
+    return document_id
+
+
+def _to_document_placement(view: object) -> DocumentPlacement:
+    """One view as placement metadata, parsed under control."""
+    parsed = _parse_view(view)
+    return DocumentPlacement(
+        document_id=parsed.document_id,
+        secret=parsed.secret,
+        name=parsed.name,
+        container_entity_type=parsed.container_entity_type,
+        container_entity_id=parsed.container_entity_id,
+        parent_document_id=parsed.parent_document_id,
+    )
+
+
+def _to_tsa_document(view: object) -> DocumentNode:
+    """One view as a `DocumentNode`, parsed under control.
+
+    TSA-only. The legacy `_to_document` keeps its permissive behaviour for the
+    frozen Requirement and RAW callers, which this specification does not touch.
+    """
+    parsed = _parse_view(view)
+    return DocumentNode(
+        id=parsed.document_id,
+        name=parsed.name,
+        folder_id=parsed.folder_id,
+        entity_public_id=parsed.container_entity_id,
+        secret=parsed.secret,
+        parent_document_id=parsed.parent_document_id,
+    )
+
+
+class FiberyArchitectureWorkspace:
+    """ArchitectureWorkspace against the live Fibery HTTP API (TSA-C01 §2).
+
+    Composes the Project adapter rather than extending the Requirement one: TSA
+    needs Project reads, Document creates at caller-supplied ids and placement
+    listings, and none of the Requirement schema, Fields or enum resolution. The
+    transport, the Views API constants, the Space id and the workspace identity
+    are the existing ones, so this adapter and the lock scope can never name two
+    different Spaces.
+
+    It holds no placement state. Each read goes to Fibery, so a caller can
+    revalidate immediately before a mutation.
+    """
+
+    def __init__(self, client: FiberyClient, space: str) -> None:
+        self._client = client
+        self._space = space
+        self._projects = FiberyHttpWorkspace(client, space)
+
+    @property
+    def lock_scope(self) -> str:
+        return self._client.workspace_identity
+
+    # -- projects -------------------------------------------------------
+
+    def read_project(self, project_id: str) -> ProjectRecord | None:
+        return self._projects.read_project(project_id)
+
+    @property
+    def project_type_id(self) -> str:
+        """The Project Database's Fibery type id, resolved from live schema.
+
+        Never the Database's qualified name and never a Project entity id:
+        `container-entity-type` carries the Database's own id.
+        """
+        return self._projects.project_type_id
+
+    # -- creates --------------------------------------------------------
+
+    def create_project_document(
+        self, document_id: str, name: str, project_public_id: str
+    ) -> DocumentNode:
+        """Create a Document contained by the Project, at the caller's own id.
+
+        Mirrors `create_requirement_document` with two substitutions: the
+        container entity type is the Project Database's type id, and
+        `fibery/id` is the caller's value rather than one generated here. No
+        `fibery/Folder` is sent.
+        """
+        return self._create_document(
+            document_id,
+            name,
+            {
+                VIEW_CONTAINER_TYPE_KEY: CONTAINER_TYPE_OBJECT,
+                VIEW_CONTAINER_ENTITY_TYPE_KEY: {ID_FIELD: self.project_type_id},
+                # Fibery wants the entity's public id here. Passing the uuid
+                # fails with parent-entity-not-found.
+                VIEW_CONTAINER_ENTITY_ID_KEY: project_public_id,
+            },
+        )
+
+    def create_tsa_child_document(
+        self, document_id: str, name: str, parent_document_id: str
+    ) -> DocumentNode:
+        """Create a Document nested under another, at the caller's own id.
+
+        A separate method from `create_child_document`, which generates its own
+        uuid4 and exposes no parameter for the caller's id. That one stays
+        exactly as it is for its existing Requirement and RAW callers.
+        """
+        return self._create_document(
+            document_id, name, {VIEW_PARENT_PAGE_KEY: parent_document_id}
+        )
+
+    def _create_document(
+        self, document_id: str, name: str, placement: dict[str, Any]
+    ) -> DocumentNode:
+        """Create one Document at an exact caller-supplied id, then read it back.
+
+        The id is never generated here: a deterministic id is what makes a retry
+        after an unknown outcome safe. The content secret IS generated, because
+        Fibery allocates none and a Document created without one has no
+        addressable content.
+        """
+        secret = str(uuid.uuid4())
+        self._client.views_rpc(
+            CREATE_VIEWS_METHOD,
+            {
+                CREATE_VIEWS_PARAM: [
+                    {
+                        ID_FIELD: document_id,
+                        VIEW_NAME_KEY: name,
+                        VIEW_TYPE_KEY: DOCUMENT_VIEW_TYPE,
+                        VIEW_META_KEY: {DOCUMENT_SECRET_META_KEY: secret},
+                        VIEW_CONTAINER_APP_KEY: {ID_FIELD: self._client.space_id},
+                        **placement,
+                    }
+                ]
+            },
+        )
+        resolved = self.resolve_document(document_id)
+        if resolved is None:
+            raise FiberyError(f"The created Document {name!r} could not be read back.")
+        return resolved
+
+    # -- placement reads ------------------------------------------------
+
+    def documents_attached_to_project(
+        self, project_public_id: str
+    ) -> list[DocumentPlacement]:
+        """Documents contained by this Project.
+
+        query-views cannot filter on the container entity, so the views are
+        listed and matched in Python — the same client-side filtering
+        `documents_attached_to_requirement` already does. This is not a
+        server-side constraint and is not claimed to be one.
+        """
+        type_id = self.project_type_id
+        return [
+            found
+            for found in self._document_placements()
+            if found.container_entity_id == project_public_id
+            and found.container_entity_type == type_id
+        ]
+
+    def create_child_document(self, name: str, parent_document_id: str) -> DocumentNode:
+        """Legacy nested create, kept because the frozen protocol still lists it.
+
+        Generates its own id, exactly as the Requirement and RAW callers' method
+        does. TSA itself never uses it: a deterministic cycle creates children
+        through `create_tsa_child_document`, and the two creators stay distinct.
+        """
+        return self._create_document(
+            str(uuid.uuid4()), name, {VIEW_PARENT_PAGE_KEY: parent_document_id}
+        )
+
+    def child_documents(self, parent_document_id: str) -> list[DocumentNode]:
+        """Documents nested directly under this one, as `DocumentNode`.
+
+        The reused listing semantics: list the Document views, filter on the
+        parent in Python. `child_placements` is the placement-bearing read.
+        """
+        return [
+            node
+            for node in (_to_tsa_document(view) for view in self._document_views())
+            if node.parent_document_id == parent_document_id
+        ]
+
+    def child_placements(self, parent_document_id: str) -> list[DocumentPlacement]:
+        """Documents nested directly under this one.
+
+        Filters on the parent alone. A child's own container fields are not
+        compared against any Project: containment runs through the root.
+        """
+        return [
+            found
+            for found in self._document_placements()
+            if found.parent_document_id == parent_document_id
+        ]
+
+    def _exact_document_view(self, document_id: str) -> dict[str, Any] | None:
+        """The one Document view at this exact id, or None if there is none.
+
+        Strict on purpose, and used by every TSA read and read-back:
+
+        - a malformed response, a malformed row, or a row without a usable id
+          is a refusal: only a well-formed response can report an absence;
+        - zero matching rows among well-formed rows is a legitimate absence and
+          returns None;
+        - more than one row at that id is a refusal **even when the rows look
+          identical**, because a reader cannot tell which one a later write
+          would hit;
+        - exactly one row whose `fibery/type` is not `document` is a refusal,
+          never reported as absence: something else already occupies the id a
+          deterministic create would use.
+
+        Legacy `resolve_document` on the Requirement adapters keeps its own
+        first-match semantics, so no frozen capability changes behaviour.
+        """
+        rows = _require_view_rows(
+            self._client.views_rpc(
+                QUERY_VIEWS_METHOD, {"filter": {"ids": [document_id]}}
+            )
+        )
+        # Validate every row's identity BEFORE deciding which ones match, so a
+        # malformed row can never be mistaken for a valid non-match.
+        matches = [row for row in rows if _require_view_id(row) == document_id]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            raise FiberyError(
+                f"{len(matches)} views came back at id {document_id!r}; the id "
+                "does not identify one Document."
+            )
+        view = matches[0]
+        view_type = view.get(VIEW_TYPE_KEY)
+        if view_type != DOCUMENT_VIEW_TYPE:
+            raise FiberyError(
+                f"The view at id {document_id!r} is a {view_type!r}, not a "
+                f"{DOCUMENT_VIEW_TYPE}."
+            )
+        return view
+
+    def resolve_placement(self, document_id: str) -> DocumentPlacement | None:
+        """One Document's placement, reported exactly as Fibery holds it.
+
+        It makes no ownership judgement: that is the caller's, through the
+        placement predicates in `fibery_workspace`.
+        """
+        view = self._exact_document_view(document_id)
+        return _to_document_placement(view) if view is not None else None
+
+    def resolve_document(self, document_id: str) -> DocumentNode | None:
+        view = self._exact_document_view(document_id)
+        return _to_tsa_document(view) if view is not None else None
+
+    def _document_views(self) -> list[dict[str, Any]]:
+        """Every Document view in the Space, unparsed.
+
+        `query-views` cannot filter on the container entity, so a listing is a
+        full read plus a Python filter. Only `fibery/type` is read here, which
+        is a scalar the API always returns; every other field is read through
+        the controlled parse, never straight off the raw row.
+        """
+        rows = _require_view_rows(self._client.views_rpc(QUERY_VIEWS_METHOD, {}))
+        return [row for row in rows if row.get(VIEW_TYPE_KEY) == DOCUMENT_VIEW_TYPE]
+
+    def _document_placements(self) -> list[DocumentPlacement]:
+        """Every Document view, parsed before anything is compared.
+
+        Parse-then-filter, not filter-then-parse: reaching into a raw container
+        or parent field to decide whether a row is interesting is exactly where
+        a malformed shape used to escape as an `AttributeError`.
+        """
+        return [_to_document_placement(view) for view in self._document_views()]
+
+    # -- content --------------------------------------------------------
+
+    def read_document_content(self, secret: str) -> str:
+        return self._client.get_document(secret)
+
+    def write_document_content(self, secret: str, markdown: str) -> None:
+        self._client.put_document(secret, markdown)
 
 
 class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):

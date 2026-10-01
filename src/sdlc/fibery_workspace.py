@@ -18,12 +18,21 @@ class FiberyError(Exception):
 
 @dataclass(frozen=True)
 class ProjectRecord:
-    """A Project entity as read back from Fibery."""
+    """A Project entity as read back from Fibery.
+
+    `public_id` is Fibery's `fibery/public-id`, which is what a Document's
+    container-entity-id actually carries; `id` is the entity uuid. The two are
+    different values and neither is derivable from the other. It defaults to
+    empty so existing positional constructions cannot be silently re-bound, and
+    the live adapter refuses a Project row that carries no public id rather than
+    handing one back.
+    """
 
     id: str
     name: str
     code: str | None
     state: str | None
+    public_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,74 @@ class DocumentNode:
     entity_public_id: str | None
     secret: str | None = None
     parent_document_id: str | None = None
+
+
+@dataclass(frozen=True)
+class DocumentPlacement:
+    """Where one Document sits, as the Views API reports it.
+
+    Added beside `DocumentNode` rather than widening it: three frozen
+    capabilities already consume `DocumentNode`, and TSA root validation needs
+    `container_entity_type`, which that record deliberately does not expose
+    (TSA-C01 implementation spec 2.2.1).
+
+    Every field is read straight from the view. A missing container field stays
+    `None` and is never inferred: an unset container is a refusal, not a pass.
+    """
+
+    document_id: str
+    secret: str | None
+    name: str
+    container_entity_type: str | None
+    container_entity_id: str | None
+    parent_document_id: str | None
+
+
+def is_valid_root_placement(
+    placement: DocumentPlacement,
+    expected_project_type_id: str,
+    expected_project_public_id: str,
+) -> bool:
+    """Whether a Document is a TSA root: contained by the Project, no parent.
+
+    All four conditions of 2.2.1 must hold. A Document contained by the Project
+    *and* nested under another Document is not a root, and an unset container
+    field is a refusal rather than a pass.
+    """
+    return (
+        bool(placement.container_entity_type)
+        and bool(placement.container_entity_id)
+        and placement.container_entity_type == expected_project_type_id
+        and placement.container_entity_id == expected_project_public_id
+        and placement.parent_document_id is None
+    )
+
+
+def is_valid_child_placement(
+    child: DocumentPlacement,
+    architecture_root: DocumentPlacement,
+    expected_architecture_document_id: str,
+    expected_project_type_id: str,
+    expected_project_public_id: str,
+) -> bool:
+    """Whether a Document is a TSA child of the given Architecture root.
+
+    Two ordered steps (2.2.1): the child names the Architecture Document as its
+    parent, and that parent is itself a valid root of the expected Project. The
+    child's *own* container fields are never compared against the Project — a
+    nested view carries whatever container the Views API reports for a child
+    page, and the containment guarantee runs through the root.
+
+    The caller supplies the root placement, so this predicate performs no IO and
+    cannot be satisfied by a child alone.
+    """
+    return (
+        child.parent_document_id == expected_architecture_document_id
+        and architecture_root.document_id == expected_architecture_document_id
+        and is_valid_root_placement(
+            architecture_root, expected_project_type_id, expected_project_public_id
+        )
+    )
 
 
 class FiberyWorkspace(Protocol):
@@ -149,6 +226,70 @@ class RequirementWorkspace(Protocol):
 
     def read_document_content(self, secret: str) -> str:
         """Read a Document's Markdown content back."""
+
+
+class ArchitectureWorkspace(Protocol):
+    """Operations the Technical Solution Architecture cycle performs on Fibery.
+
+    Kept separate from the Requirement protocols so their frozen contracts stay
+    exactly as reviewed. It is not a generic entity-document framework: it adds
+    only what TSA-C01 section 2 requires.
+
+    Nothing here caches. Every placement read goes to Fibery, because a caller
+    must be able to revalidate immediately before each mutation.
+    """
+
+    @property
+    def lock_scope(self) -> str:
+        """Stable identity of the workspace, for the cycle's execution lock."""
+
+    def read_project(self, project_id: str) -> ProjectRecord | None:
+        """Read a Project entity back by id, including its public id."""
+
+    def create_project_document(
+        self, document_id: str, name: str, project_public_id: str
+    ) -> DocumentNode:
+        """Create a Document contained by the Project, at the caller's own id."""
+
+    def create_tsa_child_document(
+        self, document_id: str, name: str, parent_document_id: str
+    ) -> DocumentNode:
+        """Create a Document nested under another, at the caller's own id."""
+
+    def create_child_document(self, name: str, parent_document_id: str) -> DocumentNode:
+        """Create a Document nested under another, at a generated id.
+
+        The reused legacy creator. TSA itself never calls it: a deterministic
+        cycle uses `create_tsa_child_document`, and the two stay distinct.
+        """
+
+    def documents_attached_to_project(
+        self, project_public_id: str
+    ) -> list[DocumentPlacement]:
+        """Every Document contained by this Project, with placement metadata."""
+
+    def child_documents(self, parent_document_id: str) -> list[DocumentNode]:
+        """Documents nested directly under this one, as `DocumentNode`."""
+
+    def child_placements(self, parent_document_id: str) -> list[DocumentPlacement]:
+        """Every Document nested directly under this one, with placement."""
+
+    def resolve_placement(self, document_id: str) -> DocumentPlacement | None:
+        """One Document's placement by its own id, or None.
+
+        Reports what Fibery holds. It makes no ownership judgement: deciding
+        whether that placement is admissible is the caller's, through the
+        predicates above.
+        """
+
+    def resolve_document(self, document_id: str) -> DocumentNode | None:
+        """Read one Document back by its own id, or None."""
+
+    def read_document_content(self, secret: str) -> str:
+        """Read a Document's Markdown content."""
+
+    def write_document_content(self, secret: str, markdown: str) -> None:
+        """Replace a Document's Markdown content."""
 
 
 @dataclass(frozen=True)
