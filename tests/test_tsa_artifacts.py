@@ -10,9 +10,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import sys
 
 import pytest
 
+from sdlc import tsa_artifacts
 from sdlc.normative_tree import InvalidTreeManifest, TreeEntry, TreeManifest
 from sdlc.tsa_artifacts import (
     ARCHITECTURE,
@@ -2187,3 +2189,209 @@ def test_duplicate_key_refusal_survives_the_decoder_wrapper():
     text = '# T\n\nProse.\n\n```json\n{"a": 1, "a": 2}\n```\n'
     with pytest.raises(InvalidTsaArtifact, match="more than once"):
         extract_artifact_payload(text)
+
+
+MAX_PROBED_NESTING = 2**24
+DEEP_NESTING_SHAPES = {"arrays": ("[", "]"), "objects": ('{"a":', "}")}
+
+
+def decoder_overflowing_payload(opener: str, closer: str) -> str:
+    """A JSON object nested just deep enough to overflow THIS decoder.
+
+    The depth is found, not assumed: the decoder's recursion limit is not the
+    one `sys.getrecursionlimit` reports and differs between interpreters.
+    """
+    depth = sys.getrecursionlimit()
+    while depth <= MAX_PROBED_NESTING:
+        text = '{"deep":' + opener * depth + "1" + closer * depth + "}"
+        try:
+            json.loads(text)
+        except RecursionError:
+            return text
+        depth *= 2
+    pytest.skip("This interpreter's JSON decoder does not overflow on nesting.")
+
+
+@pytest.mark.parametrize("shape", sorted(DEEP_NESTING_SHAPES))
+@pytest.mark.parametrize(
+    "extract", [extract_artifact_payload, extract_architecture_envelope]
+)
+def test_json_nested_past_the_decoder_limit_is_controlled(extract, shape):
+    payload = decoder_overflowing_payload(*DEEP_NESTING_SHAPES[shape])
+    with pytest.raises(InvalidTsaArtifact, match="nested too deeply") as caught:
+        extract(f"# T\n\nProse.\n\n```json\n{payload}\n```\n")
+    assert caught.value.code == "ARTIFACT_MALFORMED"
+    assert str(caught.value) == (
+        "The Document's JSON payload is nested too deeply to decode."
+    )
+
+
+@pytest.mark.parametrize("shape", sorted(DEEP_NESTING_SHAPES))
+def test_nesting_the_decoder_accepts_is_still_refused_by_the_closed_schema(shape):
+    """Below the decoder limit the payload parses, and validation stays controlled."""
+    opener, closer = DEEP_NESTING_SHAPES[shape]
+    depth = sys.getrecursionlimit() // 2
+    payload = architecture_artifact()
+    payload["body"]["created_at"] = json.loads(opener * depth + "1" + closer * depth)
+    with pytest.raises(InvalidTsaArtifact, match="created_at"):
+        validate_artifact(payload)
+
+
+def test_a_recursion_failure_outside_the_decode_is_not_absorbed():
+    """Only the decode of persisted text is guarded, never a caller's own value."""
+    nested: object = "x"
+    for _ in range(sys.getrecursionlimit() * 2):
+        nested = [nested]
+    with pytest.raises(RecursionError):
+        canonical_json({"deep": nested})
+
+
+# ==========================================================================
+# Nesting the decoder accepts, refused at the persisted-validation boundary
+# ==========================================================================
+
+DEEP_PLACEHOLDER = "__deep__"
+NESTING_REFUSAL = "The persisted TSA artifact is nested too deeply to validate."
+UX_BRANCHES = {
+    "APPLICABLE": spec_ux_applicable,
+    "NOT_APPLICABLE": spec_ux_not_applicable,
+}
+TREE_ROOT = "tree_manifest root"
+TREE_DOCUMENT_ENTRY = "tree_manifest document entry"
+
+
+def decodable_overflowing_json(opener: str, closer: str) -> str:
+    """Nesting THIS decoder accepts but a recursive walk of the value cannot.
+
+    The depth is found, not assumed. Linear in depth, and no deeper than the
+    first depth at which the native canonical walk overflows.
+    """
+    depth = sys.getrecursionlimit()
+    while depth <= MAX_PROBED_NESTING:
+        text = opener * depth + "1" + closer * depth
+        try:
+            value = json.loads(text)
+        except RecursionError:
+            pytest.skip("This interpreter's decoder overflows before a walk does.")
+        try:
+            canonical_json({"deep": value})
+        except RecursionError:
+            return text
+        depth *= 2
+    pytest.skip("No probed nesting overflows a recursive walk on this interpreter.")
+
+
+def manifest_json_with_deep_extra(
+    nested: str, place: str, ux: dict[str, object]
+) -> str:
+    """A valid Input Manifest, serialized, with one deep extra value spliced in.
+
+    The extra sits in the reused subtree, whose producing mechanism ignores
+    keys it does not know. The stored digests are those of the manifest without
+    it: none can be computed over a value this deep, and validation must refuse
+    before it could compare them.
+    """
+    artifact = input_manifest_artifact(ux)
+    tree = artifact["body"]["manifest_body"]["requirements"][0]["tree_manifest"]
+    holder = tree if place == TREE_ROOT else tree["documents"][0]
+    holder["x_extra"] = DEEP_PLACEHOLDER
+    return json.dumps(artifact).replace(json.dumps(DEEP_PLACEHOLDER), nested)
+
+
+def assert_nesting_refusal(payload: object) -> None:
+    with pytest.raises(InvalidTsaArtifact) as caught:
+        validate_artifact(payload)
+    assert str(caught.value) == NESTING_REFUSAL
+    assert caught.value.code == "ARTIFACT_MALFORMED"
+
+
+@pytest.mark.parametrize(
+    "extract", [extract_artifact_payload, extract_architecture_envelope]
+)
+@pytest.mark.parametrize("branch", sorted(UX_BRANCHES))
+@pytest.mark.parametrize("place", [TREE_ROOT, TREE_DOCUMENT_ENTRY])
+@pytest.mark.parametrize("shape", sorted(DEEP_NESTING_SHAPES))
+def test_decodable_nesting_in_a_persisted_reused_subtree_is_controlled(
+    shape, place, branch, extract
+):
+    nested = decodable_overflowing_json(*DEEP_NESTING_SHAPES[shape])
+    raw = manifest_json_with_deep_extra(nested, place, UX_BRANCHES[branch]())
+    json.loads(raw)  # the decoder is not what refuses this payload
+    decoded = extract(f"# T\n\nProse.\n\n```json\n{raw}\n```\n")
+    assert_nesting_refusal(decoded)
+
+
+@pytest.mark.parametrize("place", [TREE_ROOT, TREE_DOCUMENT_ENTRY])
+def test_the_producing_mechanism_itself_accepts_the_deep_extra(place):
+    """So the refusal above is not a new restriction on the reused subtree."""
+    nested = decodable_overflowing_json(*DEEP_NESTING_SHAPES["arrays"])
+    decoded = json.loads(
+        manifest_json_with_deep_extra(nested, place, spec_ux_applicable())
+    )
+    row = decoded["body"]["manifest_body"]["requirements"][0]
+    manifest = validate_reused_tree_manifest(row["tree_manifest"])
+    assert manifest.fingerprint == SPEC_TREE_FINGERPRINT
+
+
+@pytest.mark.parametrize("shape", sorted(DEEP_NESTING_SHAPES))
+def test_pure_digest_helpers_keep_their_native_recursion_failure(shape):
+    """The translation lives at the persisted boundary, not in the helpers."""
+    nested = decodable_overflowing_json(*DEEP_NESTING_SHAPES[shape])
+    decoded = json.loads(
+        manifest_json_with_deep_extra(nested, TREE_ROOT, spec_ux_applicable())
+    )
+    manifest_body = decoded["body"]["manifest_body"]
+    with pytest.raises(RecursionError):
+        manifest_digest(manifest_body)
+    with pytest.raises(RecursionError):
+        requirement_input_digest(manifest_body["requirements"])
+    with pytest.raises(RecursionError):
+        compute_artifact_digest(decoded)
+
+
+@pytest.mark.parametrize("shape", sorted(DEEP_NESTING_SHAPES))
+def test_requirement_input_digest_overflow_is_controlled_at_the_boundary(
+    monkeypatch, shape
+):
+    """Reached only once the manifest digest, which overflows first, is past."""
+    nested = decodable_overflowing_json(*DEEP_NESTING_SHAPES[shape])
+    decoded = json.loads(
+        manifest_json_with_deep_extra(nested, TREE_ROOT, spec_ux_not_applicable())
+    )
+    stored = decoded["body"]["manifest_digest"]
+    native = tsa_artifacts.requirement_input_digest
+    overflowed: list[bool] = []
+
+    def recording(requirements: list[object]) -> str:
+        try:
+            return native(requirements)
+        except RecursionError:
+            overflowed.append(True)
+            raise
+
+    monkeypatch.setattr(tsa_artifacts, "manifest_digest", lambda body: stored)
+    monkeypatch.setattr(tsa_artifacts, "requirement_input_digest", recording)
+    assert_nesting_refusal(decoded)
+    assert overflowed == [True]
+
+
+@pytest.mark.parametrize("shape", sorted(DEEP_NESTING_SHAPES))
+def test_final_artifact_digest_overflow_is_controlled_whatever_the_validators_do(
+    monkeypatch, shape
+):
+    """The boundary does not depend on a body validator refusing first."""
+    nested = decodable_overflowing_json(*DEEP_NESTING_SHAPES[shape])
+    payload = architecture_artifact()
+    payload["body"]["created_at"] = json.loads(nested)
+    monkeypatch.setitem(
+        tsa_artifacts.BODY_VALIDATORS, ARCHITECTURE, lambda *arguments: None
+    )
+    assert_nesting_refusal(payload)
+
+
+def test_an_overflow_inside_the_producing_mechanism_is_controlled(monkeypatch):
+    def overflow(payload: object) -> TreeManifest:
+        raise RecursionError("simulated producer overflow")
+
+    monkeypatch.setattr(TreeManifest, "from_payload", staticmethod(overflow))
+    assert_nesting_refusal(input_manifest_artifact())

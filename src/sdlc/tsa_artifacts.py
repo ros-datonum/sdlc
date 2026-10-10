@@ -1612,7 +1612,23 @@ def validate_artifact(payload: object) -> TsaArtifact:
     The stored `artifact_digest` is compared against a value recomputed from the
     payload, never against another stored field. Persisted identity is validated
     exactly as stored and is never normalised (3.1).
+
+    This is the boundary for untrusted persisted payloads, so it is also where
+    a value nested too deeply to walk is refused. JSON the decoder accepts can
+    still exhaust the interpreter stack inside a body validator or a digest —
+    the reused subtree of 5.1.1 is carried unchanged, whatever its depth — and
+    that is a malformed artifact, not a crash. The pure digest and canonical
+    helpers stay unguarded: a caller's own value keeps its native failure.
     """
+    try:
+        return _validate_decoded_artifact(payload)
+    except RecursionError as error:
+        raise InvalidTsaArtifact(
+            "The persisted TSA artifact is nested too deeply to validate."
+        ) from error
+
+
+def _validate_decoded_artifact(payload: object) -> TsaArtifact:
     envelope = _require_object(payload, ("<payload>",))
     artifact_type = _require_known_artifact_type(envelope.get("artifact_type"))
     iterated = artifact_type in ITERATED_ARTIFACT_TYPES
@@ -1724,7 +1740,10 @@ def _load_payload_object(raw: str) -> dict[str, object]:
     `InvalidTsaArtifact` is itself a `ValueError`, so the duplicate-key hook's
     refusal is re-raised before the generic branch can rewrap it. The generic
     branch exists for CPython's integer-conversion limit, which `json.loads`
-    raises as a plain `ValueError` rather than a `JSONDecodeError`.
+    raises as a plain `ValueError` rather than a `JSONDecodeError`. Persisted
+    JSON nested past the decoder's own recursion limit raises `RecursionError`,
+    which is no `ValueError` at all; it is caught around this decode of
+    untrusted text only. Nesting the decoder accepts is `validate_artifact`'s.
     """
     try:
         payload = json.loads(raw, object_pairs_hook=_refuse_duplicate_keys)
@@ -1737,6 +1756,10 @@ def _load_payload_object(raw: str) -> dict[str, object]:
     except ValueError as error:  # CPython's int -> str digit limit, and kin
         raise InvalidTsaArtifact(
             f"The Document's JSON payload holds a value the decoder refuses: {error}"
+        ) from error
+    except RecursionError as error:
+        raise InvalidTsaArtifact(
+            "The Document's JSON payload is nested too deeply to decode."
         ) from error
     return _require_object(payload, ("<payload>",))
 
