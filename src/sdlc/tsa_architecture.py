@@ -170,8 +170,6 @@ TABLE_SEPARATOR = "|---|---|---|---|---|---|"
 TABLE_COLUMN_COUNT = 6
 CELL_DELIMITER = "|"
 ESCAPE_CHARACTER = "\\"
-ID_COLUMN, SOURCE_COLUMN, ANCHORS_COLUMN = 0, 1, 2
-
 SOURCE_TEMPLATE = "{requirement_id} @ {fingerprint_prefix}"
 SOURCE_FINGERPRINT_LENGTH = 12
 
@@ -188,8 +186,8 @@ NOT_APPLICABLE_CLAIM = re.compile(r"N/A(?!\w)")
 
 LINE_BREAK = "<br>"
 #: 8.3.1. One table, applied once to the original text. The pipe replacement
-#: is backslash + pipe: the frozen cell reads ambiguously in Markdown, and
-#: this reading is the one the spec owner confirmed for I06.
+#: is backslash + pipe. The frozen cell reads ambiguously in Markdown; which
+#: reading is normative is an open question that this module does not settle.
 ESCAPE_REPLACEMENTS = {
     "\\": "\\\\",
     "|": "\\|",
@@ -203,9 +201,8 @@ ESCAPED_SOURCE = re.compile(r"\r\n|[\\|\r\n<>]")
 
 HEADING_LIKE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
 FENCE_LIKE = re.compile(r" {0,3}" + re.escape(FENCE_MARKER))
-
-#: The envelope fence is separated from heading 16's content by one blank line.
-ENVELOPE_SEPARATOR = "\n"
+#: A tilde fence: its opener may carry any text after the run, its closer none.
+TILDE_FENCE = re.compile(r" {0,3}(~{3,})(.*)")
 
 
 def escape_markdown(value: str) -> str:
@@ -291,6 +288,21 @@ def _require_exact_coverage(
             ArchitectureResultCode.TRACEABILITY_MISSING_REQUIREMENT,
             f"Traceability has no row for selected Requirement(s) {missing}. An "
             "N/A section never removes a Requirement from coverage.",
+        )
+
+
+def _require_ascending_rows(rows: Sequence[dict[str, object]]) -> None:
+    """Persisted rows are in `requirement_id` order (spec 4.6.3.1, 8.2).
+
+    Sorting them for the expected table would hide a persisted representation
+    that is out of order, so the order actually stored is what is checked.
+    """
+    stored = [row["requirement_id"] for row in rows]
+    if stored != sorted(stored):
+        raise _refuse(
+            ArchitectureResultCode.ARCHITECTURE_RENDER_INVALID,
+            f"Envelope traceability is ordered {stored}, not by requirement_id "
+            "ascending.",
         )
 
 
@@ -423,6 +435,7 @@ def render_architecture(
         for heading in HEADINGS
     ]
     markdown = "\n\n".join(blocks) + "\n"
+    _require_no_swallowing_fence(markdown)
     _section_bodies(markdown)
     return RenderedArchitecture(markdown, document_fingerprint(markdown))
 
@@ -434,6 +447,33 @@ def render_architecture(
 
 def _render_invalid(message: str) -> ArchitectureRefused:
     return _refuse(ArchitectureResultCode.ARCHITECTURE_RENDER_INVALID, message)
+
+
+def _require_no_swallowing_fence(normative_markdown: str) -> None:
+    """A tilde fence must close before the next heading and before the envelope.
+
+    Markdown reads every line after an open fence as that block's content, so
+    sixteen heading-shaped lines are no evidence of sixteen sections. Only a
+    bare run of tildes at least as long as the opener closes it. This decides
+    structure alone: a block that closes inside its own section is not judged
+    here.
+    """
+    open_run = 0
+    for raw in normative_markdown.split("\n"):
+        line = raw.rstrip()
+        fence = TILDE_FENCE.fullmatch(line)
+        if not open_run:
+            open_run = len(fence.group(1)) if fence else 0
+        elif fence and not fence.group(2) and len(fence.group(1)) >= open_run:
+            open_run = 0
+        elif HEADING_LIKE.match(line):
+            break
+    if open_run:
+        raise _render_invalid(
+            "A tilde fence opened in the normative sections is not closed "
+            "before the next heading or the envelope, so it would take them "
+            "out of the Document's structure."
+        )
 
 
 def _section_bodies(normative_markdown: str) -> list[list[str]]:
@@ -501,7 +541,11 @@ def _require_table_agreement(
     rows: Sequence[dict[str, object]],
     manifest_body: dict[str, object],
 ) -> None:
-    """Table and envelope rows agree on ids, `Source` and anchors (spec 8.2)."""
+    """Every cell is the rendering of its envelope row (spec 8.2, 8.3.1).
+
+    `Source` is generated from the Manifest. This is equality of two
+    representations of the same data, not a judgement of satisfaction.
+    """
     expected = _traceability_lines(rows, manifest_body)
     if body[:2] != expected[:2] or len(body) != len(expected):
         raise _render_invalid(
@@ -515,7 +559,7 @@ def _require_table_agreement(
                 f"Traceability row {actual_row!r} does not have "
                 f"{TABLE_COLUMN_COUNT} cells."
             )
-        for column in (ID_COLUMN, SOURCE_COLUMN, ANCHORS_COLUMN):
+        for column in range(TABLE_COLUMN_COUNT):
             if actual[column] != wanted[column]:
                 raise _render_invalid(
                     f"Traceability row {actual_row!r} disagrees with the "
@@ -622,8 +666,9 @@ def validate_architecture_document(
 
     Checked separately, in this order: the carrier, closed schema and
     `artifact_digest` through I01; that the envelope binds this Manifest; the
-    sixteen headings and their content classes; traceability coverage; the
-    agreement of the rendered generated sections with the envelope; and that
+    sixteen headings and their content classes, with no fence left open across
+    them; traceability coverage and stored row order; the agreement of the
+    rendered generated sections with the envelope, cell for cell; and that
     `content_fingerprint` is the fingerprint of the normative Markdown with
     the envelope excluded.
 
@@ -639,8 +684,10 @@ def validate_architecture_document(
             "one supplied."
         )
     normative = _normative_markdown(document)
+    _require_no_swallowing_fence(normative)
     bodies = _section_bodies(normative)
     _require_exact_coverage(artifact.body[TRACEABILITY_SOURCE], manifest_body)
+    _require_ascending_rows(artifact.body[TRACEABILITY_SOURCE])
     _require_rendered_sections(bodies, artifact, manifest_body)
     if artifact.body["content_fingerprint"] != document_fingerprint(normative):
         raise InvalidTsaArtifact(
@@ -660,7 +707,10 @@ def build_architecture_carrier(
     The sixteen sections are `render_architecture` of the pair; the envelope
     copies the five renderer-owned arrays verbatim (spec 4.6.1), binds the
     Manifest by its recomputed digest and the sections by their fingerprint,
-    and is sealed by I01. The result is validated as any other Document is.
+    and is sealed by I01. The Markdown already ends with the one newline that
+    precedes the envelope fence (spec 8.3). The result is validated as any
+    other Document is, so rows that are not in `requirement_id` order are
+    refused, never re-sorted.
     """
     rendered = render_architecture(intended_output, manifest_body)
     identity = binding.identity
@@ -691,7 +741,7 @@ def build_architecture_carrier(
         }
     )
     text = (
-        f"{rendered.markdown}{ENVELOPE_SEPARATOR}"
+        f"{rendered.markdown}"
         f"{JSON_FENCE_OPENER}\n{canonical_artifact_json(sealed)}\n{FENCE_MARKER}\n"
     )
     artifact = validate_architecture_document(text, manifest_body)

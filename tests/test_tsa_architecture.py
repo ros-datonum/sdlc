@@ -32,6 +32,7 @@ from sdlc.tsa_artifacts import (
     ArtifactIdentity,
     EmptyTsaCarrier,
     InvalidTsaArtifact,
+    canonical_artifact_json,
     compute_artifact_digest,
     extract_architecture_envelope,
     extract_artifact_payload,
@@ -211,18 +212,18 @@ GOLDEN_OUTPUT = {
     },
     "traceability": [
         {
-            "requirement_id": SECOND_ID,
-            "anchors": ["tsa-s03"],
-            "how_satisfied": "Structure.",
-            "constraints": [],
-            "gaps": ["Load unknown.", "Cost | unknown"],
-        },
-        {
             "requirement_id": FIRST_ID,
             "anchors": ["tsa-s03", "tsa-s05"],
             "how_satisfied": "API\r\nplus worker.",
             "constraints": ["Existing runtime.", "No new store."],
             "gaps": [],
+        },
+        {
+            "requirement_id": SECOND_ID,
+            "anchors": ["tsa-s03"],
+            "how_satisfied": "Structure.",
+            "constraints": [],
+            "gaps": ["Load unknown.", "Cost | unknown"],
         },
     ],
     "assumptions": ["Fibery is reachable.", "Path C:\\data exists."],
@@ -771,7 +772,9 @@ def test_rendering_and_assembly_do_not_mutate_their_inputs():
     carrier = build_architecture_carrier(intended, selected, BINDING)
     validate_architecture_document(carrier.text, selected)
     assert (intended, selected) == before
-    assert intended["traceability"][0]["requirement_id"] == SECOND_ID
+    unordered = output(traceability=[row(SECOND_ID), row(FIRST_ID)])
+    render_architecture(unordered, selected)
+    assert unordered["traceability"][0]["requirement_id"] == SECOND_ID
 
 
 def test_the_envelope_arrays_are_copies_not_aliases_of_the_input():
@@ -859,7 +862,7 @@ def test_the_stored_fingerprint_covers_exactly_the_text_before_the_fence():
     carrier = build_architecture_carrier(GOLDEN_OUTPUT, manifest(), BINDING)
     prefix, fence, _ = carrier.text.partition("```json\n")
     assert fence
-    assert prefix == GOLDEN_MARKDOWN + "\n"
+    assert prefix == GOLDEN_MARKDOWN
     assert carrier.content_fingerprint == document_fingerprint(prefix)
     assert carrier.artifact.body["content_fingerprint"] == carrier.content_fingerprint
     assert carrier.content_fingerprint != document_fingerprint(carrier.text)
@@ -1300,3 +1303,347 @@ def test_the_result_codes_are_the_frozen_names():
         "TRACEABILITY_UNKNOWN_ANCHOR",
         "TRACEABILITY_DUPLICATE_ANCHOR",
     }
+
+
+# --------------------------------------------------------------------------
+# F. Corrections after the independent review of I06 (F1-F4)
+# --------------------------------------------------------------------------
+
+ENVELOPE_OPENER = "```json\n"
+RENDER_INVALID = CODE.ARCHITECTURE_RENDER_INVALID
+PLAIN_PROSE = "Prose for solution_structure."
+LATER_PROSE = "Prose for interfaces_and_data_flows."
+THIRD_ID = "SDLC-FR-0042"
+
+
+def assembled(intended: dict[str, object], selected=None):
+    return build_architecture_carrier(intended, selected or manifest(), BINDING)
+
+
+def rebound(text: str, edit=None, mutate=None) -> str:
+    """The Document after a change, with both digests recomputed.
+
+    The result is a carrier I01 accepts: its `content_fingerprint` is the
+    fingerprint of the changed Markdown and its `artifact_digest` is fresh, so
+    a refusal that follows is never the refusal of a stale digest.
+    """
+    prefix, _, _ = text.partition(ENVELOPE_OPENER)
+    payload = extract_architecture_envelope(text)
+    if edit is not None:
+        prefix = edit(prefix)
+    if mutate is not None:
+        mutate(payload["body"])
+    payload["body"]["content_fingerprint"] = document_fingerprint(prefix)
+    unsealed = {k: v for k, v in payload.items() if k != "artifact_digest"}
+    sealed = {**unsealed, "artifact_digest": compute_artifact_digest(unsealed)}
+    result = f"{prefix}{ENVELOPE_OPENER}{canonical_artifact_json(sealed)}\n```\n"
+    stored = validate_artifact(extract_architecture_envelope(result))
+    assert stored.body["content_fingerprint"] == document_fingerprint(prefix)
+    return result
+
+
+def headings_outside_fences(text: str) -> list[str]:
+    """The heading lines Markdown sees, by CommonMark's fence rules.
+
+    Written independently of the module under test: a fence opens on a run of
+    three or more backticks or tildes indented at most three spaces, and only
+    a bare run of the same character, at least as long, closes it.
+    """
+    headings: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in text.split("\n"):
+        stripped = line.lstrip(" ")
+        marker = stripped[:1]
+        is_fence_marker = marker in ("`", "~") and len(line) - len(stripped) <= 3
+        run = len(stripped) - len(stripped.lstrip(marker)) if is_fence_marker else 0
+        rest = stripped[run:]
+        if fence is None:
+            if run >= 3 and not (marker == "`" and "`" in rest):
+                fence = (marker, run)
+            elif line.startswith("## "):
+                headings.append(line)
+        elif marker == fence[0] and run >= fence[1] and not rest.strip():
+            fence = None
+    return headings
+
+
+# F1 - a fence that swallows the later sections ------------------------------
+
+TILDE_REPRODUCER = "~~~mermaid\ngraph TD; A-->B\n~~~"
+
+
+@pytest.mark.parametrize("key", ["solution_structure", "data_storage"])
+@pytest.mark.parametrize(
+    "value", [TILDE_REPRODUCER, "~~~", "~~~~ wide", "~~~mermaid", "~~~ a ~~~"]
+)
+def test_prose_that_opens_a_tilde_fence_is_neither_rendered_nor_assembled(key, value):
+    intended = output(sections=sections(**{key: value}))
+    assert render_refusal(intended) is RENDER_INVALID
+    assert refused(lambda: assembled(intended)) is RENDER_INVALID
+
+
+SWALLOWING_FENCES = {
+    "the rendered reproducer": "~~~mermaid<br>graph TD; A--&gt;B<br>~~~",
+    "never closed": "~~~mermaid\ngraph TD; A-->B",
+    "indented opener": "   ~~~\ngraph TD",
+    "closer shorter than opener": "~~~~\ngraph TD\n~~~",
+    "closer followed by text": "~~~\ngraph TD\n~~~ end",
+    "closer indented as code": "~~~\ngraph TD\n    ~~~",
+}
+
+
+@pytest.mark.parametrize("label", sorted(SWALLOWING_FENCES))
+def test_a_handed_in_document_whose_fence_swallows_later_sections_is_refused(label):
+    text = rebound(
+        assembled(output()).text,
+        lambda prefix: edit_markdown(prefix, PLAIN_PROSE, SWALLOWING_FENCES[label]),
+    )
+    assert len(headings_outside_fences(text)) < len(FROZEN_HEADING_LINES)
+    assert document_refusal(text) is RENDER_INVALID
+
+
+def test_a_fence_closed_only_in_a_later_section_is_refused():
+    def across_sections(prefix: str) -> str:
+        opened = edit_markdown(prefix, PLAIN_PROSE, "~~~\ngraph TD")
+        return edit_markdown(opened, LATER_PROSE, "~~~")
+
+    text = rebound(assembled(output()).text, across_sections)
+    assert len(headings_outside_fences(text)) == len(FROZEN_HEADING_LINES) - 2
+    assert document_refusal(text) is RENDER_INVALID
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "~5 ms at p99",
+        "~~struck~~ then text",
+        "A ~~~ marker mid-sentence",
+        "Mentions a ~~~mermaid block inline",
+        "~ ~ ~",
+    ],
+)
+def test_tildes_that_open_no_fence_get_no_refusal(value):
+    intended = output(
+        sections=sections(solution_structure=value), assumptions=[value, "~~~x"]
+    )
+    carrier = assembled(intended)
+    assert validate_architecture_document(carrier.text, manifest()) == carrier.artifact
+    assert headings_outside_fences(carrier.text) == FROZEN_HEADING_LINES
+
+
+@pytest.mark.parametrize("block", ["~~~mermaid\ngraph TD\n~~~", "~~~\ngraph TD\n~~~~~"])
+def test_the_swallowing_rule_adds_no_refusal_for_a_closed_tilde_block(block):
+    # How a closed illustrative block is to be represented is an open question
+    # between spec 9.1 and 8.3.1. This pins only that the structural rule for
+    # a swallowing fence does not decide it.
+    text = rebound(
+        assembled(output()).text,
+        lambda prefix: edit_markdown(prefix, PLAIN_PROSE, block),
+    )
+    assert headings_outside_fences(text) == FROZEN_HEADING_LINES
+    assert validate_architecture_document(text, manifest())
+
+
+def test_a_normal_document_keeps_sixteen_sections_and_a_separate_envelope():
+    text = golden_carrier().text
+    assert headings_outside_fences(text) == FROZEN_HEADING_LINES
+    assert text.count("```json") == 1
+    assert validate_artifact(extract_architecture_envelope(text))
+
+
+# F2 - the whole table agrees with the envelope ------------------------------
+
+AGREEMENT_ROW = {
+    "how_satisfied": "Queue.",
+    "constraints": ["No new store.", "Existing runtime."],
+    "gaps": ["Load unknown.", "Cost unknown."],
+}
+MARKDOWN_ONLY_CHANGES = {
+    "how_satisfied": ("| Queue. |", "| Polling. |"),
+    "constraints": ("| No new store.<br>Existing runtime. |", "| No new store. |"),
+    "gaps": ("Load unknown.<br>Cost unknown.", "Load known.<br>Cost unknown."),
+    "constraints order": (
+        "No new store.<br>Existing runtime.",
+        "Existing runtime.<br>No new store.",
+    ),
+    "gaps order": ("Load unknown.<br>Cost unknown.", "Cost unknown.<br>Load unknown."),
+}
+ENVELOPE_ONLY_CHANGES = {
+    "how_satisfied": ("how_satisfied", "Polling."),
+    "constraints": ("constraints", ["No new store."]),
+    "gaps": ("gaps", ["Load known.", "Cost unknown."]),
+    "constraints order": ("constraints", ["Existing runtime.", "No new store."]),
+    "gaps order": ("gaps", ["Cost unknown.", "Load unknown."]),
+}
+
+
+def agreement_carrier():
+    rows = [row(FIRST_ID, **AGREEMENT_ROW), row(SECOND_ID)]
+    return assembled(output(traceability=rows))
+
+
+def assert_only_the_representations_disagree(text: str) -> None:
+    with pytest.raises(ArchitectureRefused, match="disagrees with the envelope") as (
+        caught
+    ):
+        validate_architecture_document(text, manifest())
+    assert caught.value.code is RENDER_INVALID
+
+
+@pytest.mark.parametrize("label", sorted(MARKDOWN_ONLY_CHANGES))
+def test_a_cell_changed_only_in_the_markdown_disagrees_with_the_envelope(label):
+    old, new = MARKDOWN_ONLY_CHANGES[label]
+    text = rebound(
+        agreement_carrier().text, lambda prefix: edit_markdown(prefix, old, new)
+    )
+    assert_only_the_representations_disagree(text)
+
+
+@pytest.mark.parametrize("label", sorted(ENVELOPE_ONLY_CHANGES))
+def test_a_value_changed_only_in_the_envelope_disagrees_with_the_table(label):
+    key, value = ENVELOPE_ONLY_CHANGES[label]
+    text = rebound(
+        agreement_carrier().text,
+        mutate=lambda body: body["traceability"][0].__setitem__(key, value),
+    )
+    assert_only_the_representations_disagree(text)
+
+
+AGREEING_ROWS = {
+    "empty arrays": {},
+    "several elements": AGREEMENT_ROW,
+    "pipes and backslashes": {
+        "how_satisfied": "a|b\\c",
+        "constraints": ["x|y", "\\|"],
+        "gaps": ["||", "\\\\"],
+    },
+    "literal br and line breaks": {
+        "how_satisfied": "one<br>two\r\nthree",
+        "constraints": ["a<br>b", "c\nd"],
+        "gaps": ["e\rf"],
+    },
+}
+
+
+@pytest.mark.parametrize("label", sorted(AGREEING_ROWS))
+def test_unchanged_values_agree_also_after_known_read_back_changes(label):
+    rows = [row(FIRST_ID, **AGREEING_ROWS[label]), row(SECOND_ID)]
+    carrier = assembled(output(traceability=rows, assumptions=["Reachable."]))
+    assert validate_architecture_document(carrier.text, manifest()) == carrier.artifact
+    stored = (
+        carrier.text.replace("\n- ", "\n* ")
+        .replace("\n\n", "\n\n\n")
+        .removesuffix("\n")
+    )
+    assert stored != carrier.text
+    assert validate_architecture_document(stored, manifest()) == carrier.artifact
+
+
+# F3 - the order of the persisted traceability -------------------------------
+
+
+def reverse_rows(body: dict) -> None:
+    body["traceability"].reverse()
+
+
+def test_persisted_rows_out_of_requirement_id_order_are_refused_not_sorted():
+    carrier = assembled(output())
+    text = rebound(carrier.text, mutate=reverse_rows)
+    stored = validate_artifact(extract_architecture_envelope(text))
+    assert [r["requirement_id"] for r in stored.body["traceability"]] == [
+        SECOND_ID,
+        FIRST_ID,
+    ]
+    with pytest.raises(ArchitectureRefused, match="ascending") as caught:
+        validate_architecture_document(text, manifest())
+    assert caught.value.code is RENDER_INVALID
+
+
+def test_sorted_rows_and_a_single_row_pass():
+    both = assembled(output())
+    assert validate_architecture_document(both.text, manifest()) == both.artifact
+    only = manifest(FIRST_ID)
+    single = assembled(output(traceability=[row(FIRST_ID)]), only)
+    assert validate_architecture_document(single.text, only) == single.artifact
+
+
+def test_the_builder_refuses_unordered_rows_and_leaves_the_callers_data_alone():
+    intended = output(traceability=[row(SECOND_ID), row(FIRST_ID)])
+    selected = manifest()
+    before = copy.deepcopy((intended, selected))
+    assert refused(lambda: assembled(intended, selected)) is RENDER_INVALID
+    assert (intended, selected) == before
+
+
+UNORDERED_COVERAGE_DEFECTS = {
+    "missing": ([THIRD_ID, FIRST_ID], CODE.TRACEABILITY_MISSING_REQUIREMENT),
+    "duplicate": (
+        [THIRD_ID, FIRST_ID, SECOND_ID, FIRST_ID],
+        CODE.TRACEABILITY_DUPLICATE_REQUIREMENT,
+    ),
+    "unknown": (
+        [THIRD_ID, "SDLC-FR-9999", FIRST_ID, SECOND_ID],
+        CODE.TRACEABILITY_UNKNOWN_REQUIREMENT,
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(UNORDERED_COVERAGE_DEFECTS))
+def test_the_order_rule_does_not_mask_a_coverage_refusal(label):
+    ids, code = UNORDERED_COVERAGE_DEFECTS[label]
+    selected = manifest(FIRST_ID, SECOND_ID, THIRD_ID)
+    rows = [row(FIRST_ID), row(SECOND_ID), row(THIRD_ID)]
+    text = rebound(
+        assembled(output(traceability=rows), selected).text,
+        mutate=lambda body: body.__setitem__("traceability", [row(i) for i in ids]),
+    )
+    assert document_refusal(text, selected) is code
+
+
+def test_an_unknown_anchor_in_unordered_rows_keeps_its_own_code():
+    def unordered_with_unknown_anchor(body: dict) -> None:
+        body["traceability"] = [row(SECOND_ID), row(FIRST_ID, anchors=["tsa-s3"])]
+
+    text = rebound(assembled(output()).text, mutate=unordered_with_unknown_anchor)
+    assert document_refusal(text) is CODE.TRACEABILITY_UNKNOWN_ANCHOR
+
+
+def test_a_shared_anchor_still_passes_the_document_validator():
+    rows = [row(FIRST_ID, anchors=["tsa-s03"]), row(SECOND_ID, anchors=["tsa-s03"])]
+    carrier = assembled(output(traceability=rows))
+    assert validate_architecture_document(carrier.text, manifest()) == carrier.artifact
+
+
+# F4 - exactly one newline before the envelope -------------------------------
+
+
+def test_exactly_one_newline_separates_the_last_section_from_the_envelope():
+    text = assembled(output()).text
+    assert "None identified.\n```json\n" in text
+    assert "\n\n```json" not in text
+
+
+def test_the_golden_carrier_is_the_golden_markdown_then_the_envelope():
+    carrier = golden_carrier()
+    assert GOLDEN_MARKDOWN.endswith("-->\n\nNone identified.\n")
+    payload = extract_architecture_envelope(carrier.text)
+    assert carrier.text == (
+        f"{GOLDEN_MARKDOWN}```json\n{canonical_artifact_json(payload)}\n```\n"
+    )
+    assert carrier.text.encode() == golden_carrier().text.encode()
+    assert validate_artifact(payload) == carrier.artifact
+
+
+@pytest.mark.parametrize(
+    "read_back",
+    [
+        lambda text: text.replace("\n```json", "\n\n```json"),
+        lambda text: text.replace("\n```json", "\n\n\n```json"),
+        lambda text: text.removesuffix("\n"),
+    ],
+)
+def test_read_back_blank_lines_around_the_envelope_stay_acceptable(read_back):
+    carrier = golden_carrier()
+    stored = read_back(carrier.text)
+    assert stored != carrier.text
+    assert validate_architecture_document(stored, manifest()) == carrier.artifact
