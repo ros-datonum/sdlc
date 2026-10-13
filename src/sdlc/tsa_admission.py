@@ -1070,15 +1070,44 @@ def _reuse_existing_manifest(
 # ---------------------------------------------------------------------------
 
 
+def _confirm_intended_manifest(
+    start: _Start, context: BootstrapContext, emitted: str, *, is_newly_written: bool
+) -> ManifestResult:
+    """The persisted Manifest must be exactly the artifact this command emitted.
+
+    State D proves a structurally valid accepted Manifest, not that this
+    command's write stored its payload. The comparison is over the canonical
+    artifact, so carrier re-serialization by Fibery does not matter, while any
+    other valid Manifest — even one for the same caller inputs — is a failed
+    write that is neither adopted nor overwritten.
+    """
+    artifact, payload = _load_manifest(start.workspace, context)
+    if canonical_artifact_json(payload) != emitted:
+        raise AdmissionRefused(
+            CycleResultCode.FIBERY_WRITE_FAILED,
+            "The Input Manifest read back as a different artifact than the one "
+            "written. Nothing was overwritten or retried.",
+        )
+    return ManifestResult(context, artifact, is_newly_written=is_newly_written)
+
+
 def _resolve_after_mutation(
-    start: _Start, reason: str, *, is_absent_retryable: bool
+    start: _Start,
+    reason: str,
+    *,
+    is_absent_retryable: bool,
+    emitted: str | None = None,
 ) -> ManifestResult | None:
     """Both rediscovery levels after a Manifest mutation, then classify (3.5).
 
     I04's rediscovery revalidates the cycle first and only then reaches the
-    deterministic child. A valid accepted child is adopted, never rewritten; a
-    refusing state keeps its own code; an absent child returns None only where
-    the caller may retry the create at the same id.
+    deterministic child. A refusing state keeps its own code; an absent child
+    returns None only where the caller may retry the create at the same id.
+
+    A valid accepted child is never rewritten. Where this command wrote no
+    body (`emitted` is None) it is some other start's Manifest and is compared
+    by caller inputs, as a repeated start is. After this command's own body
+    write, `emitted` is what must be durable, and nothing else is accepted.
     """
     with _cycle_refusals():
         found = rediscover_after_unknown_outcome(
@@ -1086,6 +1115,10 @@ def _resolve_after_mutation(
             start.project_id,
             start.cycle_id,
             DocumentKind.INPUT_MANIFEST,
+        )
+    if found.outcome is CycleOutcome.D and emitted is not None:
+        return _confirm_intended_manifest(
+            start, found.context, emitted, is_newly_written=False
         )
     if found.outcome is CycleOutcome.D:
         return _reuse_existing_manifest(start, found.context)
@@ -1100,14 +1133,14 @@ def _resolve_after_mutation(
     )
 
 
-def _require_fresh_shell(start: _Start) -> DocumentPlacement | None:
-    """After a known create: the gate again, then the shell to write into.
+def _observe_own_shell(start: _Start) -> BootstrapContext | None:
+    """After a known create: is the child exactly the empty shell just created?
 
     The create is a revalidation boundary, so nothing read before it authorizes
-    the body write. The one observation that does is the full discovery now
-    reporting exactly the empty Manifest child this invocation just created —
-    correctly placed under a still-valid Architecture — re-resolved immediately
-    before the write. Returns None for any other observation.
+    the body write. The full discovery must now report exactly an empty
+    Manifest child, correctly placed under a still-valid Architecture, and its
+    content must read back empty. Returns the context read now, or None for
+    any other observation.
     """
     found = _gate(start)
     is_own_shell = (
@@ -1119,7 +1152,43 @@ def _require_fresh_shell(start: _Start) -> DocumentPlacement | None:
     child = _resolve_manifest_child(start.workspace, found.context)
     if child is None or _read_manifest_content(start.workspace, child).strip():
         return None
-    return child
+    return found.context
+
+
+@contextmanager
+def _body_unwritten_after_create(context: BootstrapContext) -> Iterator[None]:
+    """A refusal after the create keeps its code and says what already exists."""
+    try:
+        yield
+    except AdmissionRefused as refused:
+        raise AdmissionRefused(
+            refused.code,
+            f"{refused} Before this check, Input Manifest Document "
+            f"{context.input_manifest_document_id!r} had already been created; it "
+            "is left empty: its body was not written and it was not deleted.",
+            refused.details,
+        ) from refused
+
+
+def _resolve_writable_shell(
+    start: _Start, admitted: AdmittedInputs
+) -> DocumentPlacement | None:
+    """Everything that must hold for the body write, in the order it is owed.
+
+    First the reads that take time: the shell observation, then the inputs
+    admitted again and compared with the ones the intended Manifest was built
+    from (contract 10) — a change refuses, the intended Manifest is never
+    rebuilt around it. Last, the child and Architecture root placements are
+    resolved fresh and checked locally (spec 2.2.1); the caller writes next,
+    with no other remote read in between. Returns None when the child is not
+    this invocation's empty shell.
+    """
+    context = _observe_own_shell(start)
+    if context is None:
+        return None
+    with _body_unwritten_after_create(context):
+        _readmit_unchanged(start, context, admitted)
+        return _resolve_manifest_child(start.workspace, context)
 
 
 def _validate_manifest_write(start: _Start, emitted: str) -> ManifestResult:
@@ -1138,19 +1207,16 @@ def _validate_manifest_write(start: _Start, emitted: str) -> ManifestResult:
             f"The Input Manifest write did not become durable: read-back found "
             f"{found.outcome}. Nothing was retried.",
         )
-    artifact, payload = _load_manifest(start.workspace, found.context)
-    if canonical_artifact_json(payload) != emitted:
-        raise AdmissionRefused(
-            CycleResultCode.FIBERY_WRITE_FAILED,
-            "The Input Manifest read back as a different artifact than the one "
-            "written. Nothing was overwritten or retried.",
-        )
-    return ManifestResult(found.context, artifact, is_newly_written=True)
+    return _confirm_intended_manifest(
+        start, found.context, emitted, is_newly_written=True
+    )
 
 
-def _write_manifest_body(start: _Start, carrier: str, emitted: str) -> ManifestResult:
+def _write_manifest_body(
+    start: _Start, admitted: AdmittedInputs, carrier: str, emitted: str
+) -> ManifestResult:
     """The second half of the one Manifest write, into the shell just created."""
-    shell = _require_fresh_shell(start)
+    shell = _resolve_writable_shell(start, admitted)
     if shell is None:
         outcome = _resolve_after_mutation(
             start,
@@ -1167,6 +1233,7 @@ def _write_manifest_body(start: _Start, carrier: str, emitted: str) -> ManifestR
             start,
             f"The Input Manifest write outcome is unknown ({error}).",
             is_absent_retryable=False,
+            emitted=emitted,
         )
         assert outcome is not None  # absent is not retryable here
         return outcome
@@ -1207,7 +1274,10 @@ def _attempt_manifest_write(
             is_absent_retryable=True,
         )
     return _write_manifest_body(
-        start, render_manifest_carrier(context, sealed), canonical_artifact_json(sealed)
+        start,
+        admitted,
+        render_manifest_carrier(context, sealed),
+        canonical_artifact_json(sealed),
     )
 
 
@@ -1229,8 +1299,9 @@ def _create_manifest(
     """Command-local `C`: validated inputs in hand, no Manifest durable yet.
 
     `admitted` was read before any mutation. It is read again, fresh, after
-    every mutation boundary that precedes a create: the Architecture bootstrap,
-    and an earlier create whose outcome was unknown.
+    every mutation boundary: the Architecture bootstrap and an earlier create
+    whose outcome was unknown, before the next create; and the known create
+    itself, before the body write.
     """
     is_admission_fresh = found.outcome is CycleOutcome.B
     if not is_admission_fresh:

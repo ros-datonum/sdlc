@@ -61,6 +61,7 @@ from sdlc.tsa_artifacts import (
     extract_artifact_payload,
     manifest_digest,
     requirement_input_digest,
+    sealed_artifact,
     start_input_digest,
     validate_artifact,
 )
@@ -956,16 +957,27 @@ def test_admission_completes_before_the_first_bootstrap_mutation():
     assert reads_before_create == [1]
 
 
+def requirement_reads_at(scene: World, call: str) -> list[int]:
+    """How many times the Requirement had been read when `call` first ran."""
+    reads: list[int] = []
+    scene.tsa.before(
+        call, 1, lambda: reads.append(scene.req.calls.count("read_requirement"))
+    )
+    return reads
+
+
 def test_admission_is_repeated_after_the_bootstrap_mutation():
     scene = world("absent")
+    reads_before_create = requirement_reads_at(scene, "create_tsa_child_document")
     start(scene)
-    assert scene.req.calls.count("read_requirement") == 2
+    assert reads_before_create == [2]
 
 
 def test_state_b_admits_once_then_runs_the_gate_immediately_before_the_create():
     scene = world()
+    reads_before_create = requirement_reads_at(scene, "create_tsa_child_document")
     start(scene)
-    assert scene.req.calls.count("read_requirement") == 1
+    assert reads_before_create == [1]
     calls = [name for name, _ in scene.tsa.log]
     create = calls.index("create_tsa_child_document")
     assert calls[create - 1] == "resolve_placement"
@@ -1513,7 +1525,23 @@ def test_the_retry_follows_a_cycle_level_rediscovery_and_a_fresh_admission():
     between = calls[first + 1 : second]
     assert "documents_attached_to_project" in between
     assert between.count("read_project") >= 2
-    assert scene.req.calls.count("read_requirement") == 2
+
+
+def test_the_retried_create_is_preceded_by_a_fresh_admission():
+    scene = world()
+    reads_before_create: list[int] = []
+
+    def note_reads() -> None:
+        reads_before_create.append(scene.req.calls.count("read_requirement"))
+
+    def note_reads_then_fail() -> None:
+        note_reads()
+        raise FiberyError("connection reset")
+
+    scene.tsa.before("create_tsa_child_document", 1, note_reads_then_fail)
+    scene.tsa.before("create_tsa_child_document", 2, note_reads)
+    start(scene)
+    assert reads_before_create == [1, 2]
 
 
 def test_a_create_that_never_lands_stops_after_the_bounded_retry():
@@ -1634,16 +1662,34 @@ def test_placement_drift_after_the_create_refuses_the_body_write(drift):
     assert scene.tsa.content_of(MANIFEST_ID) == ""
 
 
-def test_the_body_write_uses_a_placement_resolved_after_the_create():
-    scene = world()
-    start(scene)
+def calls_from_create_to_write(scene: World) -> list[tuple[str, str]]:
     log = scene.tsa.log
     create = log.index(("create_tsa_child_document", MANIFEST_ID))
     write = next(i for i, e in enumerate(log) if e[0] == "write_document_content")
-    between = log[create + 1 : write]
-    assert ("resolve_placement", MANIFEST_ID) in between
-    assert ("resolve_placement", ARCHITECTURE_ID) in between
-    assert between[-1][0] == "read_document_content"
+    return log[create + 1 : write]
+
+
+@pytest.mark.parametrize("ux", [NOT_APPLICABLE, APPLICABLE])
+def test_the_final_placement_pair_is_the_last_remote_read_before_the_write(ux):
+    scene = world()
+    reads_at_write = requirement_reads_at(scene, "write_document_content")
+    start(scene, ux=ux)
+    between = calls_from_create_to_write(scene)
+    assert between[-2:] == [
+        ("resolve_placement", MANIFEST_ID),
+        ("resolve_placement", ARCHITECTURE_ID),
+    ]
+    earlier = [name for name, _ in between[:-2]]
+    assert "read_document_content" in earlier
+    assert reads_at_write == [scene.req.calls.count("read_requirement")]
+
+
+def last_content_read_before_the_write(**changes) -> int:
+    """Which `read_document_content` is the last one before the body write."""
+    reference = world()
+    start(reference, **changes)
+    calls = [name for name, _ in reference.tsa.log]
+    return calls[: calls.index("write_document_content")].count("read_document_content")
 
 
 def test_a_shell_that_is_no_longer_empty_is_not_overwritten():
@@ -1776,3 +1822,246 @@ def test_evidence_replaced_by_other_valid_evidence_mid_command_is_stale():
     assert error.code is AdmissionResultCode.INPUTS_STALE
     assert scene.tsa.count("create_tsa_child_document") == 0
     assert scene.tsa.resolve_placement(MANIFEST_ID) is None
+
+
+# --------------------------------------------------------------------------
+# Review F1: inputs are revalidated after a known create, before the body write
+# --------------------------------------------------------------------------
+
+
+def valid_review_rewritten(scene: World):
+    """The second Requirement's Review Result changes but stays valid evidence."""
+
+    def effect() -> None:
+        node = next(d for d in scene.req.documents if d.id == "review-doc-40")
+        before = scene.req.content[node.secret]
+        after = before.replace('"clarity": "adequate"', '"clarity": "reworded"')
+        assert after != before
+        scene.req.content[node.secret] = after
+
+    return effect
+
+
+def root_drifts(scene: World):
+    return lambda: root_edited_after_review(scene)
+
+
+def ux_drifts(scene: World):
+    return lambda: scene.tsa.set_content(UX_DOCUMENT_ID, "# Another document\n")
+
+
+INPUT_DRIFT = {
+    "requirement root": (
+        root_drifts,
+        {},
+        AdmissionResultCode.REQUIREMENT_NOT_ADMISSIBLE,
+    ),
+    "valid review result content": (
+        valid_review_rewritten,
+        {"requirement_ids": (SECOND_ID,)},
+        AdmissionResultCode.INPUTS_STALE,
+    ),
+    "applicable ux document": (
+        ux_drifts,
+        {"ux": APPLICABLE},
+        AdmissionResultCode.UX_EVIDENCE_INVALID,
+    ),
+}
+
+
+def assert_shell_left_unwritten(scene: World, creates: int = 1) -> None:
+    """The Document create happened; no body write did, and nothing repaired it."""
+    assert scene.tsa.count("write_document_content") == 0
+    assert scene.tsa.written == []
+    assert scene.tsa.mutations == [f"create:{MANIFEST_ID}"]
+    assert scene.tsa.count("create_tsa_child_document") == creates
+    assert scene.tsa.content_of(MANIFEST_ID) == ""
+
+
+@pytest.mark.parametrize("label", sorted(INPUT_DRIFT))
+def test_input_drift_after_a_known_create_stops_the_body_write(label):
+    drift, changes, code = INPUT_DRIFT[label]
+    scene = world()
+    add_applied_requirement(scene.req)
+    scene.tsa.after("create_tsa_child_document", 1, drift(scene))
+    error = refusal(scene, **changes)
+    assert error.code is code
+    assert_shell_left_unwritten(scene)
+
+
+def test_a_refusal_after_the_create_says_the_document_was_created():
+    scene = world()
+    scene.tsa.after("create_tsa_child_document", 1, root_drifts(scene))
+    error = refusal(scene)
+    assert MANIFEST_ID in str(error)
+    assert "created" in str(error)
+
+
+@pytest.mark.parametrize("label", sorted(INPUT_DRIFT))
+def test_input_drift_after_the_retried_create_stops_the_body_write(label):
+    drift, changes, code = INPUT_DRIFT[label]
+    scene = world()
+    add_applied_requirement(scene.req)
+    scene.tsa.before("create_tsa_child_document", 1, fail())
+    scene.tsa.after("create_tsa_child_document", 2, drift(scene))
+    error = refusal(scene, **changes)
+    assert error.code is code
+    assert_shell_left_unwritten(scene, creates=2)
+
+
+@pytest.mark.parametrize("ux", [NOT_APPLICABLE, APPLICABLE])
+def test_unchanged_inputs_after_the_create_get_the_one_initial_body_write(ux):
+    scene = world()
+    reads_at_create = requirement_reads_at(scene, "create_tsa_child_document")
+    reads_at_write = requirement_reads_at(scene, "write_document_content")
+    requirement_writes = list(scene.req.mutations)
+    result = start(scene, ux=ux)
+    assert result.is_newly_written
+    assert reads_at_create == [1]
+    assert reads_at_write == [2]
+    assert scene.tsa.count("write_document_content") == 1
+    assert scene.tsa.count("create_tsa_child_document") == 1
+    assert scene.req.mutations == requirement_writes
+
+
+def test_a_rediscovered_empty_manifest_is_not_given_the_initial_write():
+    scene = world()
+    scene.tsa.seed_child(MANIFEST_ID, ARCHITECTURE_ID, "")
+    error = clean_refusal(scene)
+    assert error.code is CycleResultCode.MANIFEST_SHELL_UNRECOVERABLE
+    assert scene.req.calls.count("read_requirement") == 0
+
+
+# --------------------------------------------------------------------------
+# Review F2: an unknown body write is confirmed against the intended Manifest
+# --------------------------------------------------------------------------
+
+
+def with_another_process_digest(carrier: str) -> str:
+    """Another schema-valid accepted Manifest for the same caller inputs.
+
+    One Process Result binding differs; every dependent digest and the
+    acceptance are recomputed, so nothing about it is malformed.
+    """
+    payload = extract_artifact_payload(carrier)
+    body = payload["body"]
+    rows = body["manifest_body"]["requirements"]
+    rows[0]["process_result"]["payload_digest"] = "f" * 64
+    body["manifest_body"]["ux"]["requirement_input_digest"] = requirement_input_digest(
+        rows
+    )
+    body["manifest_digest"] = manifest_digest(body["manifest_body"])
+    body["acceptance"]["manifest_digest"] = body["manifest_digest"]
+    return carrier_of(sealed_artifact(payload))
+
+
+def test_the_substituted_manifest_is_valid_and_differs_only_in_its_bindings():
+    intended = accepted_manifest_carrier()
+    intended_artifact = validate_artifact(extract_artifact_payload(intended))
+    other = validate_artifact(
+        extract_artifact_payload(with_another_process_digest(intended))
+    )
+    assert other.artifact_type == INPUT_MANIFEST
+    assert other.artifact_digest != intended_artifact.artifact_digest
+    assert other.body["manifest_digest"] != intended_artifact.body["manifest_digest"]
+    assert other.body["acceptance"]["manifest_digest"] == other.body["manifest_digest"]
+    assert start_input_digest(
+        tsa_admission._persisted_projection(CONTEXT, other)
+    ) == start_input_digest(
+        tsa_admission._persisted_projection(CONTEXT, intended_artifact)
+    )
+    scene = world()
+    scene.tsa.seed_child(
+        MANIFEST_ID, ARCHITECTURE_ID, with_another_process_digest(intended)
+    )
+    assert discover_cycle(scene.tsa, PROJECT_ID, CYCLE).outcome is CycleOutcome.D
+
+
+@pytest.mark.parametrize("is_response_lost", [True, False])
+def test_another_valid_manifest_after_the_body_write_is_a_failed_write(
+    is_response_lost,
+):
+    scene = world()
+    scene.tsa.store_as = with_another_process_digest
+    if is_response_lost:
+        scene.tsa.after("write_document_content", 1, fail())
+    error = refusal(scene)
+    assert error.code is CycleResultCode.FIBERY_WRITE_FAILED
+    assert scene.tsa.count("write_document_content") == 1
+    assert scene.tsa.count("create_tsa_child_document") == 1
+    stored = scene.tsa.content_of(MANIFEST_ID)
+    assert stored == with_another_process_digest(scene.tsa.written[0])
+    assert discover_cycle(scene.tsa, PROJECT_ID, CYCLE).outcome is CycleOutcome.D
+
+
+@pytest.mark.parametrize(
+    "store_as", [None, lambda markdown: markdown.rstrip("\n")], ids=["exact", "trimmed"]
+)
+def test_the_intended_manifest_after_a_lost_response_is_confirmed_once(store_as):
+    scene = world()
+    scene.tsa.store_as = store_as
+    scene.tsa.after("write_document_content", 1, fail())
+    result = start(scene)
+    assert not result.is_newly_written
+    assert scene.tsa.count("write_document_content") == 1
+    emitted = validate_artifact(extract_artifact_payload(scene.tsa.written[0]))
+    assert result.artifact == emitted
+    assert result.artifact == validate_artifact(manifest_payload(scene))
+
+
+@pytest.mark.parametrize(
+    "label", ["no fence", "missing acceptance", "acceptance bound to another digest"]
+)
+def test_an_unknown_write_that_landed_non_conforming_keeps_its_own_code(label):
+    content, code = refusing_manifests()[label]
+    scene = world()
+    scene.tsa.store_as = lambda markdown: content
+    scene.tsa.after("write_document_content", 1, fail())
+    error = refusal(scene)
+    assert error.code is code
+    assert scene.tsa.count("write_document_content") == 1
+    assert scene.tsa.content_of(MANIFEST_ID) == content
+
+
+@pytest.mark.parametrize("drift", [move_architecture_root, reparent_manifest])
+def test_an_unknown_write_with_placement_drift_keeps_the_cycle_refusal(drift):
+    scene = world()
+
+    def drift_then_fail() -> None:
+        drift(scene)()
+        raise FiberyError("connection reset")
+
+    scene.tsa.after("write_document_content", 1, drift_then_fail)
+    error = refusal(scene)
+    assert error.code is CycleResultCode.CYCLE_FOREIGN_PROJECT
+    assert scene.tsa.count("write_document_content") == 1
+
+
+def test_a_repeat_still_compares_caller_inputs_and_not_bindings():
+    other = with_another_process_digest(accepted_manifest_carrier())
+    scene = world()
+    scene.tsa.seed_child(MANIFEST_ID, ARCHITECTURE_ID, other)
+    result = start(scene, clock=later_clock)
+    assert not result.is_newly_written
+    assert scene.tsa.mutations == []
+    assert scene.tsa.content_of(MANIFEST_ID) == other
+    assert scene.req.calls.count("read_requirement") == 0
+
+
+# --------------------------------------------------------------------------
+# Review F3: nothing is read between the final placement pair and the write
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ux", [NOT_APPLICABLE, APPLICABLE], ids=["no ux", "ux"])
+@pytest.mark.parametrize("drift", [reparent_manifest, move_architecture_root])
+def test_placement_drift_during_the_last_content_read_stops_the_write(drift, ux):
+    scene = world()
+    scene.tsa.after(
+        "read_document_content",
+        last_content_read_before_the_write(ux=ux),
+        drift(scene),
+    )
+    error = refusal(scene, ux=ux)
+    assert error.code is CycleResultCode.CYCLE_FOREIGN_PROJECT
+    assert_shell_left_unwritten(scene)
