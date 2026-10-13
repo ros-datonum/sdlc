@@ -30,6 +30,7 @@ from sdlc.tsa_artifacts import (
     _digest,
     _reused_paths_for,
     artifact_digest,
+    canonical_artifact_json,
     canonical_bytes,
     canonical_cycle_id,
     canonical_json,
@@ -1741,6 +1742,65 @@ def test_a_caller_cannot_admit_null_by_naming_a_fake_reused_path():
 def test_whole_payload_reuse_cannot_be_requested():
     with pytest.raises(TypeError):
         canonical_json({"a": None}, ((),))
+
+
+# ==========================================================================
+# The artifact-aware carrier serialization (4.1, 5.1.1)
+# ==========================================================================
+
+
+def test_canonical_json_refuses_every_real_input_manifest():
+    """The reason `canonical_artifact_json` exists: a Root's parent is null."""
+    with pytest.raises(InvalidTsaArtifact, match="parent_document_id is null"):
+        canonical_json(input_manifest_artifact())
+
+
+def test_canonical_artifact_json_serializes_an_input_manifest_and_round_trips():
+    artifact = input_manifest_artifact()
+    serialized = canonical_artifact_json(artifact)
+    assert '"parent_document_id":null' in serialized
+    assert json.loads(serialized) == artifact
+    assert validate_artifact(json.loads(serialized)).artifact_type == INPUT_MANIFEST
+
+
+def test_canonical_artifact_json_is_the_serialization_the_digest_covers():
+    artifact = input_manifest_artifact()
+    unsealed = {key: item for key, item in artifact.items() if key != "artifact_digest"}
+    covered = "sdlc.tsa.v1\ntsa.input_manifest\n1\n" + canonical_artifact_json(unsealed)
+    assert (
+        hashlib.sha256(covered.encode("utf-8")).hexdigest()
+        == (artifact["artifact_digest"])
+    )
+
+
+def test_canonical_artifact_json_keeps_the_reused_subtree_and_normalises_the_rest():
+    artifact = copy.deepcopy(input_manifest_artifact())
+    artifact["project_code"] = "Cafe\u0301"
+    serialized = canonical_artifact_json(artifact)
+    assert '"project_code":"Caf\u00e9"' in serialized
+    assert "Cafe\u0301 design" in serialized
+
+
+def test_canonical_artifact_json_takes_the_exemption_from_no_caller():
+    import inspect
+
+    assert list(inspect.signature(canonical_artifact_json).parameters) == ["payload"]
+    with pytest.raises(TypeError):
+        canonical_artifact_json(input_manifest_artifact(), (("body",),))
+
+
+@pytest.mark.parametrize("build", [architecture_artifact, process_result_artifact])
+def test_canonical_artifact_json_exempts_no_other_artifact_type(build):
+    artifact = build()
+    assert canonical_artifact_json(artifact) == canonical_json(artifact)
+    with pytest.raises(InvalidTsaArtifact, match="null"):
+        canonical_artifact_json({**artifact, "tree_manifest": None})
+
+
+@pytest.mark.parametrize("payload", [{"body": {}}, {"artifact_type": "tsa.unknown"}])
+def test_canonical_artifact_json_refuses_an_undeclared_artifact_type(payload):
+    with pytest.raises(InvalidTsaArtifact):
+        canonical_artifact_json(payload)
 
 
 def test_only_the_input_manifest_receives_the_exception():

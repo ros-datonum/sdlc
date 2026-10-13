@@ -1606,6 +1606,20 @@ def compute_artifact_digest(payload: dict[str, object]) -> str:
     return artifact_digest(artifact_type, SCHEMA_VERSION, payload)
 
 
+def canonical_artifact_json(payload: dict[str, object]) -> str:
+    """The canonical serialization of one whole artifact payload, for its carrier.
+
+    `canonical_json` grants no reused-subtree exemption, so it refuses every
+    real `tsa.input_manifest`: a tree manifest's Root entry carries a `null`
+    parent (5.1.1). Like the digests, this derives the exemption from the
+    payload's own declared type and never takes it from a caller. The
+    `artifact_digest` key is kept: these are the bytes a carrier stores, not
+    the bytes a digest covers.
+    """
+    artifact_type = _require_known_artifact_type(payload.get("artifact_type"))
+    return _canonical_json(payload, _reused_paths_for(artifact_type))
+
+
 def validate_artifact(payload: object) -> TsaArtifact:
     """Validate one artifact payload: envelope, closed body, then digest (4.4).
 
