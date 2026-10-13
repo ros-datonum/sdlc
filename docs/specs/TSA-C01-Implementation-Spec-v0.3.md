@@ -39,12 +39,13 @@ Every changed passage carries the marker **[v0.3 PROPOSED — P1]** or
 | Section | Change | Proposal |
 |---|---|---|
 | Title and header | Version, draft status, proposed-successor line, code baseline for impact | — |
-| Draft v0.3 — status and proposed changes | New section: status, summary, impact, acceptance examples | P1, P2 |
-| 8.3 Deterministic rendering | New rule: no fenced block in the normative sections | P2 |
+| Draft v0.3 — status and proposed changes | New section: status, summary, impact, acceptance matrix and examples | P1, P2 |
+| Version and supersession | One italic note added: the section is carried over from v0.2 and describes v0.2's relation to v0.1. The v0.2 text below it is verbatim | — |
+| 8.3 Deterministic rendering | New rule: no code block in the normative sections — a structural rule tied to CommonMark 0.31.2 and a separate strict prefix rule | P2 |
 | 8.3.1 Escaping | Mapping table restated in code points; normative vectors added. The pipe row of v0.2 is replaced | P1 |
 | 9.1 Response shape | The "other than illustrative diagrams" exception is removed for this slice | P2 |
-| 9.2 Deterministic vs semantic | States what "code block" means structurally and where the response-stage check lives | P2 |
-| 18.1 Ownership | One clarification of the I06 / I07 boundary for the fenced-block rule | P2 |
+| 9.2 Deterministic vs semantic | States how a code block is recognised in a raw response value, and the result code | P2 |
+| 18.1 Ownership | One clarification of the I06 / I07 boundary for the code-block rules | P2 |
 | 21 Conflicts with the frozen contract | One note: no conflict found for P1 or P2 | P1, P2 |
 
 No other section is changed. In particular 4.6.1, 4.6.3.1, 8.1, 8.2, 13.8, 17 and
@@ -63,10 +64,15 @@ two code points `[92, 124]`: one literal backslash, then the literal vertical
 bar. Section 8.3.1 states the whole mapping in code points, so the rule no
 longer depends on how any Markdown table is displayed.
 
-**Rationale.** A backslash before a vertical bar is what keeps the bar from
-delimiting a table cell; the backslash mapping `[92] → [92, 92]` keeps a source
-backslash from being read as that escape. The two rules are consistent only
-with `[124] → [92, 124]`.
+**Rationale.** The renderer of 8.3 writes traceability as a pipe table, and
+model text reaches its cells through `escape_markdown`. A backslash placed
+before a vertical bar is the escape that pipe-table syntax itself provides for
+a literal bar in a cell, and the existing backslash mapping `[92] → [92, 92]`
+keeps a source backslash distinguishable from that escape. The mapping is
+proposed because it fits the renderer this slice already defines and adds no
+second escaping mechanism. This draft does not claim that no other encoding of
+a vertical bar could work; it proposes this one. How Fibery re-serializes it is
+a live-evidence matter and is not asserted here.
 
 **Unchanged by P1.** The backslash mapping; stripping; single-pass application;
 the `\r\n`, `\r`, `\n`, `<` and `>` rules; per-element escaping of arrays and
@@ -81,15 +87,28 @@ A diagram block cannot survive that escaping as a block, and v0.2 defines no
 other representation for one.
 
 **Proposed rule.** The first TSA-C01 slice does not support code blocks in the
-normative Architecture sections, including illustrative fenced diagrams,
-whether closed or not. This **changes** what v0.2 allowed: the exception in 9.1
-is removed for this slice. It was not always forbidden.
+normative Architecture sections, including illustrative diagrams, whether
+closed or not. This **changes** what v0.2 allowed: the exception in 9.1 is
+removed for this slice. It was not always forbidden.
+
+Two independent rules refuse; either one is sufficient, and neither stands in
+for the other. Their normative text is in 8.3 and 9.2.
+
+- **Rule S — structural.** No indented code block and no fenced code block, as
+  CommonMark 0.31.2 classifies them, at the top level or inside any container
+  block. The reference to CommonMark is itself part of this proposal; neither
+  the contract nor a recorded human decision established it.
+- **Rule X — strict prefix.** No line whose first characters, after at most
+  three spaces, are three or more consecutive backticks or three or more
+  consecutive tildes. This is a deliberately stricter format restriction that
+  also refuses some lines rule S reads as inline text. It needs approval in its
+  own right.
 
 **Rationale and consequence.**
 
 - `escape_markdown` stays the only escaping rule; no per-context variant, no
   passthrough.
-- No diagram parser, diagram renderer or Markdown library is introduced.
+- No diagram parser, diagram renderer or diagram passthrough is introduced.
 - Architectural explanation stays text in the existing twelve Architect
   sections.
 - Support for native diagram blocks is deferred. This draft creates no work
@@ -99,23 +118,94 @@ is removed for this slice. It was not always forbidden.
 
 | | Case | Status under P2 |
 |---|---|---|
-| A | A fenced block in a normative section, opened with backticks or with tildes, closed or not, illustrative or not | Not supported. Backtick and tilde have the same status |
-| B | The trailing `` ```json `` envelope (4.1, 8.3.1) | Required and allowed, exactly as in v0.2. It is service metadata outside the sixteen sections, not a model-authored block inside one |
-| C | Backticks or tildes inside a line of text, or a mention of them | Allowed. No character is banned |
+| A | A structural code block in a normative section: fenced with backticks or tildes, or indented; at the top level or inside a list item or block quote; closed or not; illustrative or not | Not supported. Backtick and tilde have the same status. Being inside a list or next to a table is not an exemption |
+| B | The trailing `` ```json `` envelope (4.1, 8.3.1) | Required and allowed, exactly as in v0.2. The existing carrier path separates it; it is outside the scope of both rules and keeps its I01 schema and digest validation |
+| C | Backticks or tildes inside a line of text, or a mention of them | Not a code block for that reason alone, and no character is banned. Allowed only where neither rule S nor rule X is broken and every other representation rule holds |
 | D | Input that would need case A | Refused. Never stripped, never closed automatically, never rewritten, never re-expressed as prose by code or by a second model call |
 
-**Result boundaries, unchanged in kind.**
+**Stages and result codes.**
 
-- A malformed carrier, schema, digest or lineage keeps the I01 taxonomy
-  (`ARTIFACT_MALFORMED` and the codes of 13.8).
-- A carrier that I01 accepts but whose normative sections break the supported
-  representation is `ARCHITECTURE_RENDER_INVALID` (I06).
-- Refusing an Architect **response** is I07's stage validation (9.2, contract
-  §16 row 15), under the existing catalogue; it is not a new renderer function.
+| Stage | What is checked | Violation |
+|---|---|---|
+| I07, raw response (9.2) | Each model-supplied string value, complete and decoded, before stripping and before `escape_markdown` | `INVALID_MODEL_OUTPUT` |
+| I06, formed Markdown (8.3) | The normative Markdown `render` produces | `ARCHITECTURE_RENDER_INVALID` |
+| I06, handed-in Document (8.3) | The normative Markdown of a persisted post-apply Document, with no assumption that it ever passed I07 | `ARCHITECTURE_RENDER_INVALID` |
+| I01, carrier | The trailing envelope: carrier, schema, digest, lineage | The I01 taxonomy, unchanged (`ARTIFACT_MALFORMED` and the codes of 13.8) |
+
+I06 does not reconstruct a raw response from escaped text and does not claim to
+have performed the response-stage check. The pre-apply bootstrap carrier
+(4.1.1) is outside section 8 and is not affected.
 
 P2 adds no result code, schema field, diagram entity, heading, requirement or
-approval rule, and it does not define a Markdown grammar: it decides which
-block representation is supported, nothing more.
+approval rule. It adopts CommonMark's classification for two block types only;
+it does not make CommonMark the grammar of the Document.
+
+### Acceptance matrix for P2
+
+Each input is written as a JSON string literal: `\n` is one LF (code point 10),
+every space shown inside the quotes is one space (code point 32), and nothing
+outside the quotes belongs to the input. The indentation of this document's own
+tables and lists describes nothing.
+
+```text
+E01  "```\ngraph TD\n```"
+E02  "```\ngraph TD"
+E03  "~~~\ngraph TD\n~~~"
+E04  "~~~\ngraph TD"
+E05  "Structure follows.\n~~~mermaid\ngraph TD\n~~~"
+E06  "Structure follows.\n\n    graph TD"
+E07  "Structure follows.\n    continued text"
+E08  "- ~~~\n    ordinary text\n    ~~~"
+E09  "- ~~~\n  ordinary text"
+E10  "- ordinary ~~~ marker"
+E11  "| Requirement ID | Gaps |\n|---|---|\n| SDLC-FR-0007 | ~~~ |"
+E12  "~~~"
+E13  "```inline``` then text"
+E14  the trailing envelope: "```json\n" + canonical artifact JSON + "\n```\n"
+```
+
+"Surface" names the surface the row is stated for. Rules S and X apply the same
+way on every surface in scope, so a row stated for one surface also fixes the
+classification on the others; the owning stage and the code are those of the
+surface.
+
+| Input | Surface | Rule S: CommonMark 0.31.2 class | Rule X | P2 outcome | Owner | Result code |
+|---|---|---|---|---|---|---|
+| E01 | raw model value | fenced code block, closed | match | refused | I07 | `INVALID_MODEL_OUTPUT` |
+| E02 | raw model value | fenced code block, unclosed | match | refused | I07 | `INVALID_MODEL_OUTPUT` |
+| E03 | normative Markdown, handed-in | fenced code block, closed | match | refused | I06 | `ARCHITECTURE_RENDER_INVALID` |
+| E04 | normative Markdown, handed-in | fenced code block, unclosed | match | refused | I06 | `ARCHITECTURE_RENDER_INVALID` |
+| E05 | raw model value, multi-line | fenced code block interrupting a paragraph | match | refused | I07 | `INVALID_MODEL_OUTPUT` |
+| E06 | normative Markdown, handed-in | indented code block after a blank line | no match | refused, by rule S alone | I06 | `ARCHITECTURE_RENDER_INVALID` |
+| E07 | normative Markdown, handed-in | paragraph continuation; no code block | no match | not refused by P2 | I06 | — |
+| E08 | normative Markdown, handed-in | fenced code block inside a list item, closed | no match | refused, by rule S alone | I06 | `ARCHITECTURE_RENDER_INVALID` |
+| E09 | normative Markdown, handed-in | fenced code block inside a list item, unclosed | no match | refused, by rule S alone | I06 | `ARCHITECTURE_RENDER_INVALID` |
+| E10 | normative Markdown, formed or handed-in | paragraph inside a list item; no code block | no match | not refused by P2 | I06 | — |
+| E11 | normative Markdown, formed or handed-in: a table row whose cell is the literal marker | no code block | no match | not refused by P2 | I06 | — |
+| E12 | raw model value | fenced code block, empty and unclosed | match | refused | I07 | `INVALID_MODEL_OUTPUT` |
+| E13 | raw model value, or normative Markdown | paragraph with inline code; no code block | match | refused, by rule X alone | I07 or I06, by surface | `INVALID_MODEL_OUTPUT` or `ARCHITECTURE_RENDER_INVALID`, by surface |
+| E14 | trailing envelope | out of scope of rules S and X | out of scope | unaffected | I01 | the I01 taxonomy |
+
+Notes on the matrix.
+
+- E11 and E12 are different surfaces and get different outcomes on purpose. A
+  cell that already stands in a table row is not a code block. The raw value
+  `"~~~"` is one, and I07 refuses it before anything is rendered; E11 is
+  therefore reachable in a handed-in Document, not through a response I07
+  accepted.
+- E08 and E09 are refused although no line of them matches rule X. That is why
+  rule X is not a check for code blocks, and why a list is not an exemption.
+- E13 is refused although it holds no code block. That is the whole effect of
+  rule X beyond rule S, and it is what needs approving with rule X.
+- "Not refused by P2" says only that. Such input still has to pass every other
+  validator: E07 and E10, for example, are still subject to the heading,
+  section-class, table and list agreement rules of 8.1–8.3.
+
+The classifications of E01–E13 were checked once against an independent
+CommonMark parser (markdown-it-py 4.2.0, `commonmark` preset) in a probe kept
+outside the repository; all thirteen agreed with the table. That confirms the
+examples. It is not a source of approval, it is not a dependency, and it says
+nothing about how Fibery stores or returns such text.
 
 ### Bounded impact on the code baseline
 
@@ -134,24 +224,58 @@ conformance to this draft.
 
 - The candidate refuses every line that starts with three backticks, but its
   public Document validator **accepts a closed tilde block** in a normative
-  section. Under P2 that block is not supported.
-- The candidate is therefore **not** conformant to this draft. The existing
-  backtick/tilde asymmetry does not become correct because this document
-  exists.
-- After approval a separate, bounded code and test alignment is required. It is
+  section. It has no classification of indented code blocks and none of code
+  blocks inside container blocks. Placed in a prose section of an otherwise
+  valid handed-in Document, with both digests recomputed, the candidate
+  **accepts E03, E06, E08 and E09**, which this draft refuses; it already
+  refuses E01, E04 and E13, and it accepts E07 and E10 as this draft does.
+- The candidate is therefore **not** conformant to this draft, and it does not
+  become conformant because this document exists. The existing backtick/tilde
+  asymmetry does not become correct either.
+- The response-stage check of 9.2 belongs to I07, which does not exist yet.
+  Nothing in the I06 candidate performs it or should.
+- After approval a separate code and test alignment of I06 is required. It is
   not performed here and is not authorized by this draft.
+
+**What that alignment really involves.** Rule X is a line predicate. Rule S is
+not: classifying indented and fenced code blocks the way CommonMark does means
+following its block structure — container blocks, paragraph continuation, tab
+expansion, and the precedence of the other block starts that decide whether a
+line can begin a code block at all. One more regular expression does not do
+that, and a check built from line shapes would reproduce the gaps this
+correction closes. The outcomes are fixed by 8.3 and the matrix above; how they
+are computed is not decided here. In particular this draft neither designs a
+Markdown engine nor chooses or adds a dependency. That cost, and the choice
+between writing the classification and adopting a library for it, has to be
+decided before the code alignment starts, not discovered during it.
 
 **Acceptance examples for that later alignment** (not repository tests today):
 
 1. The four pipe vectors of 8.3.1 hold for `escape_markdown`.
-2. Ordinary and inline markers stay accepted: a tilde or backtick inside a
-   line, a list item or a table cell that begins with them, a mention of a
-   fence in mid-sentence.
-3. A closed backtick block and a closed tilde block in a normative section get
-   the **same** defined outcome: `ARCHITECTURE_RENDER_INVALID`.
-4. The trailing JSON envelope is untouched: one envelope, one LF before its
-   opener in canonical emission, the same accepted read-back forms.
-5. Every F1–F5 regression of the candidate still passes.
+2. Supported representations keep passing: the matrix rows E07, E10 and E11,
+   and a tilde or backtick in the middle of a line of prose.
+3. Rows E01–E06, E08, E09, E12 and E13 get the outcome, owner and code the
+   matrix gives; closed backtick and closed tilde blocks get the **same**
+   outcome.
+4. The trailing JSON envelope is untouched (E14): one envelope, one LF before
+   its opener in canonical emission, the same accepted read-back forms.
+5. The **invariants** that findings F1–F5 established are kept:
+   - no fence or other block takes later sections or the envelope out of the
+     Document's structure;
+   - every traceability table cell agrees with the envelope;
+   - the order of persisted traceability is checked, not repaired;
+   - canonical emission has exactly one LF before the envelope opener;
+   - a heading hidden inside an HTML comment is not counted as a heading.
+
+   This is not a requirement that every existing assertion stays as written.
+   Two controls of the candidate are **policy-dependent** and change with P2:
+   the control that a closed tilde block in a handed-in Document is accepted,
+   and the control that a literal comment marker inside such a block hides no
+   heading and is accepted. After approval both must assert the new block
+   refusal (`ARCHITECTURE_RENDER_INVALID`) instead of the old acceptance. That
+   does not reopen F1 or F5, and it is no ground for removing unrelated
+   coverage: the positive controls for supported representations stay. No test
+   is edited by this draft.
 
 **No migration.** A change of acceptance policy is not a change of wire schema.
 No persisted Document is rewritten, no artifact is re-sealed, and no accepted
@@ -2304,32 +2428,68 @@ would invite reading it as a decision.
 next heading; sections are separated by exactly one blank line; the document ends
 with a single newline before the trailing envelope fence.
 
-**SPEC — no fenced block in the normative sections. [v0.3 PROPOSED — P2]** In
-this slice the sixteen normative sections carry no code block. The *normative
-Markdown* is the Document's Markdown excluding the trailing envelope (4.6.1). A
-*fenced-block line* is a line of the normative Markdown whose first characters,
-after at most three spaces of indentation, are three or more consecutive
-backticks (code point 96) or three or more consecutive tildes (code point 126).
+**SPEC — no code block in the normative sections. [v0.3 PROPOSED — P2]** In
+this slice the sixteen normative sections carry no code block, illustrative
+diagrams included. Two independent rules refuse; a Document conforms only when
+it breaks neither.
 
-- A post-apply Document whose normative Markdown contains a fenced-block line
-  fails 8.3 validation: `ARCHITECTURE_RENDER_INVALID`. Backticks and tildes are
-  treated identically. Whether the block is closed, and what it is for, make no
-  difference.
-- The renderer never emits a fenced-block line. A `render` whose output would
-  contain one is refused with `ARCHITECTURE_RENDER_INVALID`; the input is not
-  stripped, closed, rewritten or converted.
-- The trailing `` ```json `` envelope is not part of the normative Markdown and
-  is not affected.
-- Backticks and tildes anywhere else in a line are not refused; no character is
-  banned. A generated list item begins with `- ` and a table row with a
-  vertical bar, so neither is ever a fenced-block line.
+*Scope.* The *normative Markdown* is the Document's Markdown excluding the
+trailing envelope (4.6.1), separated by the existing carrier path (4.1). The
+envelope is outside the scope of both rules and keeps its I01 carrier, schema
+and digest validation unchanged. The pre-apply bootstrap carrier (4.1.1) is not
+subject to section 8.
 
-This line rule is the whole of the deterministic block check this draft
-proposes. It is not a Markdown grammar, and it deliberately over-approximates:
-a line that starts with three backticks is refused even where a Markdown reader
-would take it for inline code. `escape_markdown` strips leading whitespace
-(8.3.1, step 0), so the renderer emits no indented line; no detector for
-indented code in a handed-in Document is specified.
+*Rule S — structural code blocks.* **[PROPOSED normative reference]** The
+classification is that of CommonMark 0.31.2
+(<https://spec.commonmark.org/0.31.2/>): section 2.2 for tabs in block
+indentation, section 3 for block structure and precedence, sections 4.4 and 4.5
+for indented and fenced code blocks, and section 5 for container blocks. The
+normative Markdown, read as one complete document under those sections,
+**MUST NOT** contain an indented code block or a fenced code block, at the top
+level or inside any container block. What the block is for, its info string and
+whether a closing fence exists create no exception.
+
+Rule S is a classification of block structure and is not replaced by a check of
+line shapes. None of these is rule S:
+
+- "any line that begins with four spaces" — an indented line that continues a
+  paragraph is not a code block;
+- "any list marker followed by fence characters" — only a fence that opens a
+  block inside the item is one;
+- "the line does not begin with a fence, so it is safe" — a code block inside a
+  container block need not begin its line with the fence.
+
+The reference serves to classify these two block types unambiguously. It does
+not make CommonMark govern the frozen table rendering, escaping, fingerprints
+or any other representation rule of this specification, and it asserts nothing
+about what Fibery stores or returns; live transport is a separate question.
+
+*Rule X — strict prefix.* The normative Markdown **MUST NOT** contain a line
+whose first characters, after at most three spaces of indentation, are three or
+more consecutive backticks (code point 96) or three or more consecutive tildes
+(code point 126). This is a separate syntactic restriction, not a check for
+code blocks. It refuses some lines that rule S classifies as inline text, and
+that extra strictness is deliberate and needs approval in its own right. A
+Document in which no line matches rule X has not thereby satisfied rule S.
+
+*Where I06 applies the rules.* Separately, on two surfaces:
+
+- **the Markdown it forms** — a `render` whose output would break rule S or
+  rule X is refused with `ARCHITECTURE_RENDER_INVALID`. The input is not
+  stripped, closed, rewritten or converted;
+- **a handed-in persisted Document** — the public Document validator applies
+  both rules to the normative Markdown it is given and does not assume that
+  text ever passed I07. A violation is `ARCHITECTURE_RENDER_INVALID`.
+
+I06 does not reconstruct a raw model response from escaped text and does not
+claim to have performed the response-stage check of 9.2.
+
+*What is not refused.* Backticks and tildes are not banned as characters, and a
+literal marker inside a line is not a code block for that reason alone. Neither
+a generated list item nor a table row is exempt from rule S: container context
+is classified, not waved through. A line that P2 does not refuse still has to
+satisfy every other rule of 8.1–8.3. The acceptance matrix in "Draft v0.3 —
+status and proposed changes" fixes the outcomes for exact inputs.
 
 ### 8.3.1 Escaping
 
@@ -2495,18 +2655,28 @@ them by this draft.
 produced; traceability coverage (8.2); enum validity; the absence of
 structurally recognisable Tasks/Epics/estimates/code blocks; input-size bounds.
 
-**SPEC — what a code block is, structurally. [v0.3 PROPOSED — P2]** For this
-validator a model-supplied string holds a code block when one of its lines —
-the string split on `\r\n`, `\r` or `\n` — is a fenced-block line as defined
-in 8.3: at most three spaces, then three or more backticks or three or more
-tildes. The rule applies to every model-supplied string of the response and
-treats backticks and tildes identically. Such a response fails its closed
-contract; it is refused, and its content is not removed, rewritten or
-re-requested as prose. No result code is added: the applicable existing code is
-the one 13.8 already gives a model response that fails its contract. This
-check is on the **response** and belongs to the Architect stage (I07, section
-17 row 15). The renderer (I06) does not repeat it: I06 answers only for the
-Markdown it emits or is handed (8.3).
+**SPEC — code blocks in the raw response. [v0.3 PROPOSED — P2]** The
+structurally recognisable code block is decided on the **raw response**, by the
+two rules of 8.3 applied to each model-supplied string value:
+
+- the value checked is the complete string after JSON decoding, **before**
+  leading and trailing whitespace is stripped and **before** `escape_markdown`.
+  Its line breaks, its indentation and its container context are kept;
+- **rule S** is applied to that value read as one complete CommonMark 0.31.2
+  document. It is not replaced by checking each line on its own;
+- **rule X** is applied separately, to each line of the value, the value being
+  split on `\r\n`, `\r` or `\n`.
+
+A response in which any model-supplied string value breaks rule S or rule X
+fails its closed contract: `INVALID_MODEL_OUTPUT`. The content is not removed,
+rewritten or re-requested as prose. No result code is added.
+
+The validator **MUST NOT** rely on later escaping to turn a forbidden block
+into one line carrying `<br>`: that would be silent conversion, not refusal.
+
+This check is on the response and belongs to the Architect stage (I07, section
+17 row 15). The renderer (I06) does not repeat it and does not stand in for it;
+I06 answers for the Markdown it forms and for the Documents it is handed (8.3).
 
 **SPEC.** A validator does **not** decide: whether the architecture is
 adequate; whether prose smuggles a Task or invents a product obligation; whether
@@ -3613,12 +3783,13 @@ binding. **I06 owns:** the 16-heading renderer and traceability/render
 validation. **I07 owns:** persisting Process output and applying the first and
 later Architect output through the renderer.
 
-**[v0.3 PROPOSED — P2]** The fenced-block rule follows the same split. **I06**
-refuses a rendered or handed-in post-apply Document whose normative Markdown
-holds a fenced-block line (`ARCHITECTURE_RENDER_INVALID`, 8.3). **I07** refuses
-an Architect response that holds a code block (9.2). Neither item takes over
-the other's check, and no new function is added to the renderer for response
-handling.
+**[v0.3 PROPOSED — P2]** The code-block rules of 8.3 follow the same split.
+**I07** applies them to the raw Architect response, value by value, and refuses
+with `INVALID_MODEL_OUTPUT` (9.2). **I06** applies them to the normative
+Markdown it forms and to a handed-in post-apply Document, and refuses with
+`ARCHITECTURE_RENDER_INVALID` (8.3). Neither item takes over the other's check,
+neither assumes the other ran, and no function for response handling is added
+to the renderer.
 
 **SPEC — the bootstrap gate is self-contained with respect to I05.** Before an
 accepted Manifest exists, I04 validates only facts that are already durable:
