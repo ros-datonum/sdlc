@@ -203,6 +203,10 @@ HEADING_LIKE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
 FENCE_LIKE = re.compile(r" {0,3}" + re.escape(FENCE_MARKER))
 #: A tilde fence: its opener may carry any text after the run, its closer none.
 TILDE_FENCE = re.compile(r" {0,3}(~{3,})(.*)")
+#: A line that opens an HTML comment block; the frozen anchor comments follow
+#: their heading on its own line and never open one.
+COMMENT_BLOCK_OPENER = re.compile(r" {0,3}<!--")
+COMMENT_CLOSER = "-->"
 
 
 def escape_markdown(value: str) -> str:
@@ -435,7 +439,7 @@ def render_architecture(
         for heading in HEADINGS
     ]
     markdown = "\n\n".join(blocks) + "\n"
-    _require_no_swallowing_fence(markdown)
+    _require_visible_headings(markdown)
     _section_bodies(markdown)
     return RenderedArchitecture(markdown, document_fingerprint(markdown))
 
@@ -449,30 +453,56 @@ def _render_invalid(message: str) -> ArchitectureRefused:
     return _refuse(ArchitectureResultCode.ARCHITECTURE_RENDER_INVALID, message)
 
 
-def _require_no_swallowing_fence(normative_markdown: str) -> None:
-    """A tilde fence must close before the next heading and before the envelope.
+def _require_visible_headings(normative_markdown: str) -> None:
+    """No tilde fence and no HTML comment block may take a heading out.
 
-    Markdown reads every line after an open fence as that block's content, so
-    sixteen heading-shaped lines are no evidence of sixteen sections. Only a
-    bare run of tildes at least as long as the opener closes it. This decides
-    structure alone: a block that closes inside its own section is not judged
-    here.
+    Markdown reads every line after an open fence, or after a line that opens
+    a comment block, as that block's content, so sixteen heading-shaped lines
+    are no evidence of sixteen sections. Only a bare run of tildes at least as
+    long as the opener closes a fence; a comment block ends with the first
+    line holding its closer, and a closer later on a heading's own line does
+    not bring that heading back. This decides structure alone: a block that
+    ends inside its own section is not judged here, and the text is only
+    read, never changed.
     """
     open_run = 0
+    is_in_comment = False
     for raw in normative_markdown.split("\n"):
         line = raw.rstrip()
-        fence = TILDE_FENCE.fullmatch(line)
-        if not open_run:
-            open_run = len(fence.group(1)) if fence else 0
-        elif fence and not fence.group(2) and len(fence.group(1)) >= open_run:
-            open_run = 0
-        elif HEADING_LIKE.match(line):
-            break
+        if is_in_comment:
+            _require_not_hidden_heading(line)
+            is_in_comment = COMMENT_CLOSER not in line
+        elif open_run:
+            if HEADING_LIKE.match(line):
+                break
+            open_run = 0 if _closes_tilde_fence(line, open_run) else open_run
+        elif fence := TILDE_FENCE.fullmatch(line):
+            open_run = len(fence.group(1))
+        else:
+            is_in_comment = _opens_comment_block(line)
     if open_run:
         raise _render_invalid(
             "A tilde fence opened in the normative sections is not closed "
             "before the next heading or the envelope, so it would take them "
             "out of the Document's structure."
+        )
+
+
+def _closes_tilde_fence(line: str, open_run: int) -> bool:
+    fence = TILDE_FENCE.fullmatch(line)
+    return bool(fence) and not fence.group(2) and len(fence.group(1)) >= open_run
+
+
+def _opens_comment_block(line: str) -> bool:
+    """A line that starts a comment and does not also end it."""
+    return bool(COMMENT_BLOCK_OPENER.match(line)) and COMMENT_CLOSER not in line
+
+
+def _require_not_hidden_heading(line: str) -> None:
+    if HEADING_LIKE.match(line):
+        raise _render_invalid(
+            f"Heading line {line!r} lies inside an HTML comment opened on an "
+            "earlier line, so it is not a heading of the Document."
         )
 
 
@@ -667,7 +697,7 @@ def validate_architecture_document(
     Checked separately, in this order: the carrier, closed schema and
     `artifact_digest` through I01; that the envelope binds this Manifest; the
     sixteen headings and their content classes, with no fence left open across
-    them; traceability coverage and stored row order; the agreement of the
+    them and no heading inside an HTML comment; traceability coverage and stored row order; the agreement of the
     rendered generated sections with the envelope, cell for cell; and that
     `content_fingerprint` is the fingerprint of the normative Markdown with
     the envelope excluded.
@@ -684,7 +714,7 @@ def validate_architecture_document(
             "one supplied."
         )
     normative = _normative_markdown(document)
-    _require_no_swallowing_fence(normative)
+    _require_visible_headings(normative)
     bodies = _section_bodies(normative)
     _require_exact_coverage(artifact.body[TRACEABILITY_SOURCE], manifest_body)
     _require_ascending_rows(artifact.body[TRACEABILITY_SOURCE])

@@ -1647,3 +1647,102 @@ def test_read_back_blank_lines_around_the_envelope_stay_acceptable(read_back):
     stored = read_back(carrier.text)
     assert stored != carrier.text
     assert validate_architecture_document(stored, manifest()) == carrier.artifact
+
+
+# --------------------------------------------------------------------------
+# G. Correction after the re-review of I06 (F5): headings an HTML comment hides
+# --------------------------------------------------------------------------
+
+HEADING_FOUR = FROZEN_HEADING_LINES[3]
+BEFORE_HEADING_FOUR = f"{PLAIN_PROSE}\n\n{HEADING_FOUR}"
+HIDDEN_HEADING_FOUR = f"{PLAIN_PROSE}\n\n<!--\n\n{HEADING_FOUR}"
+
+
+def with_section_three(replacement: str) -> str:
+    """A valid carrier whose section 3 text is replaced, both digests rebound."""
+    return rebound(
+        assembled(output()).text,
+        lambda prefix: edit_markdown(prefix, BEFORE_HEADING_FOUR, replacement),
+    )
+
+
+def test_a_heading_hidden_by_an_html_comment_is_not_counted_as_a_heading():
+    selected = manifest()
+    before = copy.deepcopy(selected)
+    text = with_section_three(HIDDEN_HEADING_FOUR)
+    # The comment opens on its own line and closes on the `-->` of heading 4's
+    # own anchor: Markdown shows fifteen headings, and heading 4 is not one.
+    assert HIDDEN_HEADING_FOUR in text
+    assert [line for line in text.split("\n") if line.startswith("## ")] == (
+        FROZEN_HEADING_LINES
+    )
+    kept = str(text)
+    with pytest.raises(ArchitectureRefused, match="HTML comment") as caught:
+        validate_architecture_document(text, selected)
+    assert caught.value.code is RENDER_INVALID
+    assert (text, selected) == (kept, before)
+
+
+HIDING_COMMENTS = {
+    "with comment text": f"{PLAIN_PROSE}\n\n<!-- hidden\n\n{HEADING_FOUR}",
+    "indented three spaces": f"{PLAIN_PROSE}\n\n   <!--\n\n{HEADING_FOUR}",
+    "interrupting the paragraph": f"{PLAIN_PROSE}\n<!--\n{HEADING_FOUR}",
+}
+
+
+@pytest.mark.parametrize("label", sorted(HIDING_COMMENTS))
+def test_every_form_of_comment_block_that_hides_a_heading_is_refused(label):
+    assert document_refusal(with_section_three(HIDING_COMMENTS[label])) is (
+        RENDER_INVALID
+    )
+
+
+def test_the_sixteen_frozen_anchor_comments_stay_valid():
+    carrier = assembled(output())
+    assert validate_architecture_document(carrier.text, manifest()) == carrier.artifact
+    golden = golden_carrier()
+    assert validate_architecture_document(golden.text, manifest()) == golden.artifact
+    lines = golden.text.split("\n")
+    for number, heading in enumerate(FROZEN_HEADING_LINES, start=1):
+        assert heading.endswith(f"<!-- anchor: tsa-s{number:02d} -->")
+        assert heading in lines
+
+
+@pytest.mark.parametrize("value", ["<!--", "<!-- note", "a <!-- b --> c", "-->"])
+def test_a_raw_comment_marker_in_model_input_is_escaped_and_gets_no_refusal(value):
+    intended = output(
+        sections=sections(solution_structure=value),
+        assumptions=[value],
+        traceability=[row(FIRST_ID, how_satisfied=value), row(SECOND_ID)],
+    )
+    carrier = assembled(intended)
+    normative = carrier.text.partition(ENVELOPE_OPENER)[0]
+    assert normative.count("<!--") == len(FROZEN_HEADING_LINES)
+    assert validate_architecture_document(carrier.text, manifest()) == carrier.artifact
+
+
+VISIBLE_HEADING_FOUR = {
+    "marker inside a closed tilde block": f"~~~\n<!--\n~~~\n\n{HEADING_FOUR}",
+    "comment closed on its own line": f"{PLAIN_PROSE}\n\n<!-- note -->\n\n{HEADING_FOUR}",
+    "comment closed before the heading": f"{PLAIN_PROSE}\n\n<!--\nnote\n-->\n\n{HEADING_FOUR}",
+    "marker in mid-sentence": f"See <!-- for details.\n\n{HEADING_FOUR}",
+    "marker indented as code": f"{PLAIN_PROSE}\n\n    <!--\n\n{HEADING_FOUR}",
+}
+
+
+@pytest.mark.parametrize("label", sorted(VISIBLE_HEADING_FOUR))
+def test_a_comment_marker_that_hides_no_heading_keeps_being_accepted(label):
+    # Each of these was accepted before F5 and leaves heading 4 visible. That
+    # they stay accepted says nothing about how diagrams are to be represented.
+    text = with_section_three(VISIBLE_HEADING_FOUR[label])
+    assert validate_architecture_document(text, manifest())
+
+
+def test_comment_characters_in_the_envelope_do_not_reach_the_structural_analysis():
+    question = {"detail": "<!--", "requirement_id": FIRST_ID, "material": True}
+    carrier = assembled(output(product_questions=[question]))
+    envelope = carrier.text.partition(ENVELOPE_OPENER)[2]
+    assert "<!--" in envelope
+    assert "-->" not in envelope
+    stored = validate_architecture_document(carrier.text, manifest())
+    assert stored.body["product_questions"] == [question]
