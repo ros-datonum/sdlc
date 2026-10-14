@@ -40,6 +40,7 @@ from sdlc.tsa_artifacts import (
     requirement_input_digest,
     validate_artifact,
 )
+from sdlc.tsa_markdown import BlockClassification, classify_code_blocks
 from test_tsa_admission import CONTEXT, MANIFEST_ID, start, world
 from test_tsa_artifacts import CYCLE_ID, TIMESTAMP, requirement_row
 from test_tsa_cycle import bootstrap_carrier
@@ -1281,6 +1282,7 @@ def test_the_module_has_no_workspace_model_clock_or_random_dependency():
         "from enum import StrEnum",
         "from sdlc.normative_tree import document_fingerprint",
         "from sdlc.tsa_artifacts import (",
+        "from sdlc.tsa_markdown import (",
     ]
     for forbidden in (
         "workspace.",
@@ -1423,25 +1425,24 @@ def test_a_fence_closed_only_in_a_later_section_is_refused():
     ],
 )
 def test_tildes_that_open_no_fence_get_no_refusal(value):
-    intended = output(
-        sections=sections(solution_structure=value), assumptions=[value, "~~~x"]
-    )
+    # Under P2 an assumption "~~~x" renders as "- ~~~x", a fence inside a list
+    # item, and is refused (section H); it no longer belongs here.
+    intended = output(sections=sections(solution_structure=value), assumptions=[value])
     carrier = assembled(intended)
     assert validate_architecture_document(carrier.text, manifest()) == carrier.artifact
     assert headings_outside_fences(carrier.text) == FROZEN_HEADING_LINES
 
 
 @pytest.mark.parametrize("block", ["~~~mermaid\ngraph TD\n~~~", "~~~\ngraph TD\n~~~~~"])
-def test_the_swallowing_rule_adds_no_refusal_for_a_closed_tilde_block(block):
-    # How a closed illustrative block is to be represented is an open question
-    # between spec 9.1 and 8.3.1. This pins only that the structural rule for
-    # a swallowing fence does not decide it.
+def test_a_closed_tilde_block_that_swallows_nothing_is_refused_as_a_block(block):
+    # Policy-dependent control (spec v0.3 P2): accepted before P2, refused now.
+    # The block leaves every heading visible, so this is not the F1 rule.
     text = rebound(
         assembled(output()).text,
         lambda prefix: edit_markdown(prefix, PLAIN_PROSE, block),
     )
     assert headings_outside_fences(text) == FROZEN_HEADING_LINES
-    assert validate_architecture_document(text, manifest())
+    assert document_refusal(text) is RENDER_INVALID
 
 
 def test_a_normal_document_keeps_sixteen_sections_and_a_separate_envelope():
@@ -1722,20 +1723,35 @@ def test_a_raw_comment_marker_in_model_input_is_escaped_and_gets_no_refusal(valu
 
 
 VISIBLE_HEADING_FOUR = {
-    "marker inside a closed tilde block": f"~~~\n<!--\n~~~\n\n{HEADING_FOUR}",
     "comment closed on its own line": f"{PLAIN_PROSE}\n\n<!-- note -->\n\n{HEADING_FOUR}",
     "comment closed before the heading": f"{PLAIN_PROSE}\n\n<!--\nnote\n-->\n\n{HEADING_FOUR}",
     "marker in mid-sentence": f"See <!-- for details.\n\n{HEADING_FOUR}",
-    "marker indented as code": f"{PLAIN_PROSE}\n\n    <!--\n\n{HEADING_FOUR}",
 }
 
 
 @pytest.mark.parametrize("label", sorted(VISIBLE_HEADING_FOUR))
 def test_a_comment_marker_that_hides_no_heading_keeps_being_accepted(label):
-    # Each of these was accepted before F5 and leaves heading 4 visible. That
-    # they stay accepted says nothing about how diagrams are to be represented.
+    # Each of these was accepted before F5 and leaves heading 4 visible.
     text = with_section_three(VISIBLE_HEADING_FOUR[label])
     assert validate_architecture_document(text, manifest())
+
+
+# Policy-dependent controls (spec v0.3 P2): accepted before P2 because their
+# heading stays visible, refused now because the marker sits in a code block.
+MARKER_IN_A_CODE_BLOCK = {
+    "marker inside a closed tilde block": f"~~~\n<!--\n~~~\n\n{HEADING_FOUR}",
+    "marker indented as code": f"{PLAIN_PROSE}\n\n    <!--\n\n{HEADING_FOUR}",
+}
+
+
+@pytest.mark.parametrize("label", sorted(MARKER_IN_A_CODE_BLOCK))
+def test_a_comment_marker_inside_a_code_block_gets_the_block_refusal(label):
+    text = with_section_three(MARKER_IN_A_CODE_BLOCK[label])
+    assert headings_outside_fences(text) == FROZEN_HEADING_LINES
+    with pytest.raises(ArchitectureRefused, match="code block|rule X") as caught:
+        validate_architecture_document(text, manifest())
+    assert caught.value.code is RENDER_INVALID
+    assert "HTML comment" not in str(caught.value)
 
 
 def test_comment_characters_in_the_envelope_do_not_reach_the_structural_analysis():
@@ -1746,3 +1762,212 @@ def test_comment_characters_in_the_envelope_do_not_reach_the_structural_analysis
     assert "-->" not in envelope
     stored = validate_architecture_document(carrier.text, manifest())
     assert stored.body["product_questions"] == [question]
+
+
+# --------------------------------------------------------------------------
+# H. Rule S and rule X in I06 (spec v0.3 8.3, mechanism of spec v0.4)
+# --------------------------------------------------------------------------
+
+# Hand-written from the frozen acceptance matrix, as section 3 of an
+# otherwise valid handed-in Document: True means I06 refuses.
+HANDED_IN_EXAMPLES = {
+    "E01": ("```\ngraph TD\n```", True),
+    "E02": ("```\ngraph TD", True),
+    "E03": ("~~~\ngraph TD\n~~~", True),
+    "E04": ("~~~\ngraph TD", True),
+    "E05": ("Structure follows.\n~~~mermaid\ngraph TD\n~~~", True),
+    "E06": ("Structure follows.\n\n    graph TD", True),
+    "E07": ("Structure follows.\n    continued text", False),
+    "E08": ("- ~~~\n    ordinary text\n    ~~~", True),
+    "E09": ("- ~~~\n  ordinary text", True),
+    "E10": ("- ordinary ~~~ marker", False),
+    "E11": ("| Requirement ID | Gaps |\n|---|---|\n| SDLC-FR-0007 | ~~~ |", False),
+    "E12": ("~~~", True),
+    "E13": ("```inline``` then text", True),
+}
+
+
+def handed_in(section_three: str) -> str:
+    return with_section_three(f"{section_three}\n\n{HEADING_FOUR}")
+
+
+@pytest.mark.parametrize(
+    "key", sorted(key for key, (_, refused) in HANDED_IN_EXAMPLES.items() if refused)
+)
+def test_a_handed_in_document_with_a_refused_example_is_render_invalid(key):
+    selected = manifest()
+    before = copy.deepcopy(selected)
+    text = handed_in(HANDED_IN_EXAMPLES[key][0])
+    kept = str(text)
+    assert document_refusal(text, selected) is RENDER_INVALID
+    assert (text, selected) == (kept, before)
+
+
+@pytest.mark.parametrize(
+    "key",
+    sorted(key for key, (_, refused) in HANDED_IN_EXAMPLES.items() if not refused),
+)
+def test_a_handed_in_document_with_a_supported_example_is_accepted(key):
+    text = handed_in(HANDED_IN_EXAMPLES[key][0])
+    assert validate_architecture_document(text, manifest())
+
+
+CODE_BLOCKS_RULE_X_MISSES = {
+    "E06 indented code": "Structure follows.\n\n    graph TD",
+    "E08 closed fence in a list item": "- ~~~\n    ordinary text\n    ~~~",
+    "E09 unclosed fence in a list item": "- ~~~\n  ordinary text",
+    "fence in a block quote": "> ~~~\n> graph TD\n> ~~~",
+    "indented code in a list item": "- item\n\n      graph TD",
+}
+
+
+@pytest.mark.parametrize("label", sorted(CODE_BLOCKS_RULE_X_MISSES))
+def test_a_code_block_no_line_prefix_shows_is_refused_as_a_code_block(label):
+    text = handed_in(CODE_BLOCKS_RULE_X_MISSES[label])
+    assert headings_outside_fences(text) == FROZEN_HEADING_LINES
+    with pytest.raises(ArchitectureRefused, match="code block") as caught:
+        validate_architecture_document(text, manifest())
+    assert caught.value.code is RENDER_INVALID
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "- ~~~",
+        "1. ```",
+        "-     indented code",
+        "* ~~~mermaid",
+    ],
+)
+def test_prose_that_forms_a_contained_code_block_is_not_rendered(value):
+    intended = output(sections=sections(solution_structure=value))
+    with pytest.raises(ArchitectureRefused, match="code block") as caught:
+        render_architecture(intended, manifest())
+    assert caught.value.code is RENDER_INVALID
+
+
+@pytest.mark.parametrize("value", ["~~~x", "```", "    code"])
+def test_a_list_item_that_forms_a_code_block_is_not_rendered(value):
+    # Escaping strips the item, so "    code" becomes plain text; the other
+    # two open a fence inside the rendered list item.
+    intended = output(assumptions=[value])
+    if value.strip() == "code":
+        assert render_architecture(intended, manifest())
+    else:
+        assert render_refusal(intended) is RENDER_INVALID
+
+
+@pytest.mark.parametrize("value", ["~~~ closed ~~~", "~~~~", "   ~~~ x"])
+def test_rule_x_refuses_tildes_and_backticks_alike_in_rendered_prose(value):
+    for marker in ("~", "`"):
+        prose = value.replace("~", marker)
+        assert render_refusal(output(sections=sections(solution_structure=prose))) is (
+            RENDER_INVALID
+        )
+
+
+QUOTE_PREFIX = "> "
+
+
+def quoted(depth: int, text: str) -> str:
+    return f"{QUOTE_PREFIX * depth}{text}"
+
+
+@pytest.mark.parametrize(
+    ("section_three", "reason"),
+    [
+        (quoted(25, "~~~\n") + quoted(25, "hidden"), "NESTING_LIMIT"),
+        (quoted(19, "plain words"), "NESTING_LIMIT"),
+    ],
+)
+def test_a_document_too_deeply_nested_to_classify_is_refused(section_three, reason):
+    text = handed_in(section_three)
+    with pytest.raises(ArchitectureRefused) as caught:
+        validate_architecture_document(text, manifest())
+    assert caught.value.code is RENDER_INVALID
+    assert reason in str(caught.value)
+    assert "code block was found" not in str(caught.value)
+
+
+def test_nesting_below_the_threshold_is_classified_and_accepted():
+    assert validate_architecture_document(
+        handed_in(quoted(18, "plain words")), manifest()
+    )
+
+
+def test_formed_markdown_too_deeply_nested_to_classify_is_not_rendered():
+    intended = output(sections=sections(solution_structure="- " * 10 + "deep"))
+    with pytest.raises(ArchitectureRefused, match="NESTING_LIMIT") as caught:
+        render_architecture(intended, manifest())
+    assert caught.value.code is RENDER_INVALID
+    assert render_architecture(
+        output(sections=sections(solution_structure="- " * 9 + "deep")), manifest()
+    )
+
+
+class BrokenParser:
+    def __init__(self, preset: str) -> None:
+        self.options = {"maxNesting": 20}
+
+    def parse(self, markdown: str) -> list[object]:
+        raise RuntimeError("parser internals with model text")
+
+
+def test_a_parser_error_is_a_controlled_render_refusal(monkeypatch):
+    monkeypatch.setattr("sdlc.tsa_markdown.MarkdownIt", BrokenParser)
+    for call in (
+        lambda: validate_architecture_document(golden_carrier().text, manifest()),
+        lambda: render_architecture(output(), manifest()),
+    ):
+        with pytest.raises(ArchitectureRefused, match="PARSER_ERROR") as caught:
+            call()
+        assert caught.value.code is RENDER_INVALID
+        assert "parser internals" not in str(caught.value)
+        assert caught.value.__cause__ is None
+
+
+def test_a_parser_error_does_not_hide_an_earlier_defect(monkeypatch):
+    unknown = rebound(assembled(output()).text, mutate=name_unselected)
+    tampered = golden_carrier().text.replace("Covers checkout.", "Covers more.")
+    monkeypatch.setattr("sdlc.tsa_markdown.MarkdownIt", BrokenParser)
+    assert document_refusal(unknown) is CODE.TRACEABILITY_UNKNOWN_REQUIREMENT
+    with pytest.raises(InvalidTsaArtifact):
+        validate_architecture_document(tampered, manifest())
+    assert render_refusal(output(traceability=[row(FIRST_ID)])) is (
+        CODE.TRACEABILITY_MISSING_REQUIREMENT
+    )
+
+
+def test_the_envelope_fence_is_never_classified_as_normative_markdown():
+    carrier = golden_carrier()
+    normative = carrier.text.partition(ENVELOPE_OPENER)[0]
+    assert classify_code_blocks(carrier.text).outcome is (
+        BlockClassification.CODE_BLOCK
+    )
+    assert classify_code_blocks(normative).outcome is (
+        BlockClassification.NO_CODE_BLOCK
+    )
+    assert validate_architecture_document(carrier.text, manifest()) == carrier.artifact
+
+
+def test_supported_documents_keep_their_bytes_and_fingerprint():
+    rendered = render_architecture(GOLDEN_OUTPUT, manifest())
+    assert rendered.markdown == GOLDEN_MARKDOWN
+    assert rendered.content_fingerprint == document_fingerprint(GOLDEN_MARKDOWN)
+    carrier = golden_carrier()
+    assert carrier.text.startswith(GOLDEN_MARKDOWN + ENVELOPE_OPENER)
+
+
+# The four normative vectors of spec v0.3 8.3.1, in code points.
+P1_VECTORS = [
+    ([124], [92, 124]),
+    ([92], [92, 92]),
+    ([92, 124], [92, 92, 92, 124]),
+    ([124, 124], [92, 124, 92, 124]),
+]
+
+
+@pytest.mark.parametrize(("source", "expected"), P1_VECTORS)
+def test_the_four_pipe_vectors_hold(source, expected):
+    escaped = escape_markdown("".join(map(chr, source)))
+    assert [ord(character) for character in escaped] == expected

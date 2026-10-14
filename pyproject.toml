@@ -7,7 +7,9 @@ name = "sdlc"
 version = "0.1.0"
 description = "SDLC command line interface"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "markdown-it-py==4.2.0",
+]
 
 [dependency-groups]
 dev = ["pytest>=7.0", "ruff>=0.6"]

@@ -46,6 +46,11 @@ from sdlc.tsa_artifacts import (
     validate_intended_output,
     validate_manifest_body,
 )
+from sdlc.tsa_markdown import (
+    BlockClassification,
+    classify_code_blocks,
+    has_fence_marker_line,
+)
 
 __all__ = [
     "ANCHOR_PATTERN",
@@ -200,7 +205,6 @@ ESCAPE_REPLACEMENTS = {
 ESCAPED_SOURCE = re.compile(r"\r\n|[\\|\r\n<>]")
 
 HEADING_LIKE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
-FENCE_LIKE = re.compile(r" {0,3}" + re.escape(FENCE_MARKER))
 #: A tilde fence: its opener may carry any text after the run, its closer none.
 TILDE_FENCE = re.compile(r" {0,3}(~{3,})(.*)")
 #: A line that opens an HTML comment block; the frozen anchor comments follow
@@ -440,7 +444,9 @@ def render_architecture(
     ]
     markdown = "\n\n".join(blocks) + "\n"
     _require_visible_headings(markdown)
+    _require_no_fence_marker_line(markdown)
     _section_bodies(markdown)
+    _require_no_code_block(markdown)
     return RenderedArchitecture(markdown, document_fingerprint(markdown))
 
 
@@ -506,23 +512,49 @@ def _require_not_hidden_heading(line: str) -> None:
         )
 
 
+def _require_no_fence_marker_line(normative_markdown: str) -> None:
+    """Rule X of spec v0.3 8.3: backticks and tildes alike, line by line."""
+    if has_fence_marker_line(normative_markdown):
+        raise _render_invalid(
+            "A line of the normative sections opens with three or more "
+            "backticks or tildes (rule X); the only fence an Architecture "
+            "Document holds is its trailing envelope."
+        )
+
+
+def _require_no_code_block(normative_markdown: str) -> None:
+    """Rule S of spec v0.3 8.3, by the mechanism of spec v0.4.
+
+    Given the normative Markdown only, never the envelope, which is itself a
+    fence. Both a code block and a classification that could not be completed
+    refuse with `ARCHITECTURE_RENDER_INVALID`; the message says which.
+    """
+    result = classify_code_blocks(normative_markdown)
+    if result.outcome is BlockClassification.CODE_BLOCK:
+        where = f" starting on line {result.line}" if result.line else ""
+        raise _render_invalid(
+            f"The normative sections contain a code block{where} (rule S); "
+            "code blocks, illustrative diagrams included, are not supported."
+        )
+    if result.outcome is BlockClassification.UNCLASSIFIABLE:
+        raise _render_invalid(
+            "The block structure of the normative sections could not be "
+            f"classified ({result.reason}), so rule S cannot be shown to hold."
+        )
+
+
 def _section_bodies(normative_markdown: str) -> list[list[str]]:
     """The non-blank content lines under each of the sixteen headings.
 
     The headings must be exactly the frozen lines, in the frozen order, with
-    nothing before the first one, no other heading and no fenced block: a
-    fence would take every later heading out of the Document's structure.
+    nothing before the first one and no other heading. Lines that open with a
+    fence-marker run are refused before this runs (rule X).
     """
     bodies: list[list[str]] = []
     for raw in normative_markdown.split("\n"):
         line = raw.rstrip()
         if not line:
             continue
-        if FENCE_LIKE.match(line):
-            raise _render_invalid(
-                "The normative sections carry a fenced block; the only fence "
-                "an Architecture Document holds is its trailing envelope."
-            )
         if HEADING_LIKE.match(line):
             _require_next_heading(line, len(bodies))
             bodies.append([])
@@ -700,7 +732,8 @@ def validate_architecture_document(
     them and no heading inside an HTML comment; traceability coverage and stored row order; the agreement of the
     rendered generated sections with the envelope, cell for cell; and that
     `content_fingerprint` is the fingerprint of the normative Markdown with
-    the envelope excluded.
+    the envelope excluded; and last, that the normative Markdown carries no
+    code block and no fence-marker line (rules S and X, spec v0.3 8.3, v0.4).
 
     Raises `EmptyTsaCarrier` or `InvalidTsaArtifact` (I01's taxonomy) and
     `ArchitectureRefused`. Returns the validated artifact.
@@ -715,6 +748,7 @@ def validate_architecture_document(
         )
     normative = _normative_markdown(document)
     _require_visible_headings(normative)
+    _require_no_fence_marker_line(normative)
     bodies = _section_bodies(normative)
     _require_exact_coverage(artifact.body[TRACEABILITY_SOURCE], manifest_body)
     _require_ascending_rows(artifact.body[TRACEABILITY_SOURCE])
@@ -724,6 +758,7 @@ def validate_architecture_document(
             "The envelope's content_fingerprint is not the fingerprint of the "
             "sixteen sections it accompanies."
         )
+    _require_no_code_block(normative)
     return artifact
 
 

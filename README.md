@@ -276,6 +276,10 @@ uv run pytest
 `.python-version` pins 3.12.13 rather than the 3.12.14 named by the shared
 Python standard, because the pinned uv (0.11.21) publishes no 3.12.14 download.
 
+The one runtime dependency is `markdown-it-py==4.2.0` (with its `mdurl`). It
+is used only to parse Markdown for the TSA-C01 code-block rule (spec v0.4);
+it renders nothing and takes no part in escaping, fingerprints or Fibery I/O.
+
 ## Current specs and contracts
 
 ```text
@@ -357,7 +361,7 @@ provider-SDK or OpenRouter path, and no fallback. Apply is deterministic and
 model-free.
 
 Runtime and model selection live in `config/sdlc.toml` (TOML, read with stdlib
-`tomllib`, so the project keeps zero runtime dependencies). Precedence:
+`tomllib`). Precedence:
 
 ```text
 explicit run override -> role config -> project default -> local CLI default model
