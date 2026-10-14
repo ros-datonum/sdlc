@@ -1,9 +1,10 @@
-# TSA-C01 — Implementation Specification v0.3 (draft)
+# TSA-C01 — Implementation Specification v0.3
 
-**Status:** DRAFT — HUMAN APPROVAL REQUIRED.
+**Status:** FROZEN.
+**Human approval:** explicit instruction approving draft commit `468250915fb5db722490caf37c23061477556ff9`.
 **Implementation authorized:** NO.
 **Authority source:** `docs/architecture/TSA-C01-Contract-v0.2.md` (frozen), unchanged.
-**Proposed successor to:** `docs/specs/TSA-C01-Implementation-Spec-v0.2.md` (frozen, still in force).
+**Supersedes:** `docs/specs/TSA-C01-Implementation-Spec-v0.2.md` for I06 alignment and later TSA-C01 implementation work items. The v0.2 file is unchanged.
 **Repository baseline:** `ros-datonum/sdlc`, `main` at `0c790816ce862a4c2fa873885bf13958bd21ace9` (carried over from v0.2).
 **Code baseline for the impact assessment:** `impl/tsa-c01-i06-architecture` at `2fe6770134584e332814a1e9b3eb0829e407b5ae`.
 
@@ -13,33 +14,44 @@ rule, this specification restates only enough to bind the mechanism to it, and
 **MUST NOT** be read as amending it. No code is written here, and completing this
 document does not authorize writing any.
 
-## Draft v0.3 — status and proposed changes
+## v0.3 — status and changes
 
-### Status of this draft
+### Status, approval and supersession
 
-- This draft does **not** supersede Implementation Spec v0.2. v0.2 remains the
-  frozen specification until a human approves a successor.
-- The two decisions below, **P1** and **P2**, are **PROPOSED**, not approved.
-  No human approval of either is recorded in this document, and none is
-  established retroactively by it. An implementer's account of an interactive
-  choice is not an authority record.
-- Writing or committing this draft is neither a freeze nor an implementation
-  authorization.
+- **Frozen.** The two decisions below, **P1** and **P2**, are approved by an
+  explicit human instruction approving the reviewed draft commit
+  `468250915fb5db722490caf37c23061477556ff9`. That instruction is the approval record;
+  no signature or authenticated identity is claimed for it. The text of the
+  rules, the normative vectors and the acceptance matrix E01–E14 are those of
+  the approved draft.
+- **Supersession.** v0.3 supersedes Implementation Spec v0.2 for the I06
+  alignment and for later TSA-C01 implementation work items. The v0.2 and v0.1
+  files are unchanged. I01–I05 and their accepted evidence are not reopened.
+  Historical reviews stay bound to their commits and to the rules in force at
+  the time.
+- **Not an implementation authorization.** Freezing this document approves
+  rules, not code. The code candidate named in the header does not become
+  conformant to v0.3 through the freeze; I06 needs a separately authorized code
+  and test alignment before merge.
+- **Gate before alignment.** The mechanism that computes rule S — writing the
+  classification or adopting a library — has to be chosen before the code
+  alignment starts. Approval of this policy does not by itself permit adding a
+  dependency.
 - The code baseline named in the header is used only to assess impact. Code is
-  not a source of authority for either proposal.
-- Contract v0.2 is unchanged and is not amended here. Neither proposal
+  not a source of authority for either decision.
+- Contract v0.2 is unchanged and is not amended here. Neither decision
   contradicts a FROZEN contract provision (section 21).
 
 Everything not listed under "Changed sections" is the text of v0.2, verbatim.
-Every changed passage carries the marker **[v0.3 PROPOSED — P1]** or
-**[v0.3 PROPOSED — P2]** where it stands.
+Every changed passage carries the marker **[v0.3 — P1]** or
+**[v0.3 — P2]** where it stands.
 
 ### Changed sections
 
-| Section | Change | Proposal |
+| Section | Change | Decision |
 |---|---|---|
-| Title and header | Version, draft status, proposed-successor line, code baseline for impact | — |
-| Draft v0.3 — status and proposed changes | New section: status, summary, impact, acceptance matrix and examples | P1, P2 |
+| Title and header | Version, status, approval and supersession lines, code baseline for impact | — |
+| v0.3 — status and changes | New section: status, summary, impact, acceptance matrix and examples | P1, P2 |
 | Version and supersession | One italic note added: the section is carried over from v0.2 and describes v0.2's relation to v0.1. The v0.2 text below it is verbatim | — |
 | 8.3 Deterministic rendering | New rule: no code block in the normative sections — a structural rule tied to CommonMark 0.31.2 and a separate strict prefix rule | P2 |
 | 8.3.1 Escaping | Mapping table restated in code points; normative vectors added. The pipe row of v0.2 is replaced | P1 |
@@ -59,7 +71,7 @@ source text and read as rendered text, that row yields two different
 replacements: one backslash then the bar, or two backslashes then the bar. The
 second leaves the bar unescaped in a table cell.
 
-**Proposed rule.** `escape_markdown` maps the single code point `[124]` to the
+**Rule.** `escape_markdown` maps the single code point `[124]` to the
 two code points `[92, 124]`: one literal backslash, then the literal vertical
 bar. Section 8.3.1 states the whole mapping in code points, so the rule no
 longer depends on how any Markdown table is displayed.
@@ -69,9 +81,9 @@ model text reaches its cells through `escape_markdown`. A backslash placed
 before a vertical bar is the escape that pipe-table syntax itself provides for
 a literal bar in a cell, and the existing backslash mapping `[92] → [92, 92]`
 keeps a source backslash distinguishable from that escape. The mapping is
-proposed because it fits the renderer this slice already defines and adds no
-second escaping mechanism. This draft does not claim that no other encoding of
-a vertical bar could work; it proposes this one. How Fibery re-serializes it is
+chosen because it fits the renderer this slice already defines and adds no
+second escaping mechanism. This specification does not claim that no other encoding of
+a vertical bar could work; it adopts this one. How Fibery re-serializes it is
 a live-evidence matter and is not asserted here.
 
 **Unchanged by P1.** The backslash mapping; stripping; single-pass application;
@@ -86,7 +98,7 @@ code blocks, while 8.3.1 escapes every newline of every model-supplied string.
 A diagram block cannot survive that escaping as a block, and v0.2 defines no
 other representation for one.
 
-**Proposed rule.** The first TSA-C01 slice does not support code blocks in the
+**Rule.** The first TSA-C01 slice does not support code blocks in the
 normative Architecture sections, including illustrative diagrams, whether
 closed or not. This **changes** what v0.2 allowed: the exception in 9.1 is
 removed for this slice. It was not always forbidden.
@@ -96,12 +108,12 @@ for the other. Their normative text is in 8.3 and 9.2.
 
 - **Rule S — structural.** No indented code block and no fenced code block, as
   CommonMark 0.31.2 classifies them, at the top level or inside any container
-  block. The reference to CommonMark is itself part of this proposal; neither
-  the contract nor a recorded human decision established it.
+  block. The reference to CommonMark is part of the approved P2; the contract
+  does not establish it.
 - **Rule X — strict prefix.** No line whose first characters, after at most
   three spaces, are three or more consecutive backticks or three or more
   consecutive tildes. This is a deliberately stricter format restriction that
-  also refuses some lines rule S reads as inline text. It needs approval in its
+  also refuses some lines rule S reads as inline text. It is approved in its
   own right.
 
 **Rationale and consequence.**
@@ -111,7 +123,7 @@ for the other. Their normative text is in 8.3 and 9.2.
 - No diagram parser, diagram renderer or diagram passthrough is introduced.
 - Architectural explanation stays text in the existing twelve Architect
   sections.
-- Support for native diagram blocks is deferred. This draft creates no work
+- Support for native diagram blocks is deferred. This specification creates no work
   item for it.
 
 **The four cases, kept apart.**
@@ -196,7 +208,7 @@ Notes on the matrix.
 - E08 and E09 are refused although no line of them matches rule X. That is why
   rule X is not a check for code blocks, and why a list is not an exemption.
 - E13 is refused although it holds no code block. That is the whole effect of
-  rule X beyond rule S, and it is what needs approving with rule X.
+  rule X beyond rule S, and it is what was approved with rule X.
 - "Not refused by P2" says only that. Such input still has to pass every other
   validator: E07 and E10, for example, are still subject to the heading,
   section-class, table and list agreement rules of 8.1–8.3.
@@ -212,12 +224,12 @@ nothing about how Fibery stores or returns such text.
 Assessed against `2fe6770134584e332814a1e9b3eb0829e407b5ae` only. The
 independent review of that candidate closed findings F1–F5 for the defects it
 examined; that closure stands for those defects and says nothing about
-conformance to this draft.
+conformance to this specification.
 
 **P1.**
 
 - The candidate already maps `[124]` to `[92, 124]`.
-- After approval the work is to check the four normative vectors of 8.3.1
+- In the separately authorized alignment the work is to check the four normative vectors of 8.3.1
   against the existing function. No new serializer is needed.
 
 **P2.**
@@ -227,15 +239,15 @@ conformance to this draft.
   section. It has no classification of indented code blocks and none of code
   blocks inside container blocks. Placed in a prose section of an otherwise
   valid handed-in Document, with both digests recomputed, the candidate
-  **accepts E03, E06, E08 and E09**, which this draft refuses; it already
-  refuses E01, E04 and E13, and it accepts E07 and E10 as this draft does.
-- The candidate is therefore **not** conformant to this draft, and it does not
-  become conformant because this document exists. The existing backtick/tilde
+  **accepts E03, E06, E08 and E09**, which this specification refuses; it already
+  refuses E01, E04 and E13, and it accepts E07 and E10 as this specification does.
+- The candidate is therefore **not** conformant to this specification, and it does not
+  become conformant because this document is frozen. The existing backtick/tilde
   asymmetry does not become correct either.
 - The response-stage check of 9.2 belongs to I07, which does not exist yet.
   Nothing in the I06 candidate performs it or should.
-- After approval a separate code and test alignment of I06 is required. It is
-  not performed here and is not authorized by this draft.
+- A separate code and test alignment of I06 is required before merge. It is
+  not performed here and is not authorized by this freeze.
 
 **What that alignment really involves.** Rule X is a line predicate. Rule S is
 not: classifying indented and fenced code blocks the way CommonMark does means
@@ -244,7 +256,7 @@ expansion, and the precedence of the other block starts that decide whether a
 line can begin a code block at all. One more regular expression does not do
 that, and a check built from line shapes would reproduce the gaps this
 correction closes. The outcomes are fixed by 8.3 and the matrix above; how they
-are computed is not decided here. In particular this draft neither designs a
+are computed is not decided here. In particular this specification neither designs a
 Markdown engine nor chooses or adds a dependency. That cost, and the choice
 between writing the classification and adopting a library for it, has to be
 decided before the code alignment starts, not discovered during it.
@@ -271,17 +283,17 @@ decided before the code alignment starts, not discovered during it.
    Two controls of the candidate are **policy-dependent** and change with P2:
    the control that a closed tilde block in a handed-in Document is accepted,
    and the control that a literal comment marker inside such a block hides no
-   heading and is accepted. After approval both must assert the new block
+   heading and is accepted. In the alignment both must assert the new block
    refusal (`ARCHITECTURE_RENDER_INVALID`) instead of the old acceptance. That
    does not reopen F1 or F5, and it is no ground for removing unrelated
    coverage: the positive controls for supported representations stay. No test
-   is edited by this draft.
+   is edited by this document.
 
 **No migration.** A change of acceptance policy is not a change of wire schema.
 No persisted Document is rewritten, no artifact is re-sealed, and no accepted
 input is changed.
 
-**Invariants this draft does not touch.** The sixteen headings and anchors;
+**Invariants this specification does not touch.** The sixteen headings and anchors;
 exact traceability coverage; table and envelope agreement; ascending persisted
 traceability; one LF before the envelope in canonical emission; the accepted
 post-apply read-back normalizations; pure render and replay with unmodified
@@ -2428,7 +2440,7 @@ would invite reading it as a decision.
 next heading; sections are separated by exactly one blank line; the document ends
 with a single newline before the trailing envelope fence.
 
-**SPEC — no code block in the normative sections. [v0.3 PROPOSED — P2]** In
+**SPEC — no code block in the normative sections. [v0.3 — P2]** In
 this slice the sixteen normative sections carry no code block, illustrative
 diagrams included. Two independent rules refuse; a Document conforms only when
 it breaks neither.
@@ -2439,7 +2451,7 @@ envelope is outside the scope of both rules and keeps its I01 carrier, schema
 and digest validation unchanged. The pre-apply bootstrap carrier (4.1.1) is not
 subject to section 8.
 
-*Rule S — structural code blocks.* **[PROPOSED normative reference]** The
+*Rule S — structural code blocks.* **[normative reference, v0.3]** The
 classification is that of CommonMark 0.31.2
 (<https://spec.commonmark.org/0.31.2/>): section 2.2 for tabs in block
 indentation, section 3 for block structure and precedence, sections 4.4 and 4.5
@@ -2469,7 +2481,7 @@ whose first characters, after at most three spaces of indentation, are three or
 more consecutive backticks (code point 96) or three or more consecutive tildes
 (code point 126). This is a separate syntactic restriction, not a check for
 code blocks. It refuses some lines that rule S classifies as inline text, and
-that extra strictness is deliberate and needs approval in its own right. A
+that extra strictness is deliberate and is approved in its own right. A
 Document in which no line matches rule X has not thereby satisfied rule S.
 
 *Where I06 applies the rules.* Separately, on two surfaces:
@@ -2488,8 +2500,8 @@ claim to have performed the response-stage check of 9.2.
 literal marker inside a line is not a code block for that reason alone. Neither
 a generated list item nor a table row is exempt from rule S: container context
 is classified, not waved through. A line that P2 does not refuse still has to
-satisfy every other rule of 8.1–8.3. The acceptance matrix in "Draft v0.3 —
-status and proposed changes" fixes the outcomes for exact inputs.
+satisfy every other rule of 8.1–8.3. The acceptance matrix in "v0.3 —
+status and changes" fixes the outcomes for exact inputs.
 
 ### 8.3.1 Escaping
 
@@ -2506,7 +2518,7 @@ escape_markdown(value):
   2. return the concatenation of the mapped characters
 ```
 
-**[v0.3 PROPOSED — P1]** The mapping is **normative in code points**. The
+**[v0.3 — P1]** The mapping is **normative in code points**. The
 description column is for the reader only; where a rendering of this table and
 the code points disagree, the code points govern.
 
@@ -2524,7 +2536,7 @@ the code points disagree, the code points govern.
 `\r\n` is consumed as **one** source sequence and yields **one** `<br>`; it does
 not produce two.
 
-**SPEC — normative vectors. [v0.3 PROPOSED — P1]** A conforming
+**SPEC — normative vectors. [v0.3 — P1]** A conforming
 `escape_markdown` produces exactly these outputs. Inputs and outputs are
 sequences of Unicode code points of the **string value**.
 
@@ -2642,12 +2654,12 @@ was not given, Requirement state changes, Epics, Stories, Tasks, estimates,
 sprint sequencing, implementation assignments, code blocks, or deployment
 commands.
 
-**[v0.3 PROPOSED — P2]** v0.2 read "code blocks other than illustrative
-diagrams" here. This draft removes that exception for the current slice: an
+**[v0.3 — P2]** v0.2 read "code blocks other than illustrative
+diagrams" here. This specification removes that exception for the current slice: an
 illustrative fenced diagram is a code block and is not supported (8.3).
 Architectural explanation is given as text in the twelve `architecture`
 sections. Native diagram blocks are deferred, and no work item is created for
-them by this draft.
+them by this specification.
 
 ### 9.2 Deterministic vs semantic
 
@@ -2655,7 +2667,7 @@ them by this draft.
 produced; traceability coverage (8.2); enum validity; the absence of
 structurally recognisable Tasks/Epics/estimates/code blocks; input-size bounds.
 
-**SPEC — code blocks in the raw response. [v0.3 PROPOSED — P2]** The
+**SPEC — code blocks in the raw response. [v0.3 — P2]** The
 structurally recognisable code block is decided on the **raw response**, by the
 two rules of 8.3 applied to each model-supplied string value:
 
@@ -3783,7 +3795,7 @@ binding. **I06 owns:** the 16-heading renderer and traceability/render
 validation. **I07 owns:** persisting Process output and applying the first and
 later Architect output through the renderer.
 
-**[v0.3 PROPOSED — P2]** The code-block rules of 8.3 follow the same split.
+**[v0.3 — P2]** The code-block rules of 8.3 follow the same split.
 **I07** applies them to the raw Architect response, value by value, and refuses
 with `INVALID_MODEL_OUTPUT` (9.2). **I06** applies them to the normative
 Markdown it forms and to a handed-in post-apply Document, and refuses with
@@ -3901,7 +3913,7 @@ here.
 No other conflict was found. Section 17.3 of the contract already records the
 adapter gap, so this is a sharpening of a known item, not a new contradiction.
 
-**[v0.3 PROPOSED — P1, P2]** Neither proposal of this draft conflicts with a
+**[v0.3 — P1, P2]** Neither decision of this specification conflicts with a
 FROZEN contract provision. Contract §8.2 forbids "generated code or
 configuration", and contract §16 row 15 requires a structurally recognisable
 code block to be refused by the validator; the contract carries no exception
