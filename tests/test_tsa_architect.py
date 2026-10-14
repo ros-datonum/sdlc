@@ -27,15 +27,18 @@ from architect_fake import (
     child_id,
     mutation_trace,
     payload_of,
+    place_child,
     place_rework,
     process_id,
     resealed_carrier,
     reset_trace,
     response_text,
+    review_result,
     secret_of,
     with_section,
 )
 from sdlc import tsa_architect, tsa_markdown
+from sdlc.fibery_workspace import FiberyError
 from sdlc.model_runtime import (
     RUNTIME_ISOLATION_UNAVAILABLE,
     LocalCliModelRuntime,
@@ -59,6 +62,8 @@ from sdlc.tsa_artifacts import (
     ARCHITECT_ROLE,
     ArtifactIdentity,
     extract_architecture_envelope,
+    manifest_digest,
+    sealed_artifact,
     validate_artifact,
 )
 from sdlc.tsa_cycle import DocumentKind
@@ -1236,3 +1241,420 @@ def test_the_stage_neither_takes_the_command_guard_nor_reaches_real_processes():
     }
     assert "hold_workspace" not in called
     assert "LocalCliModelRuntime" not in called
+
+
+# --------------------------------------------------------------------------
+# G. Lineage and operation bindings (review F1-F5; spec 4.6.3-4.6.5, 6, 10.2,
+#    14.1-14.3; contract 10, 14.1.1)
+#
+# Every altered artifact below is resealed through I01 with its dependent
+# digests recomputed, and I01 is shown to accept it, so each refusal is the
+# binding check under test and never a stale digest.
+# --------------------------------------------------------------------------
+
+
+def accepted_by_i01(scene, document_id: str) -> dict:
+    payload = payload_of(scene, document_id)
+    validate_artifact(payload)
+    return payload
+
+
+def reseal(scene, document_id: str, change) -> dict:
+    scene.tsa.set_content(
+        document_id, resealed_carrier(scene.tsa.content_of(document_id), change)
+    )
+    return accepted_by_i01(scene, document_id)
+
+
+def other_architecture(scene, solution: str):
+    """A valid applied Architecture carrying an output no Process recorded."""
+    other = validate_architect_output(
+        json.dumps(with_section(solution_structure=solution)), manifest_body(scene)
+    )
+    return build_architecture_carrier(
+        other.intended_output,
+        manifest_body(scene),
+        ArchitectureBinding(
+            ArtifactIdentity(CONTEXT.workspace_identity, PROJECT_ID, "SDLC", CYCLE),
+            architecture_envelope(scene)["body"]["created_at"],
+            1,
+        ),
+    )
+
+
+def replace_accepted_manifest(scene) -> None:
+    """Another accepted Manifest, self-consistent: digests and acceptance agree."""
+
+    def other_reason(payload: dict) -> None:
+        body = payload["body"]
+        body["manifest_body"]["ux"]["reason"] = "A different recorded UX decision."
+        body["manifest_digest"] = manifest_digest(body["manifest_body"])
+        body["acceptance"]["manifest_digest"] = body["manifest_digest"]
+
+    reseal(scene, MANIFEST_ID, other_reason)
+
+
+def review_id(iteration: int = 1) -> str:
+    return child_id(DocumentKind.REVIEW_RESULT, iteration)
+
+
+def place_review(scene, change) -> None:
+    """A Review Result of iteration 1 over the applied output, then `change`."""
+    fingerprint = architecture_envelope(scene)["body"]["content_fingerprint"]
+    review = review_result(scene, 1, fingerprint)
+    change(review)
+    place_child(scene, DocumentKind.REVIEW_RESULT, 1, sealed_artifact(review))
+    accepted_by_i01(scene, review_id())
+
+
+# F1 — the current Process Result and Review Result bind this cycle's lineage.
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("manifest_digest", "0" * 64), ("architecture_document_id", "another-document")],
+)
+def test_a_process_result_bound_elsewhere_is_malformed_before_any_replay(field, value):
+    scene = accepted_scene()
+    persisted_but_not_applied(scene)
+
+    def elsewhere(payload: dict) -> None:
+        payload["body"][field] = value
+
+    reseal(scene, PROCESS_ID, elsewhere)
+    model = no_model(scene)
+
+    error = refusal(scene, model)
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    assert model.calls == []
+    assert scene.tsa.mutations == []
+
+
+def test_a_review_bound_to_another_process_result_is_malformed():
+    scene = accepted_scene()
+    run(scene)
+    place_review(
+        scene,
+        lambda review: review["body"].update(process_result_digest="0" * 64),
+    )
+    reset_trace(scene)
+
+    error = refusal(scene, no_model(scene))
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    assert scene.tsa.mutations == []
+
+
+def test_a_review_of_another_architecture_fingerprint_is_malformed():
+    scene = accepted_scene()
+    run(scene)
+    place_review(
+        scene,
+        lambda review: review["body"].update(architecture_fingerprint="0" * 64),
+    )
+    reset_trace(scene)
+
+    error = refusal(scene, no_model(scene))
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    assert scene.tsa.mutations == []
+
+
+def test_a_review_bound_to_the_applied_output_keeps_case_3():
+    scene = accepted_scene()
+    run(scene)
+    place_review(scene, lambda review: None)
+    reset_trace(scene)
+
+    result = run(scene, no_model(scene), clock=failing_clock)
+
+    assert result.outcome is ArchitectStageOutcome.ALREADY_APPLIED
+    assert scene.tsa.mutations == []
+
+
+def test_a_correctly_bound_pending_apply_still_replays():
+    scene = accepted_scene()
+    persisted_but_not_applied(scene)
+    accepted_by_i01(scene, PROCESS_ID)
+
+    result = run(scene, no_model(scene), clock=failing_clock)
+
+    assert result.outcome is ArchitectStageOutcome.RECORDED_OUTPUT_APPLIED
+    assert architecture_writes(scene) == 1
+
+
+# F2 — the REWORK evidence that opens N + 1 satisfies its read invariants.
+
+
+def test_a_disposition_outside_its_collection_opens_no_iteration():
+    scene = accepted_scene()
+    run(scene)
+    place_rework(
+        scene,
+        1,
+        accept=lambda review: [f"{review['artifact_digest']}#new_findings/999"],
+    )
+    accepted_by_i01(scene, child_id(DocumentKind.HUMAN_DECISION, 1))
+    reset_trace(scene)
+    model = no_model(scene)
+
+    error = refusal(scene, model)
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    assert error.details[0] == "DISPOSITION_UNKNOWN_REFERENCE"
+    assert model.calls == []
+    assert scene.tsa.mutations == []
+
+
+def test_a_disposition_of_an_unknown_artifact_opens_no_iteration():
+    scene = accepted_scene()
+    run(scene)
+    place_rework(scene, 1, accept=lambda review: [f"{'1' * 64}#risks/0"])
+    reset_trace(scene)
+
+    error = refusal(scene, no_model(scene))
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    assert error.details[0] == "DISPOSITION_UNKNOWN_REFERENCE"
+    assert scene.tsa.mutations == []
+
+
+def test_a_disposition_of_an_earlier_iteration_opens_no_iteration():
+    scene = accepted_scene()
+    run(scene)
+    place_rework(scene, 1)
+    first_review = payload_of(scene, review_id(1))["artifact_digest"]
+    run(scene, RecordingModel(scene, responses=[response_text()]))
+    place_rework(scene, 2, accept=lambda review: [f"{first_review}#new_findings/0"])
+    reset_trace(scene)
+
+    error = refusal(scene, no_model(scene))
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    assert error.details[0] == "DISPOSITION_FOREIGN_ITERATION"
+    assert scene.tsa.mutations == []
+
+
+def test_valid_dispositions_still_open_exactly_the_next_iteration():
+    scene = accepted_scene()
+    run(scene)
+    place_rework(
+        scene,
+        1,
+        accept=lambda review: [
+            f"{review['artifact_digest']}#new_findings/0",
+            f"{payload_of(scene, PROCESS_ID)['artifact_digest']}#risks/0",
+        ],
+    )
+    reset_trace(scene)
+    model = RecordingModel(scene)
+
+    result = run(scene, model)
+
+    assert result.iteration == 2
+    assert len(model.calls) == 1
+    assert process_id(3) not in scene.tsa.documents
+
+
+def without_coverage(review: dict) -> None:
+    review["body"]["reviewer_response"]["claim_verifications"] = []
+
+
+def material_what(review: dict) -> None:
+    review["body"]["reviewer_response"]["material_unresolved_what"] = [
+        {"detail": "Who may log in is undecided.", "requirement_id": REQUIREMENT_ID}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "stored"),
+    [
+        (lambda review: None, "REVIEW_PASS"),
+        (lambda review: None, "REVIEW_BLOCKING"),
+        (without_coverage, "REVIEW_NEEDS_WORK"),
+        (material_what, "REVIEW_NEEDS_WORK"),
+    ],
+    ids=["warning-stored-pass", "warning-stored-blocking", "uncovered", "what"],
+)
+def test_a_stored_status_the_evidence_does_not_derive_opens_no_iteration(
+    change, stored
+):
+    scene = accepted_scene()
+    run(scene)
+
+    def mismatched(review: dict) -> None:
+        change(review)
+        review["body"]["derived_status"] = stored
+
+    place_rework(scene, 1, change_review=mismatched)
+    accepted_by_i01(scene, review_id())
+    accepted_by_i01(scene, child_id(DocumentKind.HUMAN_DECISION, 1))
+    reset_trace(scene)
+    model = no_model(scene)
+
+    error = refusal(scene, model)
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    assert "derived_status" in str(error)
+    assert model.calls == []
+    assert scene.tsa.mutations == []
+
+
+@pytest.mark.parametrize(
+    ("change", "stored"),
+    [
+        (without_coverage, "REVIEW_STRUCTURALLY_INVALID"),
+        (material_what, "REVIEW_BLOCKED_ON_WHAT"),
+    ],
+    ids=["uncovered", "what"],
+)
+def test_a_stored_status_the_evidence_derives_is_accepted(change, stored):
+    scene = accepted_scene()
+    run(scene)
+
+    def derived(review: dict) -> None:
+        change(review)
+        review["body"]["derived_status"] = stored
+
+    place_rework(scene, 1, change_review=derived)
+    reset_trace(scene)
+
+    assert run(scene).iteration == 2
+
+
+# F3 — the operation's bindings are fixed at its start; a fresh gate never
+# re-binds them.
+
+
+def test_a_manifest_replaced_during_the_call_is_never_persisted_or_applied():
+    scene = accepted_scene()
+    model = RecordingModel(scene, during=lambda: replace_accepted_manifest(scene))
+
+    error = refusal(scene, model)
+
+    assert error.code == "INPUTS_STALE"
+    assert MANIFEST_ID in error.details
+    assert "A different recorded UX decision." not in model.calls[0]["context"]
+    assert scene.tsa.mutations == []
+
+
+def test_a_manifest_replaced_after_the_create_leaves_only_the_shell():
+    scene = accepted_scene()
+    scene.tsa.after(
+        "create_tsa_child_document", 1, lambda: replace_accepted_manifest(scene)
+    )
+
+    error = refusal(scene)
+
+    assert error.code == "INPUTS_STALE"
+    assert scene.tsa.content_of(PROCESS_ID) == "", "the shell stays, unfilled"
+    assert scene.tsa.count("write_document_content") == 0
+
+
+def test_an_architecture_replaced_after_the_create_refuses_before_the_body_write():
+    scene = accepted_scene()
+    divergent = other_architecture(scene, "Replaced after the create.")
+    scene.tsa.after(
+        "create_tsa_child_document",
+        1,
+        lambda: scene.tsa.set_content(ARCHITECTURE_ID, divergent.text),
+    )
+
+    error = refusal(scene)
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert scene.tsa.content_of(PROCESS_ID) == "", "the shell stays, unfilled"
+    assert scene.tsa.count("write_document_content") == 0
+
+
+# F4 — after an Architecture write, the Process Result is still the one applied.
+
+
+def replaced_process(scene):
+    """Swap the Process Result for another sealed one with a different output."""
+
+    def other_output(payload: dict) -> None:
+        text = "A materially different intended output."
+        payload["body"]["intended_output"]["sections"]["solution_structure"] = text
+        payload["body"]["architect_response"]["architecture"]["solution_structure"] = (
+            text
+        )
+
+    def effect() -> None:
+        reseal(scene, PROCESS_ID, other_output)
+
+    return effect
+
+
+def test_a_process_replaced_before_a_lost_apply_response_is_no_success():
+    scene = accepted_scene()
+    persisted_but_not_applied(scene)
+    swap = replaced_process(scene)
+
+    def swap_then_lose() -> None:
+        swap()
+        raise FiberyError(FIBERY_DOWN)
+
+    scene.tsa.after("write_document_content", 1, swap_then_lose)
+    model = no_model(scene)
+
+    error = refusal(scene, model)
+
+    assert error.code == "FIBERY_WRITE_FAILED"
+    assert PROCESS_ID in error.details
+    assert architecture_writes(scene) == 1, "the landed write stays; no second one"
+    assert model.calls == []
+
+
+def test_a_process_replaced_before_a_normal_apply_read_back_is_no_success():
+    scene = accepted_scene()
+    persisted_but_not_applied(scene)
+    scene.tsa.after("write_document_content", 1, replaced_process(scene))
+
+    error = refusal(scene, no_model(scene))
+
+    assert error.code == "FIBERY_WRITE_FAILED"
+    assert architecture_writes(scene) == 1
+
+
+def test_a_replay_whose_landed_write_lost_its_response_is_confirmed_once():
+    scene = accepted_scene()
+    persisted_but_not_applied(scene)
+    scene.tsa.after("write_document_content", 1, fail(FIBERY_DOWN))
+
+    result = run(scene, no_model(scene), clock=failing_clock)
+
+    assert result.outcome is ArchitectStageOutcome.RECORDED_OUTPUT_APPLIED
+    assert architecture_writes(scene) == 1
+
+
+# F5 — every divergence reports the recorded input, the intended output and
+# the current Architecture.
+
+
+def test_a_divergent_read_back_reports_all_three_fingerprints():
+    scene = accepted_scene()
+    persisted_but_not_applied(scene)
+    recorded = process_payload(scene)["body"]
+    intended = build_architecture_carrier(
+        recorded["intended_output"],
+        manifest_body(scene),
+        ArchitectureBinding(
+            ArtifactIdentity(CONTEXT.workspace_identity, PROJECT_ID, "SDLC", CYCLE),
+            architecture_envelope(scene)["body"]["created_at"],
+            1,
+        ),
+    )
+    divergent = other_architecture(scene, "Stored instead of the intended output.")
+    scene.tsa.store_as = lambda md: divergent.text if "## 1. Scope" in md else md
+
+    error = refusal(scene, no_model(scene))
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert error.details == (
+        f"input {recorded['input_fingerprint']}",
+        f"output {intended.content_fingerprint}",
+        f"current {divergent.content_fingerprint}",
+    )
+    assert architecture_writes(scene) == 1, "nothing overwritten or retried"

@@ -20,10 +20,13 @@ The boundary with later work items, stated so it cannot be mistaken:
   case of contract 14.3. What runs here is the stage-local subset the
   Architect stage itself needs before its own model call and mutations; it is
   re-run in full, fresh, at each of those boundaries, and nothing is assumed
-  to have been checked elsewhere. Not performed here: the Reviewer side of
-  the gate (Review currentness and derived status), Human Decision semantics
-  beyond the structural REWORK binding that opens an iteration, dispositions,
-  and inspection.
+  to have been checked elsewhere. What it reads it validates on read: every
+  Process Result, Review Result and Human Decision it relies on binds this
+  cycle's lineage (4.6.5, all seven invariants for a REWORK that opens an
+  iteration), and a Review's stored `derived_status` is the one 10.2 derives
+  from its evidence. Not performed here: Review currentness against changed
+  inputs, Human Decision writing, disposition idempotency (I11), and
+  inspection.
 - **I08** owns the Reviewer. A successful result of this stage means only
   that iteration N's output is durable and applied; no review has run.
 - **I12** owns the commands, their result codes and exit classes, and the
@@ -106,12 +109,15 @@ from sdlc.tsa_artifacts import (
     SCHEMA_VERSION,
     UX_APPLICABLE,
     ArtifactIdentity,
+    ArtifactReference,
     InvalidTsaArtifact,
     TsaArtifact,
     canonical_artifact_json,
     canonical_json,
     extract_architecture_envelope,
     extract_artifact_payload,
+    parse_reference,
+    reference_allows_collection,
     requirement_input_digest,
     sealed_artifact,
     ux_evidence_digest,
@@ -170,6 +176,20 @@ PROCESS_CREATE_ATTEMPTS = 2
 FIRST_ITERATION = 1
 REWORK = "REWORK"
 APPROVE = "APPROVE"
+
+#: The Architect claims a Review must verify exactly once (spec 6.3).
+CLAIM_COLLECTIONS = ("risks", "open_architecture_questions", "product_questions")
+REJECTED = "REJECTED"
+#: Spec 10.2, in its frozen precedence.
+REVIEW_STRUCTURALLY_INVALID = "REVIEW_STRUCTURALLY_INVALID"
+REVIEW_BLOCKED_ON_WHAT = "REVIEW_BLOCKED_ON_WHAT"
+REVIEW_BLOCKING = "REVIEW_BLOCKING"
+REVIEW_NEEDS_WORK = "REVIEW_NEEDS_WORK"
+REVIEW_PASS = "REVIEW_PASS"
+SEVERITY_STATUSES = (("BLOCKING", REVIEW_BLOCKING), ("WARNING", REVIEW_NEEDS_WORK))
+#: Spec 6.4 reference refusals, carried in details of a lineage refusal.
+DISPOSITION_UNKNOWN_REFERENCE = "DISPOSITION_UNKNOWN_REFERENCE"
+DISPOSITION_FOREIGN_ITERATION = "DISPOSITION_FOREIGN_ITERATION"
 
 #: The artifact types that may sit under an Architecture, and their id kind.
 CHILD_KINDS = {
@@ -293,6 +313,7 @@ class _Rework:
     iteration: int
     decision: TsaArtifact
     review: TsaArtifact
+    process: TsaArtifact
 
 
 @dataclass(frozen=True)
@@ -305,11 +326,34 @@ class _View:
     rework: _Rework | None
     architecture: _Architecture
     process: _Child
-    has_review: bool
+    review: _Child
 
     @property
     def manifest_body(self) -> dict[str, object]:
         return self.manifest.body["manifest_body"]
+
+    @property
+    def has_review(self) -> bool:
+        return self.review.state is not _ChildState.ABSENT
+
+
+@dataclass(frozen=True)
+class _Operation:
+    """What one stage run started from, held as values (contract 10, 14.1.1).
+
+    Fixed once, from the first gate pass, and never re-read from a later view:
+    a later gate shows what is durable now, and these say what this run's
+    prompt, Process Result and apply were bound to. Only this run's own
+    transitions may differ from them — the Process slot filling with the
+    artifact it emitted, and the Architecture moving from its input to the
+    intended output, which `_classify` checks against the persisted Process.
+    """
+
+    manifest_document_id: str
+    manifest_artifact_digest: str
+    iteration: int
+    process_document_id: str
+    input_fingerprint: str | None
 
 
 @dataclass(frozen=True)
@@ -780,21 +824,175 @@ def _read_architecture(
     )
 
 
+def _require_process_lineage(
+    context: BootstrapContext,
+    manifest: TsaArtifact,
+    architecture: _Architecture,
+    process: _Child,
+) -> None:
+    """A Process Result binds this cycle, Manifest and Architecture (4.6.3, 4.6.5).
+
+    Its own valid digest proves only that it is internally consistent, never
+    that it belongs to this cycle's lineage.
+    """
+    assert process.artifact is not None and architecture.artifact is not None
+    subject = f"Process Result {process.document_id!r}"
+    with _validating(subject):
+        validate_structural_lineage(
+            architecture=architecture.artifact,
+            input_manifest=manifest,
+            process_result=process.artifact,
+        )
+    if process.artifact.body["architecture_document_id"] != (
+        context.architecture_document_id
+    ):
+        raise _malformed(f"{subject} binds another architecture_document_id.")
+
+
+def _require_review_lineage(
+    context: BootstrapContext,
+    manifest: TsaArtifact,
+    architecture: _Architecture,
+    process: _Child,
+    review: _Child,
+) -> None:
+    """A Review Result binds that Process Result, and its stored status holds.
+
+    Invariants 1-3 of 4.6.5, the two Document ids it repeats, and the
+    revalidation of `derived_status` against the persisted evidence (4.6.4).
+    """
+    assert review.artifact is not None and process.artifact is not None
+    assert architecture.artifact is not None
+    subject = f"Review Result {review.document_id!r}"
+    with _validating(subject):
+        validate_structural_lineage(
+            architecture=architecture.artifact,
+            input_manifest=manifest,
+            process_result=process.artifact,
+            review_result=review.artifact,
+        )
+    for field, expected in (
+        ("process_result_document_id", process.document_id),
+        ("architecture_document_id", context.architecture_document_id),
+    ):
+        if review.artifact.body[field] != expected:
+            raise _malformed(f"{subject} binds another {field}.")
+    stored = review.artifact.body["derived_status"]
+    derived = _derived_review_status(review.artifact, process.artifact)
+    if stored != derived:
+        raise _malformed(
+            f"{subject} stores derived_status {stored}, but its persisted "
+            f"evidence derives {derived} (spec 10.2)."
+        )
+
+
+def _claim_ref(process: TsaArtifact, collection: str, index: int) -> str:
+    return str(ArtifactReference(process.artifact_digest, collection, index))
+
+
+def _required_claims(process: TsaArtifact) -> set[str]:
+    response = process.body["architect_response"]
+    return {
+        _claim_ref(process, collection, index)
+        for collection in CLAIM_COLLECTIONS
+        for index in range(len(response[collection]))
+    }
+
+
+def _derived_review_status(review: TsaArtifact, process: TsaArtifact) -> str:
+    """Spec 10.2 over the persisted Review and the Process Result it binds.
+
+    Structural invalidity here is the exactly-once claim coverage of 6.3; the
+    schema, digest and binding checks run before this and refuse outright. A
+    material product question is open unless the Reviewer REJECTED it.
+    """
+    response = review.body["reviewer_response"]
+    verifications = response["claim_verifications"]
+    refs = [item["claim_ref"] for item in verifications]
+    if len(refs) != len(set(refs)) or set(refs) != _required_claims(process):
+        return REVIEW_STRUCTURALLY_INVALID
+    outcomes = {item["claim_ref"]: item["outcome"] for item in verifications}
+    questions = process.body["architect_response"]["product_questions"]
+    has_open_material_question = any(
+        question["material"]
+        and outcomes[_claim_ref(process, "product_questions", index)] != REJECTED
+        for index, question in enumerate(questions)
+    )
+    if response["material_unresolved_what"] or has_open_material_question:
+        return REVIEW_BLOCKED_ON_WHAT
+    severities = {item["severity"] for item in verifications if "severity" in item}
+    severities |= {finding["severity"] for finding in response["new_findings"]}
+    for severity, status in SEVERITY_STATUSES:
+        if severity in severities:
+            return status
+    return REVIEW_PASS
+
+
+def _unresolved_disposition(
+    decision: TsaArtifact, reference: ArtifactReference, code: str
+) -> ArchitectRefused:
+    """Invariant 6 of 4.6.5 violated on read: `ARTIFACT_MALFORMED`, 6.4 code kept."""
+    return ArchitectRefused(
+        CycleResultCode.ARTIFACT_MALFORMED,
+        f"The REWORK of iteration {decision.iteration} accepts {reference}, which "
+        "does not resolve to an item of that iteration's Process or Review "
+        "Result; it opens no iteration.",
+        (code, str(reference)),
+    )
+
+
+def _require_dispositions_resolve(
+    decision: TsaArtifact,
+    process: TsaArtifact,
+    review: TsaArtifact,
+    earlier: frozenset[str],
+) -> None:
+    """Every accepted reference names a real item of the decided iteration (6.4).
+
+    Grammar, duplicates and waivability are already I01's schema checks; this
+    resolves the digest, collection and index against the persisted artifacts.
+    """
+    sources = {
+        process.artifact_digest: (PROCESS_RESULT, process.body["architect_response"]),
+        review.artifact_digest: (REVIEW_RESULT, review.body["reviewer_response"]),
+    }
+    for index, item in enumerate(decision.body["accepted_dispositions"]):
+        with _validating(f"accepted_dispositions[{index}]"):
+            reference = parse_reference(item["ref"])
+        source = sources.get(reference.digest)
+        if source is None:
+            code = (
+                DISPOSITION_FOREIGN_ITERATION
+                if reference.digest in earlier
+                else DISPOSITION_UNKNOWN_REFERENCE
+            )
+            raise _unresolved_disposition(decision, reference, code)
+        artifact_type, arrays = source
+        if not reference_allows_collection(
+            artifact_type, reference.collection
+        ) or reference.index >= len(arrays[reference.collection]):
+            raise _unresolved_disposition(
+                decision, reference, DISPOSITION_UNKNOWN_REFERENCE
+            )
+
+
 def _verify_rework(
     workspace: CycleWorkspace,
     context: BootstrapContext,
     manifest: TsaArtifact,
     architecture: _Architecture,
     decision: TsaArtifact,
-    iteration: int,
+    earlier: frozenset[str],
 ) -> _Rework:
-    """A durable REWORK opens iteration + 1 only if it binds this cycle's lineage.
+    """A durable REWORK opens iteration + 1 only if its evidence holds on read.
 
-    Structural only: the Review and Process it names exist at their derived
-    ids, invariants 1-5 of 4.6.5 hold, every document id and digest it repeats
-    is the real one, and the Architecture it bound is the rendering of that
-    Process output (invariant 7). Disposition semantics are I11's.
+    Read-only: the Review and Process it names exist at their derived ids, all
+    seven invariants of 4.6.5 hold — dispositions resolved (6) and the bound
+    Architecture the rendering of that Process output (7) — and the Review's
+    stored status is the one 10.2 derives. Writing a Review or a Decision, and
+    disposition idempotency, stay I08's and I11's.
     """
+    iteration = decision.iteration
     review = _read_child(workspace, context, REVIEW_RESULT, iteration)
     process = _read_child(workspace, context, PROCESS_RESULT, iteration)
     if review.artifact is None or process.artifact is None:
@@ -811,19 +1009,21 @@ def _verify_rework(
             human_decision=decision,
             review_document_id=review.document_id,
         )
-    _require_rework_bindings(context, manifest, decision, review, process)
-    return _Rework(iteration, decision, review.artifact)
+    _require_process_lineage(context, manifest, architecture, process)
+    _require_review_lineage(context, manifest, architecture, process, review)
+    _require_rework_bindings(context, manifest, decision, process)
+    _require_dispositions_resolve(decision, process.artifact, review.artifact, earlier)
+    return _Rework(iteration, decision, review.artifact, process.artifact)
 
 
 def _require_rework_bindings(
     context: BootstrapContext,
     manifest: TsaArtifact,
     decision: TsaArtifact,
-    review: _Child,
     process: _Child,
 ) -> None:
-    """Every id and digest the REWORK and its Review repeat is the real one."""
-    assert review.artifact is not None and process.artifact is not None
+    """Every id and digest the REWORK repeats is the real one (invariant 7 too)."""
+    assert process.artifact is not None
     iteration = decision.iteration
     subject = f"The REWORK of iteration {iteration}"
     body = decision.body
@@ -838,14 +1038,6 @@ def _require_rework_bindings(
     for field, expected in bound.items():
         if body[field] != expected:
             raise _malformed(f"{subject} binds another {field} than the cycle's.")
-    for field, expected in (
-        ("process_result_document_id", process.document_id),
-        ("architecture_document_id", context.architecture_document_id),
-    ):
-        if review.artifact.body[field] != expected:
-            raise _malformed(
-                f"The Review Result of iteration {iteration} binds another {field}."
-            )
     with _validating(f"The Process Result of iteration {iteration}"):
         rendered = render_architecture(
             process.artifact.body["intended_output"], manifest.body["manifest_body"]
@@ -866,6 +1058,7 @@ def _current_iteration(
     """1, or the iteration after the last durable, bound REWORK (contract 6)."""
     iteration = FIRST_ITERATION
     rework: _Rework | None = None
+    earlier: frozenset[str] = frozenset()
     while True:
         decision = _read_child(workspace, context, HUMAN_DECISION, iteration)
         if decision.state is _ChildState.ABSENT:
@@ -882,8 +1075,9 @@ def _current_iteration(
                 "writes and nothing was written.",
             )
         rework = _verify_rework(
-            workspace, context, manifest, architecture, decision.artifact, iteration
+            workspace, context, manifest, architecture, decision.artifact, earlier
         )
+        earlier |= {rework.process.artifact_digest, rework.review.artifact_digest}
         iteration += 1
         if iteration > ITERATION_MAX:
             raise ArchitectRefused(
@@ -1046,17 +1240,85 @@ def _gate(stage: _Stage) -> _View:
     )
     _require_no_later_iteration(slots, iteration)
     _require_inputs_current(stage, context, manifest)
-    process = _read_child(stage.workspace, context, PROCESS_RESULT, iteration)
-    review_id = _child_id(context, DocumentKind.REVIEW_RESULT, iteration)
-    has_review = _resolve_child(stage.workspace, context, review_id) is not None
-    if has_review and process.state is not _ChildState.VALID:
+    process, review = _read_iteration_slots(
+        stage.workspace, context, manifest, architecture, iteration
+    )
+    return _View(context, manifest, iteration, rework, architecture, process, review)
+
+
+def _read_iteration_slots(
+    workspace: CycleWorkspace,
+    context: BootstrapContext,
+    manifest: TsaArtifact,
+    architecture: _Architecture,
+    iteration: int,
+) -> tuple[_Child, _Child]:
+    """Iteration N's Process and Review slots, each bound to this lineage.
+
+    Checked here, before any case classification uses them (4.6.5).
+    """
+    process = _read_child(workspace, context, PROCESS_RESULT, iteration)
+    review = _read_child(workspace, context, REVIEW_RESULT, iteration)
+    if review.state is not _ChildState.ABSENT and (
+        process.state is not _ChildState.VALID
+    ):
         raise _malformed(
             f"A Review Result Document exists for iteration {iteration} but no "
             "Process Result does."
         )
-    return _View(
-        context, manifest, iteration, rework, architecture, process, has_review
+    if process.artifact is not None:
+        _require_process_lineage(context, manifest, architecture, process)
+    if review.artifact is not None:
+        _require_review_lineage(context, manifest, architecture, process, review)
+    return process, review
+
+
+# ---------------------------------------------------------------------------
+# The bindings of one run (contract 10, 14.1.1; spec 14.5)
+# ---------------------------------------------------------------------------
+
+
+def _operation(view: _View) -> _Operation:
+    return _Operation(
+        manifest_document_id=_child_id(view.context, DocumentKind.INPUT_MANIFEST, None),
+        manifest_artifact_digest=view.manifest.artifact_digest,
+        iteration=view.iteration,
+        process_document_id=view.process.document_id,
+        input_fingerprint=view.architecture.fingerprint,
     )
+
+
+def _require_same_operation(operation: _Operation, view: _View) -> None:
+    """A fresh gate pass still describes the run this one started.
+
+    Another iteration means another run's REWORK closed this one's slot:
+    `ARTIFACT_DUPLICATE`. Another accepted Manifest means the inputs this run
+    was prompted with and bound to are no longer the accepted ones:
+    `INPUTS_STALE` (spec 14.5) — nothing is re-bound to the new one.
+    """
+    if view.iteration != operation.iteration:
+        raise _occupied(operation)
+    if view.manifest.artifact_digest != operation.manifest_artifact_digest:
+        raise _stale(
+            "The accepted Input Manifest changed during this run; its output is "
+            "bound to the Manifest it was given and is not persisted or applied "
+            "against another.",
+            (operation.manifest_document_id,),
+        )
+
+
+def _require_input_unchanged(operation: _Operation, view: _View) -> None:
+    """Before this run's Process Result is written, the input is still the one."""
+    if view.architecture.fingerprint != operation.input_fingerprint:
+        raise ArchitectRefused(
+            ArchitectResultCode.ARCHITECTURE_DIVERGED,
+            "The Architecture changed after this run read it as its input; the "
+            "output was not persisted or applied.",
+            (
+                f"input {operation.input_fingerprint}",
+                f"current {view.architecture.fingerprint}",
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1099,6 +1361,17 @@ def _holds_output(architecture: _Architecture, expected: ArchitectureCarrier) ->
     )
 
 
+def _three_fingerprints(
+    process: TsaArtifact, expected: ArchitectureCarrier, current: str | None
+) -> tuple[str, ...]:
+    """The recorded input, the intended output and the current Architecture."""
+    return (
+        f"input {process.body['input_fingerprint']}",
+        f"output {expected.content_fingerprint}",
+        f"current {current}",
+    )
+
+
 def _diverged(
     view: _View, process: TsaArtifact, expected: ArchitectureCarrier
 ) -> ArchitectRefused:
@@ -1109,11 +1382,7 @@ def _diverged(
         f"neither the recorded input nor the recorded output of iteration "
         f"{view.iteration}. Nothing was overwritten and no model was called; a "
         "human decides which is authoritative.",
-        (
-            f"input {process.body['input_fingerprint']}",
-            f"output {expected.content_fingerprint}",
-            f"current {view.architecture.fingerprint}",
-        ),
+        _three_fingerprints(process, expected, view.architecture.fingerprint),
     )
 
 
@@ -1126,7 +1395,15 @@ def _classify(
     view: _View, process: TsaArtifact, expected: ArchitectureCarrier
 ) -> _Case:
     """Case 3 before case 2: input == output is already applied (13.7-3)."""
+    review = view.review.artifact
     if _holds_output(view.architecture, expected):
+        if review is not None and (
+            review.body["architecture_fingerprint"] != expected.content_fingerprint
+        ):
+            raise _malformed(
+                f"The Review Result of iteration {view.iteration} reviewed another "
+                "Architecture than this iteration's applied output."
+            )
         return _Case.OUTPUT
     if view.has_review:
         raise _malformed(
@@ -1143,25 +1420,42 @@ def _classify(
 # ---------------------------------------------------------------------------
 
 
-def _require_same_process(view: _View, persisted: dict[str, object]) -> TsaArtifact:
-    process = view.process
+ARCHITECTURE_NOT_WRITTEN = "the Architecture was not written."
+ARCHITECTURE_WRITE_KEPT = (
+    "the Architecture write this run made stands and was neither retried nor undone."
+)
+
+
+def _require_same_process(
+    process: _Child, persisted: dict[str, object], consequence: str
+) -> TsaArtifact:
+    """The Process slot still holds exactly the artifact this run applies.
+
+    Another valid artifact there is not this run's evidence, however it
+    renders: the intended durable result is not established.
+    """
     if process.artifact is None or process.payload is None:
-        raise _write_failed(
-            f"Process Result {process.document_id!r} is no longer durable; the "
-            "Architecture was not written."
+        raise ArchitectRefused(
+            CycleResultCode.FIBERY_WRITE_FAILED,
+            f"Process Result {process.document_id!r} is no longer durable; "
+            f"{consequence}",
+            (process.document_id,),
         )
     if canonical_artifact_json(process.payload) != canonical_artifact_json(persisted):
-        raise _write_failed(
+        raise ArchitectRefused(
+            CycleResultCode.FIBERY_WRITE_FAILED,
             f"Process Result {process.document_id!r} is no longer the artifact "
-            "this stage confirmed; the Architecture was not written."
+            f"this run applies; {consequence}",
+            (process.document_id,),
         )
     return process.artifact
 
 
 def _confirm_architecture(
-    stage: _Stage, context: BootstrapContext, view: _View, expected: ArchitectureCarrier
+    stage: _Stage, view: _View, process: TsaArtifact, expected: ArchitectureCarrier
 ) -> None:
     """Immediate read-back on a fresh placement: success only for the output."""
+    context = view.context
     after = _read_architecture(stage.workspace, context, view.manifest_body)
     if after.form is _Form.EMPTY:
         raise _write_failed(
@@ -1170,7 +1464,7 @@ def _confirm_architecture(
         )
     if _holds_output(after, expected):
         return
-    if after.fingerprint == view.architecture.fingerprint:
+    if after.fingerprint == process.body["input_fingerprint"]:
         raise _write_failed(
             f"Architecture Document {context.architecture_document_id!r} still "
             "holds the recorded input after the apply; nothing was retried."
@@ -1178,22 +1472,26 @@ def _confirm_architecture(
     raise ArchitectRefused(
         ArchitectResultCode.ARCHITECTURE_DIVERGED,
         f"Architecture Document {context.architecture_document_id!r} read back as "
-        "neither the recorded input nor the intended output.",
-        (f"output {expected.content_fingerprint}", f"current {after.fingerprint}"),
+        "neither the recorded input nor the intended output; nothing was "
+        "overwritten or retried.",
+        _three_fingerprints(process, expected, after.fingerprint),
     )
 
 
 def _apply(
-    stage: _Stage, persisted: dict[str, object]
+    stage: _Stage, operation: _Operation, persisted: dict[str, object]
 ) -> tuple[bool, ArchitectureCarrier]:
     """Apply one persisted Process Result. Returns whether a write happened.
 
-    The gate runs fresh first; then only the root placement is resolved before
-    the write, with no content read in between (2.2.1). An unknown write
+    The gate runs fresh first and must still describe this run, with the slot
+    holding exactly `persisted`; then only the root placement is resolved
+    before the write, with no content read in between (2.2.1). Afterwards the
+    Architecture and that same Process Result are confirmed: an unknown
     outcome is classified from durable state and never retried blind.
     """
     view = _gate(stage)
-    process = _require_same_process(view, persisted)
+    _require_same_operation(operation, view)
+    process = _require_same_process(view.process, persisted, ARCHITECTURE_NOT_WRITTEN)
     expected = _expected_carrier(view, process)
     if _classify(view, process, expected) is _Case.OUTPUT:
         return False, expected
@@ -1206,13 +1504,19 @@ def _apply(
         stage.workspace.write_document_content(root.secret, expected.text)
     except FiberyError as error:
         after = _gate(stage)
+        _require_same_operation(operation, after)
+        _require_same_process(after.process, persisted, ARCHITECTURE_WRITE_KEPT)
         if _classify(after, process, expected) is _Case.OUTPUT:
             return True, expected
         raise _write_failed(
             f"The Architecture write outcome was unknown ({error}) and the "
             "Architecture still holds the recorded input; nothing was retried."
         ) from error
-    _confirm_architecture(stage, view.context, view, expected)
+    _confirm_architecture(stage, view, process, expected)
+    readback = _read_child(
+        stage.workspace, view.context, PROCESS_RESULT, view.iteration
+    )
+    _require_same_process(readback, persisted, ARCHITECTURE_WRITE_KEPT)
     return True, expected
 
 
@@ -1312,7 +1616,7 @@ def _create_process_shell(stage: _Stage, view: _View) -> None:
             if view.process.state is _ChildState.EMPTY:
                 return
             if view.process.state is _ChildState.VALID:
-                raise _occupied(view) from None
+                raise _occupied(_operation(view)) from None
             continue
         return
     raise _write_failed(
@@ -1321,31 +1625,34 @@ def _create_process_shell(stage: _Stage, view: _View) -> None:
     )
 
 
-def _occupied(view: _View) -> ArchitectRefused:
+def _occupied(operation: _Operation) -> ArchitectRefused:
     return ArchitectRefused(
         ArchitectResultCode.ARTIFACT_DUPLICATE,
-        f"Process Result {view.process.document_id!r} already holds an output "
-        f"for iteration {view.iteration}; this output was not persisted or "
-        "applied, and the durable one was not overwritten.",
-        (view.process.document_id,),
+        f"Process Result {operation.process_document_id!r} already holds an "
+        f"output for iteration {operation.iteration}; this output was not "
+        "persisted or applied, and the durable one was not overwritten.",
+        (operation.process_document_id,),
     )
 
 
 def _persist_process(
-    stage: _Stage, view: _View, sealed: dict[str, object]
+    stage: _Stage, view: _View, operation: _Operation, sealed: dict[str, object]
 ) -> dict[str, object]:
     """Create if absent, fill the empty shell, then read back the exact artifact.
 
-    After the create the gate runs again: nothing read before a mutation
-    authorizes the body write. The last remote calls before the write are the
-    child and root placement resolutions (2.2.1).
+    After the create the gate runs again and must still describe this run —
+    same Manifest, iteration and input Architecture — so nothing read before a
+    mutation authorizes the body write. The last remote calls before the write
+    are the child and root placement resolutions (2.2.1).
     """
     emitted = canonical_artifact_json(sealed)
     if view.process.state is _ChildState.ABSENT:
         _create_process_shell(stage, view)
     view = _gate(stage)
+    _require_same_operation(operation, view)
     if view.process.state is _ChildState.VALID:
-        raise _occupied(view)
+        raise _occupied(operation)
+    _require_input_unchanged(operation, view)
     if view.process.state is _ChildState.ABSENT:
         raise _write_failed(
             f"Process Result {view.process.document_id!r} is not observable after "
@@ -1359,10 +1666,9 @@ def _persist_process(
     carrier = render_process_result_carrier(view.context, view.iteration, sealed)
     try:
         stage.workspace.write_document_content(shell.secret, carrier)
-    except FiberyError as error:
+    except FiberyError:
         after = _gate(stage)
-        if after.iteration != view.iteration:
-            raise _occupied(view) from error
+        _require_same_operation(operation, after)
         return _confirmed_process(after.process, emitted)
     readback = _read_child(
         stage.workspace, view.context, PROCESS_RESULT, view.iteration
@@ -1509,29 +1815,22 @@ def _generate(
 ) -> ArchitectStageResult:
     """Case 1 or a Process shell: one fresh call, persist, then apply."""
     _require_case_one_input(view)
+    operation = _operation(view)
     prompt = build_architect_prompt(_prompt_material(stage, view))
     require_within_input_bound(prompt)
     response = _invoke(model, prompt)
     output = validate_architect_output(response.text, view.manifest_body)
     after = _gate(stage)
-    if after.iteration != view.iteration or after.process.state is _ChildState.VALID:
-        raise _occupied(view)
-    if after.architecture.fingerprint != view.architecture.fingerprint:
-        raise ArchitectRefused(
-            ArchitectResultCode.ARCHITECTURE_DIVERGED,
-            "The Architecture changed while the Architect was running; its output "
-            "was not persisted or applied.",
-            (
-                f"input {view.architecture.fingerprint}",
-                f"current {after.architecture.fingerprint}",
-            ),
-        )
-    sealed = build_process_result(after, output, response, created_at_now(clock))
-    persisted = _persist_process(stage, after, sealed)
-    written, expected = _apply(stage, persisted)
+    _require_same_operation(operation, after)
+    if after.process.state is _ChildState.VALID:
+        raise _occupied(operation)
+    _require_input_unchanged(operation, after)
+    sealed = build_process_result(view, output, response, created_at_now(clock))
+    persisted = _persist_process(stage, after, operation, sealed)
+    written, expected = _apply(stage, operation, persisted)
     return _result(
         ArchitectStageOutcome.OUTPUT_APPLIED,
-        after,
+        view,
         persisted,
         expected,
         model_invoked=True,
@@ -1601,7 +1900,7 @@ def run_architect_stage(
                 AdmissionResultCode.INPUT_TOO_LARGE, str(error)
             ) from error
     assert view.process.payload is not None and view.process.artifact is not None
-    written, expected = _apply(stage, view.process.payload)
+    written, expected = _apply(stage, _operation(view), view.process.payload)
     outcome = (
         ArchitectStageOutcome.RECORDED_OUTPUT_APPLIED
         if written

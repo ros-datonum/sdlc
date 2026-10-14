@@ -43,6 +43,8 @@ from test_tsa_admission import (
 )
 
 TRACE_MODEL_CALL = "model.run"
+#: The Architect claims a Reviewer must verify exactly once (spec 6.3).
+CLAIM_COLLECTIONS = ("risks", "open_architecture_questions", "product_questions")
 LATER_TIMESTAMP = "2026-10-11T09:00:00Z"
 
 
@@ -228,8 +230,26 @@ def _carrier(name: str, sealed: dict) -> str:
     )
 
 
+def claim_coverage(process: dict) -> list[dict]:
+    """Each Architect claim of spec 6.3 verified exactly once, as REJECTED."""
+    response = process["body"]["architect_response"]
+    return [
+        {
+            "claim_ref": f"{process['artifact_digest']}#{collection}/{index}",
+            "outcome": "REJECTED",
+            "reason": "Checked against the Requirement and not upheld.",
+        }
+        for collection in CLAIM_COLLECTIONS
+        for index in range(len(response[collection]))
+    ]
+
+
 def review_result(scene: World, iteration: int, architecture_fingerprint: str) -> dict:
-    """A sealed Review Result bound to that iteration's durable Process Result."""
+    """A sealed Review Result bound to that iteration's durable Process Result.
+
+    Every claim is covered and one WARNING finding is raised, so the status
+    spec 10.2 derives from this evidence is exactly the stored one.
+    """
     process = payload_of(scene, process_id(iteration))
     return _envelope(
         REVIEW_RESULT,
@@ -241,7 +261,7 @@ def review_result(scene: World, iteration: int, architecture_fingerprint: str) -
             "architecture_document_id": ARCHITECTURE_ID,
             "architecture_fingerprint": architecture_fingerprint,
             "reviewer_response": {
-                "claim_verifications": [],
+                "claim_verifications": claim_coverage(process),
                 "traceability_verification": {
                     "outcome": "CONFIRMED",
                     "reason": "Every Requirement is covered.",
@@ -315,14 +335,31 @@ def place_child(scene: World, kind: DocumentKind, iteration: int, sealed: dict) 
     return document_id
 
 
-def place_rework(scene: World, iteration: int, decision: str = "REWORK") -> None:
-    """A Review Result and a Human Decision for an applied iteration."""
+def place_rework(
+    scene: World,
+    iteration: int,
+    decision: str = "REWORK",
+    *,
+    change_review: Callable[[dict], None] | None = None,
+    accept: Callable[[dict], list[str]] | None = None,
+) -> None:
+    """A Review Result and a Human Decision for an applied iteration.
+
+    `change_review` alters the Review before it is sealed, so every digest the
+    Decision repeats is the altered Review's. `accept` returns the disposition
+    references the Decision records, given that sealed Review.
+    """
     envelope = extract_architecture_envelope(scene.tsa.content_of(ARCHITECTURE_ID))
     review = review_result(scene, iteration, envelope["body"]["content_fingerprint"])
+    if change_review is not None:
+        change_review(review)
+        review = sealed_artifact(review)
     place_child(scene, DocumentKind.REVIEW_RESULT, iteration, review)
-    place_child(
-        scene,
-        DocumentKind.HUMAN_DECISION,
-        iteration,
-        human_decision(scene, iteration, review, decision),
-    )
+    record = human_decision(scene, iteration, review, decision)
+    if accept is not None:
+        record["body"]["accepted_dispositions"] = [
+            {"ref": ref, "reason": "Accepted as a known trade-off."}
+            for ref in accept(review)
+        ]
+        record = sealed_artifact(record)
+    place_child(scene, DocumentKind.HUMAN_DECISION, iteration, record)
