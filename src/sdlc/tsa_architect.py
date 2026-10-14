@@ -45,7 +45,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 
@@ -154,6 +154,7 @@ __all__ = [
     "ArchitectResultCode",
     "ArchitectStageOutcome",
     "ArchitectStageResult",
+    "ProcessCheck",
     "ReviewTarget",
     "SlotState",
     "build_process_result",
@@ -1274,14 +1275,20 @@ def _require_no_later_iteration(
         )
 
 
-def _gate(stage: _Stage) -> _View:
+#: A read-time check of iteration N's validated Process, run before its Review.
+ProcessCheck = Callable[[str, TsaArtifact], None]
+
+
+def _gate(stage: _Stage, process_check: ProcessCheck | None = None) -> _View:
     """Everything the Architect stage relies on, read fresh, in one pass.
 
     Discovery (I04), the accepted Manifest, the children cross-check, the
     Architecture in its claimed form, the iteration, input currentness, then
     the iteration's Process and Review slots. A failure refuses before any
     model call or mutation (contract 14.1). This is the stage-local subset of
-    the normal gate, not I10's complete dispatcher.
+    the normal gate, not I10's complete dispatcher. `process_check`, given only
+    by the Reviewer's read boundary, runs on a validated Process before the
+    Review slot is validated against it (spec v0.5 section 3).
     """
     context = _discover(stage)
     manifest = _read_manifest(stage.workspace, context)
@@ -1296,7 +1303,7 @@ def _gate(stage: _Stage) -> _View:
     _require_no_later_iteration(slots, iteration)
     _require_inputs_current(stage, context, manifest)
     process, review = _read_iteration_slots(
-        stage.workspace, context, manifest, architecture, iteration
+        stage.workspace, context, manifest, architecture, iteration, process_check
     )
     return _View(context, manifest, iteration, rework, architecture, process, review)
 
@@ -1307,6 +1314,7 @@ def _read_iteration_slots(
     manifest: TsaArtifact,
     architecture: _Architecture,
     iteration: int,
+    process_check: ProcessCheck | None = None,
 ) -> tuple[_Child, _Child]:
     """Iteration N's Process and Review slots, each bound to this lineage.
 
@@ -1323,6 +1331,8 @@ def _read_iteration_slots(
         )
     if process.artifact is not None:
         _require_process_lineage(context, manifest, architecture, process)
+        if process_check is not None:
+            process_check(process.document_id, process.artifact)
     if review.artifact is not None:
         _require_review_lineage(context, manifest, architecture, process, review)
     return process, review
@@ -1526,12 +1536,22 @@ class ReviewTarget:
 
 
 def _architect_case(view: _View) -> tuple[ArchitectCase, str | None]:
+    """The case of contract 14.3, where an empty Review shell is no evidence.
+
+    Spec v0.5 section 5: until a valid Review exists, an empty Review slot
+    classifies exactly as an absent one, so a pending apply stays case 2 and
+    a divergent Architecture stays case 4 with its three fingerprints. Only
+    this read boundary does so; the Architect stage's own classification is
+    unchanged.
+    """
     process = view.process.artifact
     if process is None:
         if view.process.state is _ChildState.EMPTY:
             return ArchitectCase.PROCESS_SHELL, None
         return ArchitectCase.NO_PROCESS, None
     expected = _expected_carrier(view, process)
+    if view.review.state is _ChildState.EMPTY:
+        view = replace(view, review=_Child(_ChildState.ABSENT, view.review.document_id))
     if _classify(view, process, expected) is _Case.INPUT:
         return ArchitectCase.RECORDED_INPUT, None
     return ArchitectCase.OUTPUT_APPLIED, expected.content_fingerprint
@@ -1542,6 +1562,7 @@ def read_review_target(
     evidence: RequirementEvidenceWorkspace,
     project_id: str,
     raw_cycle_id: object,
+    process_check: ProcessCheck | None = None,
 ) -> ReviewTarget:
     """The Architect stage's gate, run fresh and read-only, then its case.
 
@@ -1549,10 +1570,13 @@ def read_review_target(
     the Architecture form, the iteration from durable REWORK evidence, input
     currentness, and the lineage and stored status of iteration N's Process
     and Review — then the case classification, which refuses a divergent
-    Architecture (case 4) and a Review beside an unapplied output. Raises
-    `ArchitectRefused` with the frozen code.
+    Architecture (case 4) and a valid Review beside an unapplied output. An
+    empty Review shell is no Review evidence (spec v0.5 section 5).
+    `process_check` runs on the validated Process before the Review slot is
+    validated. Raises `ArchitectRefused` with the frozen code, or whatever
+    `process_check` raises.
     """
-    view = _gate(_Stage(workspace, evidence, project_id, raw_cycle_id))
+    view = _gate(_Stage(workspace, evidence, project_id, raw_cycle_id), process_check)
     case, output_fingerprint = _architect_case(view)
     return ReviewTarget(
         context=view.context,

@@ -973,10 +973,13 @@ def test_a_process_replaced_by_the_same_output_is_not_the_reviewed_one():
 
     error = refusal(scene, model)
 
-    assert error.code == "INPUTS_STALE"
+    assert error.code == "REVIEW_INPUT_CHANGED"
     assert error.details == (PROCESS_ID,)
+    accepted_by_i01(scene, PROCESS_ID)
     assert architect_reads_back(scene) is ArchitectStageOutcome.ALREADY_APPLIED
     assert len(model.calls) == 1
+    assert scene.tsa.count("create_tsa_child_document") == 0
+    assert review_writes(scene) == 0
     assert scene.tsa.mutations == []
 
 
@@ -1070,12 +1073,16 @@ def test_a_process_replaced_after_the_create_refuses_before_the_body_write():
     scene.tsa.after(
         "create_tsa_child_document", 1, lambda: same_output_other_process(scene)
     )
+    model = reviewer_model(scene)
 
-    error = refusal(scene)
+    error = refusal(scene, model)
 
-    assert error.code == "INPUTS_STALE"
+    assert error.code == "REVIEW_INPUT_CHANGED"
     assert error.details == (PROCESS_ID,)
+    assert len(model.calls) == 1
+    assert scene.tsa.content_of(REVIEW_ID) == "", "the shell stays, unfilled"
     assert review_writes(scene) == 0
+    assert writes_other_than_review(scene) == []
 
 
 def trace_requirement_reads(scene) -> None:
@@ -1126,7 +1133,7 @@ def test_a_process_replaced_before_a_lost_create_is_refused_before_the_retry():
 
     error = refusal(scene, model)
 
-    assert error.code == "INPUTS_STALE"
+    assert error.code == "REVIEW_INPUT_CHANGED"
     assert error.details == (PROCESS_ID,)
     assert len(model.calls) == 1
     assert scene.tsa.count("create_tsa_child_document") == 1, "no second attempt"
@@ -1370,3 +1377,146 @@ def test_the_stage_neither_takes_the_command_guard_nor_reaches_real_processes():
     }
     assert "hold_workspace" not in called
     assert "LocalCliModelRuntime" not in called
+
+
+# --------------------------------------------------------------------------
+# G. Spec v0.5: an empty Review shell is no evidence (F1), and the exact
+#    Process the operation fixed is its review input (F2)
+# --------------------------------------------------------------------------
+
+
+def seed_empty_review_shell(scene) -> None:
+    scene.tsa.seed_child(REVIEW_ID, ARCHITECTURE_ID, "")
+    reset_trace(scene)
+
+
+def test_an_empty_review_shell_beside_a_pending_apply_requires_the_architect():
+    from architect_fake import accepted_scene
+
+    scene = accepted_scene()
+    persisted_but_not_applied(scene)
+    architecture = scene.tsa.content_of(ARCHITECTURE_ID)
+    seed_empty_review_shell(scene)
+    model = no_model(scene)
+
+    with pytest.raises(ArchitectStageRequired) as required:
+        review(scene, model)
+
+    assert required.value.case is ArchitectCase.RECORDED_INPUT
+    assert model.calls == []
+    assert scene.tsa.mutations == []
+    assert scene.tsa.content_of(ARCHITECTURE_ID) == architecture
+    assert scene.tsa.content_of(REVIEW_ID) == "", "the shell is left as it is"
+
+
+def test_an_empty_review_shell_beside_a_divergent_architecture_is_divergent():
+    scene = applied_scene()
+    recorded = payload_of(scene, PROCESS_ID)["body"]
+    intended = architecture_envelope(scene)["body"]["content_fingerprint"]
+    divergent = other_architecture(scene, "Edited by hand after the apply.")
+    scene.tsa.set_content(ARCHITECTURE_ID, divergent.text)
+    seed_empty_review_shell(scene)
+    model = no_model(scene)
+
+    error = refusal(scene, model)
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert error.details == (
+        f"input {recorded['input_fingerprint']}",
+        f"output {intended}",
+        f"current {divergent.content_fingerprint}",
+    )
+    assert model.calls == []
+    assert scene.tsa.mutations == []
+    assert scene.tsa.content_of(REVIEW_ID) == ""
+
+
+def test_an_empty_review_shell_beside_the_applied_output_is_completed_in_place():
+    scene = applied_scene()
+    seed_empty_review_shell(scene)
+    model = reviewer_model(scene)
+
+    result = review(scene, model)
+
+    assert result.outcome is ReviewerStageOutcome.REVIEW_RECORDED
+    assert len(model.calls) == 1
+    assert scene.tsa.count("create_tsa_child_document") == 0
+    assert review_writes(scene) == 1
+    assert [d for d in scene.tsa.documents if d.startswith(REVIEW_ID)] == [REVIEW_ID]
+    assert writes_other_than_review(scene) == []
+
+
+@pytest.mark.parametrize("lost", [False, True], ids=["normal-return", "lost-response"])
+def test_a_process_replaced_after_the_review_write_is_no_confirmation(lost):
+    """Process first, then the fixed binding, then the Review (v0.5 section 3)."""
+    scene = applied_scene()
+
+    def replace_after_the_write() -> None:
+        same_output_other_process(scene)
+        if lost:
+            raise FiberyError(FIBERY_DOWN)
+
+    scene.tsa.after("write_document_content", 1, replace_after_the_write)
+    model = reviewer_model(scene)
+
+    error = refusal(scene, model)
+
+    assert error.code == "REVIEW_INPUT_CHANGED"
+    assert error.details == (PROCESS_ID,)
+    accepted_by_i01(scene, PROCESS_ID)
+    assert len(model.calls) == 1
+    assert scene.tsa.count("create_tsa_child_document") == 1
+    assert review_writes(scene) == 1, "the executed write is not repeated"
+    assert validate_artifact(review_payload(scene)).iteration == 1, "not undone"
+    assert writes_other_than_review(scene) == []
+
+
+def malformed_process(scene) -> None:
+    """A self-consistent Process bound to another Manifest: lineage, not digest."""
+    reseal(
+        scene,
+        PROCESS_ID,
+        lambda payload: payload["body"].update(manifest_digest="0" * 64),
+    )
+
+
+def duplicate_process(scene) -> None:
+    scene.tsa.seed_child(
+        "rogue-process", ARCHITECTURE_ID, scene.tsa.content_of(PROCESS_ID)
+    )
+
+
+@pytest.mark.parametrize(
+    ("drift", "code"),
+    [
+        (malformed_process, "ARTIFACT_MALFORMED"),
+        (duplicate_process, "ARTIFACT_DUPLICATE"),
+        (root_edited_after_review, "INPUTS_STALE"),
+    ],
+    ids=["malformed-process", "duplicate-process", "requirement-drift"],
+)
+def test_more_specific_codes_keep_precedence_over_review_input_changed(drift, code):
+    scene = applied_scene()
+    model = reviewer_model(scene, during=lambda: drift(scene))
+
+    error = refusal(scene, model)
+
+    assert error.code == code
+    assert len(model.calls) == 1
+    assert scene.tsa.count("create_tsa_child_document") == 0
+    assert scene.tsa.mutations == []
+
+
+def test_an_unchanged_exact_process_is_reviewed_and_confirmed():
+    scene = applied_scene()
+    process = payload_of(scene, PROCESS_ID)
+    model = reviewer_model(scene)
+
+    result = review(scene, model)
+
+    assert result.process_result_digest == process["artifact_digest"]
+    assert (
+        review_payload(scene)["body"]["process_result_digest"]
+        == (process["artifact_digest"])
+    )
+    assert (len(model.calls), review_writes(scene)) == (1, 1)

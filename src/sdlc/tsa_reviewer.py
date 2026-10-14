@@ -58,6 +58,7 @@ from sdlc.tsa_architect import (
     ArchitectCase,
     ArchitectRefused,
     ArchitectResultCode,
+    ProcessCheck,
     ResultCode,
     ReviewTarget,
     SlotState,
@@ -76,6 +77,7 @@ from sdlc.tsa_artifacts import (
     REVIEWER_ROLE,
     SCHEMA_VERSION,
     InvalidTsaArtifact,
+    TsaArtifact,
     canonical_artifact_json,
     canonical_json,
     sealed_artifact,
@@ -102,6 +104,7 @@ from sdlc.tsa_reviewer_prompt import (
 __all__ = [
     "ArchitectStageRequired",
     "ReviewerRefused",
+    "ReviewerResultCode",
     "ReviewerStageOutcome",
     "ReviewerStageResult",
     "build_review_result",
@@ -126,6 +129,14 @@ REVIEW_PROSE = (
 REVIEW_CREATE_ATTEMPTS = 2
 
 
+class ReviewerResultCode(StrEnum):
+    """Frozen codes this stage decides that no earlier item owns (spec v0.5)."""
+
+    #: The exact Process Result this operation fixed as its review input was
+    #: replaced by another otherwise valid Process artifact. Exit 1.
+    REVIEW_INPUT_CHANGED = "REVIEW_INPUT_CHANGED"
+
+
 class ReviewerRefused(Exception):
     """A controlled refusal with one frozen result code of spec 13.8.
 
@@ -135,7 +146,10 @@ class ReviewerRefused(Exception):
     """
 
     def __init__(
-        self, code: ResultCode, message: str, details: tuple[str, ...] = ()
+        self,
+        code: ResultCode | ReviewerResultCode,
+        message: str,
+        details: tuple[str, ...] = (),
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -305,11 +319,17 @@ def validate_reviewer_output(text: str) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def _gate(stage: _Stage) -> ReviewTarget:
-    """The Architect stage's gate, fresh: discovery to iteration N's lineage."""
+def _gate(stage: _Stage, operation: _Operation | None = None) -> ReviewTarget:
+    """The Architect stage's gate, fresh: discovery to iteration N's lineage.
+
+    Once an operation is fixed, its exact Process is checked inside the read,
+    after that Process validated and before the Review slot is validated
+    against it (spec v0.5 section 3).
+    """
+    check = None if operation is None else _same_process(operation)
     with _shared():
         return read_review_target(
-            stage.workspace, stage.evidence, stage.project_id, stage.cycle_id
+            stage.workspace, stage.evidence, stage.project_id, stage.cycle_id, check
         )
 
 
@@ -346,16 +366,39 @@ def _operation(target: ReviewTarget) -> _Operation:
     )
 
 
+def _input_changed(operation: _Operation) -> ReviewerRefused:
+    return ReviewerRefused(
+        ReviewerResultCode.REVIEW_INPUT_CHANGED,
+        f"Process Result {operation.process_document_id!r} is no longer the "
+        f"artifact {operation.process_artifact_digest} this run reviewed; the "
+        "review is not persisted against another, even one with the same output.",
+        (operation.process_document_id,),
+    )
+
+
+def _same_process(operation: _Operation) -> ProcessCheck:
+    """The fixed review input, compared on a Process that already validated."""
+
+    def check(document_id: str, process: TsaArtifact) -> None:
+        if (
+            document_id == operation.process_document_id
+            and process.artifact_digest != operation.process_artifact_digest
+        ):
+            raise _input_changed(operation)
+
+    return check
+
+
 def _require_same_operation(operation: _Operation, target: ReviewTarget) -> None:
     """A fresh gate pass still describes the review this run started.
 
     Nothing is re-bound to the fresh pass, however valid it is internally.
     Another iteration means another run's Review and Decision closed this
-    slot: `ARTIFACT_DUPLICATE`. Another accepted Manifest, or another Process
-    Result than the one reviewed — even one with the same output — means the
-    evidence this run was given is no longer current: `INPUTS_STALE`. An
-    Architecture no longer holding the reviewed output is
-    `ARCHITECTURE_DIVERGED`, with both fingerprints.
+    slot: `ARTIFACT_DUPLICATE`. Another accepted Manifest is `INPUTS_STALE`.
+    Another valid Process Result than the one reviewed is decided inside the
+    read itself (`_same_process`), before this runs. An Architecture no longer
+    holding the reviewed output, including one left without a valid Process,
+    is `ARCHITECTURE_DIVERGED`, with both fingerprints.
     """
     context = target.context
     if (
@@ -371,13 +414,6 @@ def _require_same_operation(operation: _Operation, target: ReviewTarget) -> None
             "bound to the Manifest it was given and is not persisted against "
             "another.",
             (operation.manifest_document_id,),
-        )
-    current = target.process.artifact_digest if target.process else None
-    if current != operation.process_artifact_digest:
-        raise _stale(
-            "The Process Result this run reviewed is no longer the durable one; "
-            "the review is not persisted against another.",
-            (operation.process_document_id,),
         )
     if target.output_fingerprint != operation.architecture_fingerprint:
         raise ReviewerRefused(
@@ -491,7 +527,7 @@ def _create_review_shell(
                 operation.review_document_id, name, root.document_id
             )
         except FiberyError:
-            after = _gate(stage)
+            after = _gate(stage, operation)
             _require_same_operation(operation, after)
             if after.review_state is SlotState.EMPTY:
                 return
@@ -516,7 +552,7 @@ def _confirm_review(
     stored status — so a specific durable refusal keeps its own code; only
     then is a valid but different artifact `FIBERY_WRITE_FAILED`.
     """
-    after = _gate(stage)
+    after = _gate(stage, operation)
     _require_same_operation(operation, after)
     document_id = operation.review_document_id
     if after.review_payload is None:
@@ -551,7 +587,7 @@ def _persist_review(
     emitted = canonical_artifact_json(sealed)
     if target.review_state is SlotState.ABSENT:
         _create_review_shell(stage, target, operation)
-    current = _gate(stage)
+    current = _gate(stage, operation)
     _require_same_operation(operation, current)
     if current.review_state is SlotState.VALID:
         raise _occupied(operation)
@@ -631,7 +667,7 @@ def _review(
     require_within_input_bound(prompt)
     response = _invoke(model, prompt)
     reviewer_response = validate_reviewer_output(response.text)
-    after = _gate(stage)
+    after = _gate(stage, operation)
     _require_same_operation(operation, after)
     if after.review_state is SlotState.VALID:
         raise _occupied(operation)
