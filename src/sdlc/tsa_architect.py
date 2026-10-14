@@ -1453,7 +1453,7 @@ def _require_same_process(
 
 def _confirm_architecture(
     stage: _Stage, view: _View, process: TsaArtifact, expected: ArchitectureCarrier
-) -> None:
+) -> _Architecture:
     """Immediate read-back on a fresh placement: success only for the output."""
     context = view.context
     after = _read_architecture(stage.workspace, context, view.manifest_body)
@@ -1463,7 +1463,7 @@ def _confirm_architecture(
             "empty after the apply; nothing was retried."
         )
     if _holds_output(after, expected):
-        return
+        return after
     if after.fingerprint == process.body["input_fingerprint"]:
         raise _write_failed(
             f"Architecture Document {context.architecture_document_id!r} still "
@@ -1486,8 +1486,9 @@ def _apply(
     The gate runs fresh first and must still describe this run, with the slot
     holding exactly `persisted`; then only the root placement is resolved
     before the write, with no content read in between (2.2.1). Afterwards the
-    Architecture and that same Process Result are confirmed: an unknown
-    outcome is classified from durable state and never retried blind.
+    Architecture and that same Process Result are confirmed, the Process's
+    lineage before its exact match (4.6.5): an unknown outcome is classified
+    from durable state and never retried blind.
     """
     view = _gate(stage)
     _require_same_operation(operation, view)
@@ -1512,10 +1513,12 @@ def _apply(
             f"The Architecture write outcome was unknown ({error}) and the "
             "Architecture still holds the recorded input; nothing was retried."
         ) from error
-    _confirm_architecture(stage, view, process, expected)
+    applied = _confirm_architecture(stage, view, process, expected)
     readback = _read_child(
         stage.workspace, view.context, PROCESS_RESULT, view.iteration
     )
+    if readback.artifact is not None:
+        _require_process_lineage(view.context, view.manifest, applied, readback)
     _require_same_process(readback, persisted, ARCHITECTURE_WRITE_KEPT)
     return True, expected
 
@@ -1594,12 +1597,13 @@ def _confirmed_process(child: _Child, emitted: str) -> dict[str, object]:
     return child.payload
 
 
-def _create_process_shell(stage: _Stage, view: _View) -> None:
+def _create_process_shell(stage: _Stage, view: _View, operation: _Operation) -> None:
     """Create the deterministic child; an unknown outcome is rediscovered first.
 
     Both levels of 3.5: the stage gate (cycle-level) runs before the slot is
-    looked at again, and a retry reuses the same id. A child that appeared
-    holding an artifact is never written over.
+    looked at again, and must still describe this run before a retry is
+    allowed; a retry reuses the same id. A child that appeared holding an
+    artifact is never written over.
     """
     context = view.context
     document_id = view.process.document_id
@@ -1613,10 +1617,12 @@ def _create_process_shell(stage: _Stage, view: _View) -> None:
             )
         except FiberyError:
             view = _gate(stage)
+            _require_same_operation(operation, view)
             if view.process.state is _ChildState.EMPTY:
                 return
             if view.process.state is _ChildState.VALID:
-                raise _occupied(_operation(view)) from None
+                raise _occupied(operation) from None
+            _require_input_unchanged(operation, view)
             continue
         return
     raise _write_failed(
@@ -1647,7 +1653,7 @@ def _persist_process(
     """
     emitted = canonical_artifact_json(sealed)
     if view.process.state is _ChildState.ABSENT:
-        _create_process_shell(stage, view)
+        _create_process_shell(stage, view, operation)
     view = _gate(stage)
     _require_same_operation(operation, view)
     if view.process.state is _ChildState.VALID:

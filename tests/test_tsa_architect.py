@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from architect_fake import (
+    LATER_TIMESTAMP,
     RecordingModel,
     accepted_scene,
     architect_response,
@@ -1568,6 +1569,51 @@ def test_an_architecture_replaced_after_the_create_refuses_before_the_body_write
     assert scene.tsa.count("write_document_content") == 0
 
 
+def test_a_manifest_replaced_before_a_lost_create_is_refused_before_the_retry():
+    scene = accepted_scene()
+
+    def replace_then_lose() -> None:
+        replace_accepted_manifest(scene)
+        raise FiberyError(FIBERY_DOWN)
+
+    scene.tsa.before("create_tsa_child_document", 1, replace_then_lose)
+    manifest_secret = secret_of(scene, MANIFEST_ID)
+    model = RecordingModel(scene)
+
+    error = refusal(scene, model)
+
+    assert error.code == "INPUTS_STALE"
+    assert MANIFEST_ID in error.details
+    assert len(model.calls) == 1
+    assert scene.tsa.count("create_tsa_child_document") == 1, "no second attempt"
+    assert PROCESS_ID not in scene.tsa.documents, "no durable Process Document"
+    assert scene.tsa.count("write_document_content") == 0
+    assert architecture_writes(scene) == 0
+    after_create = scene.tsa.log[
+        scene.tsa.log.index(("create_tsa_child_document", PROCESS_ID)) + 1 :
+    ]
+    assert ("read_document_content", manifest_secret) in after_create, (
+        "the replaced Manifest was read where the retry used to be made"
+    )
+
+
+def test_an_unchanged_lost_create_is_retried_once_and_applied_exactly_once():
+    scene = accepted_scene()
+    scene.tsa.before("create_tsa_child_document", 1, fail(FIBERY_DOWN))
+    model = RecordingModel(scene)
+
+    result = run(scene, model)
+
+    assert result.outcome is ArchitectStageOutcome.OUTPUT_APPLIED
+    assert len(model.calls) == 1
+    assert scene.tsa.count("create_tsa_child_document") == 2
+    assert scene.tsa.mutations.count(f"create:{PROCESS_ID}") == 1, "one durable"
+    process_writes = ("write_document_content", secret_of(scene, PROCESS_ID))
+    assert scene.tsa.log.count(process_writes) == 1
+    assert architecture_writes(scene) == 1
+    accepted_by_i01(scene, PROCESS_ID)
+
+
 # F4 — after an Architecture write, the Process Result is still the one applied.
 
 
@@ -1616,6 +1662,80 @@ def test_a_process_replaced_before_a_normal_apply_read_back_is_no_success():
 
     assert error.code == "FIBERY_WRITE_FAILED"
     assert architecture_writes(scene) == 1
+
+
+def lose_response(effect):
+    def effect_then_lose() -> None:
+        effect()
+        raise FiberyError(FIBERY_DOWN)
+
+    return effect_then_lose
+
+
+TRANSPORTS = {"normal-return": lambda effect: effect, "lost-response": lose_response}
+
+
+def resealed_process(scene, field: str, value: str):
+    """After the Architecture write, the Process Result changes only `field`."""
+
+    def effect() -> None:
+        reseal(
+            scene, PROCESS_ID, lambda payload: payload["body"].update({field: value})
+        )
+
+    return effect
+
+
+def replay_with(scene, transport: str, effect) -> RecordingModel:
+    persisted_but_not_applied(scene)
+    scene.tsa.after("write_document_content", 1, TRANSPORTS[transport](effect))
+    return no_model(scene)
+
+
+@pytest.mark.parametrize("transport", TRANSPORTS)
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("manifest_digest", "0" * 64), ("architecture_document_id", "another-document")],
+)
+def test_a_process_lineage_broken_after_the_apply_is_malformed(field, value, transport):
+    scene = accepted_scene()
+    model = replay_with(scene, transport, resealed_process(scene, field, value))
+
+    error = refusal(scene, model)
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    assert payload_of(scene, PROCESS_ID)["body"][field] == value
+    accepted_by_i01(scene, PROCESS_ID)
+    assert architecture_writes(scene) == 1, "the landed write stays; no second one"
+    assert model.calls == []
+
+
+@pytest.mark.parametrize("transport", TRANSPORTS)
+def test_a_validly_bound_but_other_process_after_the_apply_is_unconfirmed(transport):
+    scene = accepted_scene()
+    model = replay_with(
+        scene, transport, resealed_process(scene, "created_at", LATER_TIMESTAMP)
+    )
+
+    error = refusal(scene, model)
+
+    assert error.code == "FIBERY_WRITE_FAILED"
+    assert PROCESS_ID in error.details
+    assert "stands and was neither retried nor undone" in str(error)
+    assert architecture_writes(scene) == 1
+    assert model.calls == []
+
+
+@pytest.mark.parametrize("transport", TRANSPORTS)
+def test_an_unchanged_process_after_the_apply_is_confirmed_once(transport):
+    scene = accepted_scene()
+    model = replay_with(scene, transport, lambda: None)
+
+    result = run(scene, model, clock=failing_clock)
+
+    assert result.outcome is ArchitectStageOutcome.RECORDED_OUTPUT_APPLIED
+    assert architecture_writes(scene) == 1
+    assert model.calls == []
 
 
 def test_a_replay_whose_landed_write_lost_its_response_is_confirmed_once():
