@@ -43,7 +43,7 @@ cannot choose it, and re-running the stage never opens an iteration.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -148,14 +148,24 @@ from sdlc.tsa_markdown import (
 )
 
 __all__ = [
+    "ArchitectCase",
     "ArchitectOutput",
     "ArchitectRefused",
     "ArchitectResultCode",
     "ArchitectStageOutcome",
     "ArchitectStageResult",
+    "ReviewTarget",
+    "SlotState",
     "build_process_result",
+    "decode_one_json_object",
+    "derive_review_status",
     "process_result_document_name",
+    "read_bound_sources",
+    "read_review_target",
     "render_process_result_carrier",
+    "resolve_child_placement",
+    "resolve_root_placement",
+    "review_coverage_defects",
     "run_architect_stage",
     "select_architect_runtime",
     "validate_architect_output",
@@ -190,6 +200,9 @@ SEVERITY_STATUSES = (("BLOCKING", REVIEW_BLOCKING), ("WARNING", REVIEW_NEEDS_WOR
 #: Spec 6.4 reference refusals, carried in details of a lineage refusal.
 DISPOSITION_UNKNOWN_REFERENCE = "DISPOSITION_UNKNOWN_REFERENCE"
 DISPOSITION_FOREIGN_ITERATION = "DISPOSITION_FOREIGN_ITERATION"
+#: Spec 6.3 coverage diagnostics; each makes a Review structurally invalid.
+REVIEW_COVERAGE_INCOMPLETE = "REVIEW_COVERAGE_INCOMPLETE"
+REVIEW_COVERAGE_DUPLICATE = "REVIEW_COVERAGE_DUPLICATE"
 
 #: The artifact types that may sit under an Architecture, and their id kind.
 CHILD_KINDS = {
@@ -442,41 +455,46 @@ def _invalid_output(message: str) -> ArchitectRefused:
     )
 
 
-def _refuse_duplicate_names(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    """A key named twice: `json.loads` would silently keep the last one."""
-    names = [name for name, _ in pairs]
-    repeated = sorted({name for name in names if names.count(name) > 1})
-    if repeated:
-        raise _invalid_output(f"the object names {repeated} more than once.")
-    return dict(pairs)
-
-
-def _refuse_constant(name: str) -> object:
-    raise _invalid_output(f"{name} is not a JSON value.")
-
-
-def _decode_response(text: str) -> dict[str, object]:
+def decode_one_json_object(
+    text: str, invalid: Callable[[str], Exception]
+) -> dict[str, object]:
     """Exactly one JSON object; whitespace around it is the only allowance.
 
     No fence is unwrapped and no prose is skipped: anything else fails to
-    decode and is refused.
+    decode and is refused with `invalid(reason)`. A key named twice is refused
+    rather than silently collapsed, and a non-JSON constant is refused. Pure;
+    shared by the Architect and the Reviewer stage. `invalid` must not build a
+    `ValueError`, which the decoder would take for its own failure.
     """
+
+    def refuse_duplicate_names(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        names = [name for name, _ in pairs]
+        repeated = sorted({name for name in names if names.count(name) > 1})
+        if repeated:
+            raise invalid(f"the object names {repeated} more than once.")
+        return dict(pairs)
+
+    def refuse_constant(name: str) -> object:
+        raise invalid(f"{name} is not a JSON value.")
+
     try:
         decoded = json.loads(
             text,
-            object_pairs_hook=_refuse_duplicate_names,
-            parse_constant=_refuse_constant,
+            object_pairs_hook=refuse_duplicate_names,
+            parse_constant=refuse_constant,
         )
-    except ArchitectRefused:
-        raise
     except (ValueError, RecursionError) as error:
-        raise _invalid_output(
+        raise invalid(
             "it is not exactly one JSON object with nothing around it "
             f"({type(error).__name__})."
         ) from error
     if not isinstance(decoded, dict):
-        raise _invalid_output(f"it is a JSON {type(decoded).__name__}, not an object.")
+        raise invalid(f"it is a JSON {type(decoded).__name__}, not an object.")
     return decoded
+
+
+def _decode_response(text: str) -> dict[str, object]:
+    return decode_one_json_object(text, _invalid_output)
 
 
 def _string_values(value: object, path: str) -> Iterator[tuple[str, str]]:
@@ -899,17 +917,49 @@ def _required_claims(process: TsaArtifact) -> set[str]:
     }
 
 
-def _derived_review_status(review: TsaArtifact, process: TsaArtifact) -> str:
-    """Spec 10.2 over the persisted Review and the Process Result it binds.
+def review_coverage_defects(
+    reviewer_response: dict[str, object], process: TsaArtifact
+) -> tuple[str, ...]:
+    """Every breach of the exactly-once claim coverage of spec 6.3.
 
-    Structural invalidity here is the exactly-once claim coverage of 6.3; the
-    schema, digest and binding checks run before this and refuse outright. A
-    material product question is open unless the Reviewer REJECTED it.
+    Each is `"<code> <claim_ref>"`: a reference outside the required claims of
+    `process` is `DISPOSITION_UNKNOWN_REFERENCE`, a required claim verified
+    again is `REVIEW_COVERAGE_DUPLICATE`, an unverified one is
+    `REVIEW_COVERAGE_INCOMPLETE`. Empty exactly when coverage holds. Pure, over
+    a schema-valid Reviewer payload; nothing is repaired or filled in.
     """
-    response = review.body["reviewer_response"]
+    required = _required_claims(process)
+    seen: set[str] = set()
+    defects: list[str] = []
+    for item in reviewer_response["claim_verifications"]:
+        ref = item["claim_ref"]
+        if ref not in required:
+            defects.append(f"{DISPOSITION_UNKNOWN_REFERENCE} {ref}")
+        elif ref in seen:
+            defects.append(f"{REVIEW_COVERAGE_DUPLICATE} {ref}")
+        seen.add(ref)
+    defects.extend(
+        f"{REVIEW_COVERAGE_INCOMPLETE} {ref}" for ref in sorted(required - seen)
+    )
+    return tuple(defects)
+
+
+def derive_review_status(
+    reviewer_response: dict[str, object], process: TsaArtifact
+) -> str:
+    """Spec 10.2 over a schema-valid Reviewer payload and the exact Process.
+
+    The one status derivation of the cycle: the Reviewer stage (I08) computes
+    the status it stores with it, and every read revalidates the stored one
+    with it. Structural invalidity here is the exactly-once claim coverage of
+    6.3; schema, digest and binding failures are refused before this as
+    artifact failures, and `traceability_verification` is evidence that this
+    derivation does not interpret. A material product question is open unless
+    the Reviewer REJECTED it by its exact claim reference.
+    """
+    response = reviewer_response
     verifications = response["claim_verifications"]
-    refs = [item["claim_ref"] for item in verifications]
-    if len(refs) != len(set(refs)) or set(refs) != _required_claims(process):
+    if review_coverage_defects(response, process):
         return REVIEW_STRUCTURALLY_INVALID
     outcomes = {item["claim_ref"]: item["outcome"] for item in verifications}
     questions = process.body["architect_response"]["product_questions"]
@@ -926,6 +976,11 @@ def _derived_review_status(review: TsaArtifact, process: TsaArtifact) -> str:
         if severity in severities:
             return status
     return REVIEW_PASS
+
+
+def _derived_review_status(review: TsaArtifact, process: TsaArtifact) -> str:
+    """Spec 10.2 over the persisted Review and the Process Result it binds."""
+    return derive_review_status(review.body["reviewer_response"], process)
 
 
 def _unresolved_disposition(
@@ -1413,6 +1468,141 @@ def _classify(
     if view.architecture.fingerprint == process.body["input_fingerprint"]:
         return _Case.INPUT
     raise _diverged(view, process, expected)
+
+
+# ---------------------------------------------------------------------------
+# The read-only surface the Reviewer stage (I08) reuses
+#
+# Thin wrappers over the reads above, so I08 runs the same gate, currentness
+# and material checks rather than a second copy. Nothing here writes, calls a
+# model, reads a clock, applies an output or replays one.
+# ---------------------------------------------------------------------------
+
+
+#: The observed state of one deterministic-id child slot.
+SlotState = _ChildState
+
+
+class ArchitectCase(StrEnum):
+    """Where the Architect stage left iteration N (contract 14.3 cases 1-3)."""
+
+    #: Case 1: no Process Result; the Architect has not run.
+    NO_PROCESS = "NO_PROCESS"
+    #: Spec 13.7-7: an empty Process shell; the Architect output was lost.
+    PROCESS_SHELL = "PROCESS_SHELL"
+    #: Case 2: a Process Result whose output is not applied yet.
+    RECORDED_INPUT = "RECORDED_INPUT"
+    #: Case 3: the Architecture holds exactly that Process Result's output.
+    OUTPUT_APPLIED = "OUTPUT_APPLIED"
+
+
+@dataclass(frozen=True)
+class ReviewTarget:
+    """One fresh stage-local gate pass, as values. Dead after any mutation.
+
+    `output_fingerprint` is the `content_fingerprint` of the applied output,
+    set only in `OUTPUT_APPLIED`. Every artifact here already passed schema,
+    identity and lineage on read, and a Review's stored status is the one
+    `derive_review_status` derives.
+    """
+
+    context: BootstrapContext
+    manifest: TsaArtifact
+    iteration: int
+    case: ArchitectCase
+    architecture_content: str
+    architecture_fingerprint: str | None
+    output_fingerprint: str | None
+    process_document_id: str
+    process: TsaArtifact | None
+    review_document_id: str
+    review_state: SlotState
+    review: TsaArtifact | None
+    review_payload: dict[str, object] | None
+
+    @property
+    def manifest_body(self) -> dict[str, object]:
+        return self.manifest.body["manifest_body"]
+
+
+def _architect_case(view: _View) -> tuple[ArchitectCase, str | None]:
+    process = view.process.artifact
+    if process is None:
+        if view.process.state is _ChildState.EMPTY:
+            return ArchitectCase.PROCESS_SHELL, None
+        return ArchitectCase.NO_PROCESS, None
+    expected = _expected_carrier(view, process)
+    if _classify(view, process, expected) is _Case.INPUT:
+        return ArchitectCase.RECORDED_INPUT, None
+    return ArchitectCase.OUTPUT_APPLIED, expected.content_fingerprint
+
+
+def read_review_target(
+    workspace: CycleWorkspace,
+    evidence: RequirementEvidenceWorkspace,
+    project_id: str,
+    raw_cycle_id: object,
+) -> ReviewTarget:
+    """The Architect stage's gate, run fresh and read-only, then its case.
+
+    Everything `_gate` checks — discovery, the accepted Manifest, children,
+    the Architecture form, the iteration from durable REWORK evidence, input
+    currentness, and the lineage and stored status of iteration N's Process
+    and Review — then the case classification, which refuses a divergent
+    Architecture (case 4) and a Review beside an unapplied output. Raises
+    `ArchitectRefused` with the frozen code.
+    """
+    view = _gate(_Stage(workspace, evidence, project_id, raw_cycle_id))
+    case, output_fingerprint = _architect_case(view)
+    return ReviewTarget(
+        context=view.context,
+        manifest=view.manifest,
+        iteration=view.iteration,
+        case=case,
+        architecture_content=view.architecture.content,
+        architecture_fingerprint=view.architecture.fingerprint,
+        output_fingerprint=output_fingerprint,
+        process_document_id=view.process.document_id,
+        process=view.process.artifact,
+        review_document_id=view.review.document_id,
+        review_state=view.review.state,
+        review=view.review.artifact,
+        review_payload=view.review.payload,
+    )
+
+
+def read_bound_sources(
+    workspace: CycleWorkspace,
+    evidence: RequirementEvidenceWorkspace,
+    project_id: str,
+    raw_cycle_id: object,
+    manifest_body: dict[str, object],
+) -> tuple[tuple[RequirementMaterial, ...], str | None]:
+    """The full trees and the UX content the Architect saw, bound as it saw them.
+
+    Each tree is read now and must still carry the fingerprint the Manifest
+    bound; UX content is read and digest-checked only under `APPLICABLE`, and
+    no UX Document is read under `NOT_APPLICABLE`.
+    """
+    stage = _Stage(workspace, evidence, project_id, raw_cycle_id)
+    requirements = tuple(
+        _requirement_material(stage, row) for row in manifest_body["requirements"]
+    )
+    return requirements, _ux_content(stage, manifest_body["ux"])
+
+
+def resolve_root_placement(
+    workspace: CycleWorkspace, context: BootstrapContext
+) -> DocumentPlacement:
+    """The Architecture root, resolved now and checked locally (2.2.1)."""
+    return _resolve_root(workspace, context)
+
+
+def resolve_child_placement(
+    workspace: CycleWorkspace, context: BootstrapContext, document_id: str
+) -> DocumentPlacement | None:
+    """The child, then the root, then the local predicates (2.2.1)."""
+    return _resolve_child(workspace, context, document_id)
 
 
 # ---------------------------------------------------------------------------
