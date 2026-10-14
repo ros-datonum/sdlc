@@ -62,6 +62,14 @@ runtime = "claude"
 runtime = "claude"
 # model = "..."   # omitted: use the local CLI default model
 
+[model_runtime.roles.tsa_architect]
+runtime = "claude"
+# model = "..."   # omitted: use the local CLI default model
+
+[model_runtime.roles.tsa_reviewer]
+runtime = "claude"
+# model = "..."   # omitted: use the local CLI default model
+
 # Selection precedence:
 #   1. explicit run/CLI override
 #   2. role runtime/model above

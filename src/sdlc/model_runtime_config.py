@@ -37,6 +37,8 @@ ENVIRONMENT_PASSTHROUGH_KEY = "environment_passthrough"
 RAW_REQUIREMENT_PROCESSOR_ROLE = "raw_requirement_processor"
 STANDARD_REQUIREMENT_PROCESSOR_ROLE = "standard_requirement_processor"
 STANDARD_REQUIREMENT_REVIEWER_ROLE = "standard_requirement_reviewer"
+TSA_ARCHITECT_ROLE = "tsa_architect"
+TSA_REVIEWER_ROLE = "tsa_reviewer"
 
 
 class ModelRuntimeConfigError(Exception):

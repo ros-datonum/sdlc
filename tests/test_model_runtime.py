@@ -16,6 +16,7 @@ import pytest
 from processor_fake import FakeModelRuntime, build_workspace, candidate, model_output
 from sdlc.model_runtime import (
     CLAUDE_RESTRICTIONS,
+    DEFAULT_TIMEOUT_SECONDS,
     RUNTIME_ISOLATION_UNAVAILABLE,
     LocalCliModelRuntime,
     ModelAuthenticationError,
@@ -24,6 +25,8 @@ from sdlc.model_runtime import (
 )
 from sdlc.model_runtime_config import (
     RAW_REQUIREMENT_PROCESSOR_ROLE,
+    TSA_ARCHITECT_ROLE,
+    TSA_REVIEWER_ROLE,
     RuntimeDefinition,
     RuntimeSelection,
     load_model_runtime_config,
@@ -621,6 +624,54 @@ def test_ordinary_configuration_cannot_disable_the_gate():
     runtime, runner = build_from(selection, results=[ok(CODEX), (0, "hello", "")])
 
     assert_refused(runtime, runner)
+
+
+TSA_ROLES = (TSA_ARCHITECT_ROLE, TSA_REVIEWER_ROLE)
+
+
+@pytest.mark.parametrize("role", TSA_ROLES)
+def test_a_shipped_tsa_role_runs_restricted_claude_after_its_own_auth_check(role):
+    selection = select_runtime(
+        load_model_runtime_config(Path("config/sdlc.toml")), role
+    )
+    runtime, runner = build_from(
+        selection, results=[(0, CLAUDE_OK, ""), (0, "answer", "")]
+    )
+
+    response = runtime.run("PROMPT", context="CONTEXT")
+
+    auth, inference = runner.calls
+    assert auth.argv == ("/opt/bin/claude", "auth", "status", "--json")
+    assert inference.argv == ("/opt/bin/claude", "-p", *CLAUDE_RESTRICTIONS)
+    assert "--model" not in inference.argv
+    assert inference.stdin_text == "CONTEXT\n\nPROMPT"
+    assert inference.timeout == DEFAULT_TIMEOUT_SECONDS
+    assert (response.text, response.runtime, response.model) == (
+        "answer",
+        "claude",
+        None,
+    )
+
+
+@pytest.mark.parametrize("role", TSA_ROLES)
+@pytest.mark.parametrize("path", ["role-table", "explicit-override"])
+def test_a_tsa_role_selecting_codex_is_refused_with_no_subprocess_or_fallback(
+    role, path
+):
+    config = load_model_runtime_config(Path("config/sdlc.toml"))
+    if path == "role-table":
+        config = {**config, "roles": {**config["roles"], role: {"runtime": "codex"}}}
+    override = "codex" if path == "explicit-override" else None
+    selection = select_runtime(config, role, runtime_override=override)
+    assert (selection.role, selection.definition.name) == (role, "codex")
+    looked_up = []
+    runtime, runner = build_from(
+        selection,
+        results=[(0, CLAUDE_OK, ""), (0, "hello", "")],
+        which=lambda name: looked_up.append(name),
+    )
+
+    assert_refused(runtime, runner, looked_up)
 
 
 def test_a_codex_backed_runtime_does_not_block_a_resume_that_needs_no_model():

@@ -1,13 +1,17 @@
 """Runtime/model selection precedence from config/sdlc.toml."""
 
+import copy
 from pathlib import Path
 
 import pytest
 
 from sdlc.model_runtime_config import (
     RAW_REQUIREMENT_PROCESSOR_ROLE,
+    ROLES_KEY,
     STANDARD_REQUIREMENT_PROCESSOR_ROLE,
     STANDARD_REQUIREMENT_REVIEWER_ROLE,
+    TSA_ARCHITECT_ROLE,
+    TSA_REVIEWER_ROLE,
     ModelRuntimeConfigError,
     load_model_runtime_config,
     runtime_definition,
@@ -215,6 +219,135 @@ def test_the_project_configures_a_reviewer_role():
     loaded = load_model_runtime_config(PROJECT_CONFIG)
     selection = select_runtime(loaded, STANDARD_REQUIREMENT_REVIEWER_ROLE)
     assert selection.definition.executable in {"claude", "codex"}
+
+
+# -- the TSA-C01 runtime roles (Implementation Spec v0.3 section 15) -----------
+
+TSA_ROLES = (TSA_ARCHITECT_ROLE, TSA_REVIEWER_ROLE)
+REQUIREMENT_ROLES = (
+    RAW_REQUIREMENT_PROCESSOR_ROLE,
+    STANDARD_REQUIREMENT_PROCESSOR_ROLE,
+    STANDARD_REQUIREMENT_REVIEWER_ROLE,
+)
+# Each TSA role paired with the other one, to show they are configured apart.
+TSA_ROLE_PAIRS = [
+    (TSA_ARCHITECT_ROLE, TSA_REVIEWER_ROLE),
+    (TSA_REVIEWER_ROLE, TSA_ARCHITECT_ROLE),
+]
+
+
+def shipped_config():
+    """A private copy of the shipped configuration, safe to change in a test."""
+    return copy.deepcopy(load_model_runtime_config(PROJECT_CONFIG))
+
+
+def with_role(config, role, **table):
+    config[ROLES_KEY][role] = table
+    return config
+
+
+def test_the_tsa_role_names_are_the_ones_the_spec_fixes():
+    assert (TSA_ARCHITECT_ROLE, TSA_REVIEWER_ROLE) == ("tsa_architect", "tsa_reviewer")
+
+
+@pytest.mark.parametrize("role", TSA_ROLES)
+def test_the_shipped_config_defines_the_tsa_role_explicitly(role):
+    """Resolving is not enough: an unknown role also resolves, via the default."""
+    roles = load_model_runtime_config(PROJECT_CONFIG)[ROLES_KEY]
+
+    assert role in roles
+    assert roles[role] == {"runtime": "claude"}, "runtime explicit, no model key"
+
+
+@pytest.mark.parametrize("role", TSA_ROLES)
+def test_the_shipped_tsa_role_selects_claude_print_with_the_cli_default_model(role):
+    selection = select_runtime(load_model_runtime_config(PROJECT_CONFIG), role)
+
+    assert selection.role == role
+    assert (
+        selection.definition.name,
+        selection.definition.executable,
+        selection.definition.invocation_mode,
+    ) == ("claude", "claude", "print")
+    assert selection.model is None
+    assert selection.uses_cli_default_model
+
+
+@pytest.mark.parametrize("role", TSA_ROLES)
+def test_tsa_explicit_overrides_beat_the_role_table(role):
+    config = with_role(shipped_config(), role, runtime="claude", model="role-m")
+
+    runtime_only = select_runtime(config, role, runtime_override="codex")
+    both = select_runtime(
+        config, role, runtime_override="codex", model_override="explicit-m"
+    )
+    model_only = select_runtime(config, role, model_override="explicit-m")
+
+    assert (runtime_only.definition.name, runtime_only.model) == ("codex", None)
+    assert (both.definition.name, both.model) == ("codex", "explicit-m")
+    assert (model_only.definition.name, model_only.model) == ("claude", "explicit-m")
+
+
+@pytest.mark.parametrize("role", TSA_ROLES)
+def test_a_configured_tsa_role_model_is_used(role):
+    config = with_role(shipped_config(), role, runtime="claude", model="role-m")
+
+    selection = select_runtime(config, role)
+
+    assert (selection.definition.name, selection.model) == ("claude", "role-m")
+
+
+@pytest.mark.parametrize("role", TSA_ROLES)
+def test_a_tsa_runtime_override_discards_the_configured_role_model(role):
+    config = with_role(shipped_config(), role, runtime="claude", model="role-m")
+
+    selection = select_runtime(config, role, runtime_override="claude")
+
+    assert (selection.definition.name, selection.model) == ("claude", None)
+
+
+@pytest.mark.parametrize("role", TSA_ROLES)
+def test_a_missing_tsa_role_table_falls_back_to_the_project_default(role):
+    config = shipped_config()
+    del config[ROLES_KEY][role]
+    config["default"] = {"runtime": "codex", "model": "default-m"}
+
+    selection = select_runtime(config, role)
+
+    assert (selection.role, selection.definition.name) == (role, "codex")
+    assert selection.model == "default-m"
+
+
+@pytest.mark.parametrize(("role", "other"), TSA_ROLE_PAIRS)
+def test_one_tsa_role_is_configured_independently_of_the_other(role, other):
+    before = select_runtime(load_model_runtime_config(PROJECT_CONFIG), other)
+    config = with_role(shipped_config(), role, runtime="codex", model="changed-m")
+
+    changed = select_runtime(config, role)
+    untouched = select_runtime(config, other)
+
+    assert (changed.definition.name, changed.model) == ("codex", "changed-m")
+    assert untouched == before
+    assert (untouched.definition.name, untouched.model) == ("claude", None)
+
+
+@pytest.mark.parametrize("role", REQUIREMENT_ROLES)
+def test_the_shipped_requirement_roles_are_unchanged(role):
+    config = load_model_runtime_config(PROJECT_CONFIG)
+
+    selection = select_runtime(config, role)
+
+    assert config[ROLES_KEY][role] == {"runtime": "claude"}
+    assert (selection.role, selection.definition.name) == (role, "claude")
+    assert selection.model is None
+
+
+def test_the_shipped_roles_and_default_are_exactly_the_expected_set():
+    config = load_model_runtime_config(PROJECT_CONFIG)
+
+    assert set(config[ROLES_KEY]) == {*REQUIREMENT_ROLES, *TSA_ROLES}
+    assert config["default"] == {"runtime": "claude"}
+    assert set(config["runtimes"]) == {"claude", "codex"}
 
 
 # -- the authentication guard is not configuration -----------------------------
