@@ -50,20 +50,11 @@ is established, and it no longer carries a trailing claim that nothing was
 persisted or written. Each layer states only the progress it owns:
 
 - recovery (I10) states what its own delegated stages made durable within the
-  same invocation, from the stage results: a persisted Process Result, an
-  output applied to the Architecture Document, a written and confirmed Review
-  Result;
-- the command (I12) states only what it made durable before recovery ran: the
-  Input Manifest that `start` wrote, and for `rework` the REWORK Decision that
-  I11 recorded;
+  same invocation, from the stage results;
+- the command (I12) states only what it made durable before recovery ran,
+  such as the Input Manifest that `start` wrote;
 - a stage's own mutation-aware message, and the refusal's code and details,
   are kept.
-
-**SPEC.** Each such fact is stated only where read-back or a domain result
-established it — after an unknown write outcome, only where rediscovery found
-the very artifact this command emitted. A generic statement that nothing was
-written, persisted or overwritten is then no longer made; the refusal's
-diagnosis is otherwise unchanged.
 
 **SPEC.** Where no more specific failure is returned and recovery reports
 that it stopped before the boundary, the command reports
@@ -103,8 +94,7 @@ rewritten or re-sealed, and no wire schema changes.
 `src/sdlc/tsa_cli.py` and `src/sdlc/cli.py`; the truthful progress statement
 of I10 in `src/sdlc/tsa_recovery.py`; the read-only per-input currentness
 read (v0.3 13.5) in `src/sdlc/tsa_architect.py`, over the I05 admission
-halves exposed in `src/sdlc/tsa_admission.py`; the I05 fact that the durable
-Input Manifest is this call's own confirmed write; and their tests.
+halves exposed in `src/sdlc/tsa_admission.py`; and their tests.
 
 **Not authorized:** any other work item; worker integration; changes to
 dependencies, runtime configuration or settings; live Fibery or model runs;

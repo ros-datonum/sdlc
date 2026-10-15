@@ -758,8 +758,12 @@ def start_cycle(
     """`start`: I05 carries the cycle to an accepted Manifest, I10 onward.
 
     A Manifest this command wrote is a new cycle (rows A, B and the empty
-    Architecture shell). An existing one was compared with the caller's
-    inputs by I05 and never rewritten; the first gate then names the row.
+    Architecture shell). That is I05's `is_own_write` read-back evidence,
+    also after a write whose response was lost; the Manifest merely existing
+    now is never taken as proof. Such a cycle needs no row lookup, and I10's
+    first pass is its complete fresh normal gate, which revalidates the inputs
+    before any model call or write. An existing Manifest was compared with the
+    caller's inputs by I05 and never rewritten; the first gate names its row.
     """
     resolved: _Project | None = None
     try:
@@ -773,7 +777,7 @@ def start_cycle(
             clock=session.clock,
         )
         code = TsaResultCode.ARCHITECTURE_CYCLE_STARTED
-        if not manifest.is_newly_written:
+        if not manifest.is_own_write:
             code = _first_case_code(
                 Command.START, _read_state(session, resolved.entity_id, cycle_id)
             )

@@ -2243,15 +2243,18 @@ def test_rework_then_a_review_then_a_later_gate_refusal(make_cli, monkeypatch):
     assert harness.model_calls == (1, 1)
 
 
-def test_an_idempotent_rework_retry_runs_no_recovery(make_cli):
+def test_an_idempotent_rework_retry_runs_no_recovery(make_cli, monkeypatch):
     scene = scene_decided("REWORK")()
     harness = make_cli(scene)
+    readings: list[datetime] = []
+    monkeypatch.setattr(cli, "_tsa_clock", lambda: readings.append(fixed_clock()))
 
     run = harness(*rework_argv())
 
     assert_result(run, "DECISION_ALREADY_RECORDED")
     nothing_changed(harness)
     assert harness.roles == []
+    assert readings == [], "no clock read for an equivalent durable Decision"
 
 
 # --------------------------------------------------------------------------
@@ -2295,3 +2298,72 @@ def test_an_unmatched_project_value_is_null_in_inspect_json(make_cli):
     record = json_of(run)
     assert record["code"] == "FIBERY_READ_FAILED"
     assert record["project_id"] is None and record["project_code"] is None
+
+
+# --------------------------------------------------------------------------
+# R. start provenance after a Manifest write whose response was lost
+# --------------------------------------------------------------------------
+
+
+def drifting_after_the_manifest(monkeypatch, scene) -> None:
+    """The Requirement drifts right after I05 returns its confirmed Manifest."""
+    real = tsa_cli.start_input_manifest
+
+    def confirmed_then_drifted(*args, **kwargs):
+        result = real(*args, **kwargs)
+        root_edited_after_review(scene)
+        return result
+
+    monkeypatch.setattr(tsa_cli, "start_input_manifest", confirmed_then_drifted)
+
+
+def test_a_landed_manifest_then_drift_is_stale_and_names_the_manifest(
+    make_cli, monkeypatch
+):
+    scene = scene_b()
+    scene.tsa.after(WRITE, 1, fail("response lost"))
+    drifting_after_the_manifest(monkeypatch, scene)
+    harness = make_cli(scene)
+
+    run = harness(*start_argv())
+
+    assert_result(run, "INPUTS_STALE")
+    assert MANIFEST_CLAIM in run.err
+    assert "The Human Decision boundary was not reached." in run.err
+    assert "sdlc project architecture resume" in run.err
+    assert "is not admissible" in run.err, "the stale-input reason is kept"
+    assert "othing was written" not in run.err
+    assert "othing was persisted" not in run.err
+    assert (scene.tsa.count(CREATE), scene.tsa.count(WRITE)) == (1, 1)
+    payload_of(scene, MANIFEST_ID)
+    assert harness.model_calls == (0, 0)
+    assert run.roles == []
+
+
+@pytest.mark.parametrize("response", ["returned", "lost"])
+def test_a_start_that_wrote_its_manifest_is_started_however_it_returned(
+    response, make_cli
+):
+    scene = scene_b()
+    if response == "lost":
+        scene.tsa.after(WRITE, 1, fail("response lost"))
+    harness = make_cli(scene)
+
+    run = harness(*start_argv())
+
+    assert_result(run, "ARCHITECTURE_CYCLE_STARTED")
+    assert scene.tsa.count(CREATE) == 3, "Manifest, Process and Review once each"
+    assert harness.model_calls == (1, 1)
+
+
+def test_a_repeated_start_on_an_existing_manifest_is_never_started(make_cli):
+    scene = reviewed_scene()
+    manifest = scene.tsa.content_of(MANIFEST_ID)
+    harness = make_cli(scene)
+
+    run = harness(*start_argv())
+
+    assert_result(run, "ARCHITECTURE_REVIEW_READY")
+    assert scene.tsa.mutations == []
+    assert scene.tsa.content_of(MANIFEST_ID) == manifest
+    assert MANIFEST_CLAIM not in run.out

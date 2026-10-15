@@ -1441,7 +1441,7 @@ CLAUSE_CASES = [
             "authoritative."
         ),
         (
-            "Matches neither input nor output of iteration 1. A human decides "
+            "Matches neither input nor output of iteration 1. a human decides "
             "which is authoritative."
         ),
     ),
@@ -1476,3 +1476,63 @@ def test_without_progress_a_refusal_is_raised_byte_identical():
     assert str(error).endswith(
         "The whole selection is refused and nothing was written."
     )
+
+
+#: (message with a generic no-mutation clause, the same message after progress),
+#: exact strings: only the clause and its adjacent spacing may change.
+EXACT_CASES = {
+    "quoted-title-spacing": (
+        "Reading 'Checkout  flow' failed. Nothing was written.",
+        "Reading 'Checkout  flow' failed.",
+    ),
+    "error-detail-spacing": (
+        "The write failed (HTTP 503:  upstream  busy). Nothing was persisted.",
+        "The write failed (HTTP 503:  upstream  busy).",
+    ),
+    "trailing-newline": (
+        "Refused. Nothing was written.\n",
+        "Refused.\n",
+    ),
+    "lowercase-after-semicolon": (
+        "Refused. Nothing was written; abc_id is the id.",
+        "Refused. abc_id is the id.",
+    ),
+    "whole-sentence": (
+        "Gate refused. Nothing was written and no model was called.",
+        "Gate refused.",
+    ),
+    "leading-clause": (
+        (
+            "Matches neither. Nothing was overwritten and no model was called; "
+            "doc-7f3a decides."
+        ),
+        "Matches neither. doc-7f3a decides.",
+    ),
+    "final-conjunct": (
+        "The cycle is closed to writes and nothing was written.",
+        "The cycle is closed to writes.",
+    ),
+    "opening-sentence": (
+        "Nothing was written. Then  more.",
+        "Then  more.",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", EXACT_CASES)
+def test_only_the_clause_and_its_adjacent_spacing_change(case):
+    before, after = EXACT_CASES[case]
+
+    assert message_after_progress(before) == after
+
+
+@pytest.mark.parametrize(
+    "unchanged",
+    [
+        "A message  with  no clause at all.\n",
+        "Review Result 'r' is not observable after its create; nothing was written.",
+        "  Leading spaces and a tail; kept.  ",
+    ],
+)
+def test_a_message_without_a_generic_clause_is_byte_identical(unchanged):
+    assert message_after_progress(unchanged) == unchanged

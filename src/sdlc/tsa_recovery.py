@@ -130,16 +130,19 @@ _NO_MUTATION = (
     r"othing was (?:written|persisted(?: or applied)?|overwritten|created or "
     r"written)(?: and no model was called)?"
 )
-#: The three places such a clause can sit, each at a sentence boundary only:
-#: a whole sentence; a leading clause before `; `, whose remainder becomes the
-#: sentence; and a final ` and ...` conjunct of a sentence.
+#: The places such a clause can sit, each bounded by a sentence boundary, and
+#: what replaces it. Only the clause and the one space or `; ` that joins it to
+#: its neighbour are removed; nothing else in the message is touched.
 _NO_MUTATION_FORMS = (
-    (re.compile(rf"(?:^|(?<=[.!?]) )N{_NO_MUTATION}\.(?= |$)"), ""),
-    (
-        re.compile(rf"(?:^|(?<=[.!?]) )N{_NO_MUTATION}; (\w)"),
-        lambda match: f" {match.group(1).upper()}",
-    ),
-    (re.compile(rf" and n{_NO_MUTATION}\.(?= |$)"), "."),
+    # A whole sentence after another: the clause with the space before it.
+    (re.compile(rf"(?<=[.!?]) N{_NO_MUTATION}\.(?=\s|$)"), ""),
+    # A whole sentence that opens the message: the clause and one space after.
+    (re.compile(rf"\AN{_NO_MUTATION}\.(?: (?=\S))?"), ""),
+    # A leading clause before `; `, after another sentence or opening it.
+    (re.compile(rf"(?<=[.!?] )N{_NO_MUTATION}; "), ""),
+    (re.compile(rf"\AN{_NO_MUTATION}; "), ""),
+    # A final ` and ...` conjunct of a sentence: its full stop is kept.
+    (re.compile(rf" and n{_NO_MUTATION}(?=\.(?:\s|$))"), ""),
 )
 
 
@@ -148,12 +151,12 @@ def message_after_progress(message: str) -> str:
 
     Such a clause describes one gate or stage pass; it is no longer true of an
     invocation that already made durable progress. Only the closed grammar
-    above is removed, and only at a sentence boundary: the diagnosis, every
-    other sentence and every scoped statement are kept as they are.
+    above is removed, with the spacing or `; ` that joined it: every other
+    character, its case and its whitespace, is kept exactly.
     """
     for pattern, replacement in _NO_MUTATION_FORMS:
         message = pattern.sub(replacement, message)
-    return re.sub(r" {2,}", " ", message).strip()
+    return message
 
 
 class RecoveryRefused(Exception):
