@@ -49,14 +49,17 @@ from sdlc.model_runtime import ModelRuntime
 from sdlc.tsa_admission import RequirementEvidenceWorkspace
 from sdlc.tsa_architect import (
     APPROVE,
-    REJECTED,
     REVIEW_BLOCKED_ON_WHAT,
     REVIEW_STRUCTURALLY_INVALID,
     REWORK,
     ArchitectRefused,
     ArchitectResultCode,
+    CycleState,
     ResultCode,
+    VerifiedDecision,
+    open_material_question_refs,
     read_cycle_state,
+    reference_sources,
     resolve_child_placement,
     resolve_root_placement,
 )
@@ -66,8 +69,6 @@ from sdlc.tsa_artifacts import (
     ITERATION_MAX,
     JSON_FENCE_OPENER,
     NON_WAIVABLE_COLLECTION,
-    PROCESS_RESULT,
-    REVIEW_RESULT,
     SCHEMA_VERSION,
     ArtifactReference,
     InvalidTsaArtifact,
@@ -123,8 +124,13 @@ DECISION_CREATE_ATTEMPTS = 2
 
 #: Statuses of spec 10.2 under which approval is unavailable, never waivable.
 UNAPPROVABLE_STATUSES = (REVIEW_STRUCTURALLY_INVALID, REVIEW_BLOCKED_ON_WHAT)
-PRODUCT_QUESTIONS = "product_questions"
 CLAIM_VERIFICATIONS = "claim_verifications"
+#: Truthful consequences, by whether this call has mutated anything yet.
+NOTHING_WRITTEN = " Nothing was written and no model was called."
+SHELL_KEPT = (
+    "Human Decision {document_id!r} was created and remains an empty shell; its "
+    "body was not written and nothing was rolled back. "
+)
 
 
 class DecisionResultCode(StrEnum):
@@ -235,6 +241,8 @@ class _Target:
     durable: TsaArtifact | None
     #: Process and Review digests of every other iteration of this cycle.
     other_iterations: frozenset[str]
+    #: The Decision slot is this call's own just-created empty shell.
+    own_shell: bool = False
 
 
 def _utc_now() -> datetime:
@@ -261,10 +269,11 @@ def _write_failed(message: str, details: tuple[str, ...] = ()) -> DecisionRefuse
     return DecisionRefused(CycleResultCode.FIBERY_WRITE_FAILED, message, details)
 
 
-def _not_current(message: str) -> DecisionRefused:
+def _not_current(message: str, prefix: str, *, mutated: bool) -> DecisionRefused:
+    """`REVIEW_NOT_CURRENT`, saying truthfully whether anything was written."""
+    consequence = "" if mutated else NOTHING_WRITTEN
     return DecisionRefused(
-        DecisionResultCode.REVIEW_NOT_CURRENT,
-        f"{message} Nothing was written and no model was called.",
+        DecisionResultCode.REVIEW_NOT_CURRENT, f"{prefix}{message}{consequence}"
     )
 
 
@@ -283,7 +292,13 @@ def _child_id(context: BootstrapContext, kind: DocumentKind, iteration: int) -> 
     )
 
 
-def _resolve(call: _Call, prefix: str = "") -> _Target:
+def _resolve(
+    call: _Call,
+    prefix: str = "",
+    *,
+    mutated: bool = False,
+    reads_own_shell: bool = False,
+) -> _Target:
     """The exact target, from one fresh, read-only pass of the I10 recovery read.
 
     The gate decides every specific refusal first, with its own code: cycle
@@ -294,10 +309,18 @@ def _resolve(call: _Call, prefix: str = "") -> _Target:
     iteration carrying a verified REWORK, and the supplied id must be N's own
     Review Result. Anything else is `REVIEW_NOT_CURRENT`. Nothing is inferred
     and nothing slides to another iteration.
+
+    `prefix` and `mutated` keep every refusal message truthful about what this
+    call already wrote. `reads_own_shell` is passed only after this call's own
+    known create, so that empty shell is read instead of refused.
     """
     with _shared(prefix):
         state = read_cycle_state(
-            call.workspace, call.evidence, call.project_id, call.cycle_id
+            call.workspace,
+            call.evidence,
+            call.project_id,
+            call.cycle_id,
+            reads_own_decision_shell=reads_own_shell,
         )
     current = state.target
     context = current.context
@@ -307,50 +330,96 @@ def _resolve(call: _Call, prefix: str = "") -> _Target:
         raise _not_current(
             f"Iteration {iteration!r} has no Review Result of cycle "
             f"{context.cycle_id!r} to decide; the current iteration is "
-            f"{current.iteration}."
+            f"{current.iteration}.",
+            prefix,
+            mutated=mutated,
         )
-    earlier = {
-        digest
-        for decided in state.reworks
-        for digest in (decided.process.artifact_digest, decided.review.artifact_digest)
-    }
     if iteration == current.iteration:
-        case = classify_recovery_case(state)
-        if case not in (RecoveryCase.REVIEW_RECORDED, RecoveryCase.APPROVED):
-            raise _not_current(
-                f"Iteration {iteration} of cycle {context.cycle_id!r} is at {case}, "
-                "not at a valid current Review Result."
-            )
-        assert current.review is not None and current.process is not None
-        review, process, durable = current.review, current.process, state.decision
-        others = earlier
+        decided = _current_target(state, prefix, mutated=mutated)
     else:
-        decided = state.reworks[iteration - 1]
-        assert decided.iteration == iteration
-        review, process, durable = decided.review, decided.process, decided.decision
-        others = earlier - {process.artifact_digest, review.artifact_digest}
-        others |= {
-            artifact.artifact_digest
-            for artifact in (current.process, current.review)
-            if artifact is not None
-        }
+        decided = _earlier_target(state, iteration, prefix, mutated=mutated)
     review_document_id = _child_id(context, DocumentKind.REVIEW_RESULT, iteration)
     if call.review_result_document_id != review_document_id:
         raise _not_current(
             f"Review Result {call.review_result_document_id!r} is not the Review "
-            f"Result of iteration {iteration} of cycle {context.cycle_id!r}."
+            f"Result of iteration {iteration} of cycle {context.cycle_id!r}.",
+            prefix,
+            mutated=mutated,
         )
     return _Target(
         context=context,
         manifest=current.manifest,
         iteration=iteration,
         review_document_id=review_document_id,
-        review=review,
+        review=decided.review,
         process_document_id=_child_id(context, DocumentKind.PROCESS_RESULT, iteration),
-        process=process,
+        process=decided.process,
         decision_document_id=_child_id(context, DocumentKind.HUMAN_DECISION, iteration),
-        durable=durable,
-        other_iterations=frozenset(others),
+        durable=decided.decision,
+        other_iterations=_other_iterations(state, decided),
+        own_shell=iteration == current.iteration and state.decision_shell,
+    )
+
+
+@dataclass(frozen=True)
+class _Bound:
+    """One iteration's Review and Process, and its durable Decision if any."""
+
+    review: TsaArtifact
+    process: TsaArtifact
+    decision: TsaArtifact | None
+
+
+def _current_target(state: CycleState, prefix: str, *, mutated: bool) -> _Bound:
+    """The current iteration: a valid current Review, decided or not (I10)."""
+    current = state.target
+    case = classify_recovery_case(state)
+    review, process = current.review, current.process
+    if (
+        case not in (RecoveryCase.REVIEW_RECORDED, RecoveryCase.APPROVED)
+        or review is None
+        or process is None
+    ):
+        raise _not_current(
+            f"Iteration {current.iteration} of cycle {current.context.cycle_id!r} "
+            f"is at {case}, not at a valid current Review Result.",
+            prefix,
+            mutated=mutated,
+        )
+    return _Bound(review, process, state.decision)
+
+
+def _earlier_target(
+    state: CycleState, iteration: int, prefix: str, *, mutated: bool
+) -> _Bound:
+    """An earlier iteration: only one the gate verified a REWORK for."""
+    decided: VerifiedDecision | None = next(
+        (item for item in state.reworks if item.iteration == iteration), None
+    )
+    if decided is None:
+        raise _not_current(
+            f"Iteration {iteration} carries no verified REWORK.",
+            prefix,
+            mutated=mutated,
+        )
+    return _Bound(decided.review, decided.process, decided.decision)
+
+
+def _other_iterations(state: CycleState, bound: _Bound) -> frozenset[str]:
+    """Process and Review digests of every iteration but the target's."""
+    current = state.target
+    digests = {
+        artifact.artifact_digest
+        for decided in state.reworks
+        for artifact in (decided.process, decided.review)
+    }
+    digests |= {
+        artifact.artifact_digest
+        for artifact in (current.process, current.review)
+        if artifact is not None
+    }
+    return frozenset(
+        digests - {bound.process.artifact_digest, bound.review.artifact_digest}
     )
 
 
@@ -487,45 +556,101 @@ def _disposition_refused(
     code: DecisionResultCode, ref: object, message: str
 ) -> DecisionRefused:
     return DecisionRefused(
-        code,
-        f"Accepted disposition {ref!r} {message} Nothing was written and no model "
-        "was called.",
-        (str(ref),),
+        code, f"Accepted disposition {ref!r} {message}{NOTHING_WRITTEN}", (str(ref),)
     )
 
 
-def _open_material_questions(process: TsaArtifact, review: TsaArtifact) -> set[str]:
-    """Material product questions the Reviewer did not REJECT (10.2, 7.4).
+def _parse_references(
+    accepted: tuple[AcceptedDisposition, ...],
+) -> list[ArtifactReference]:
+    """Grammar (6.1) and a known collection; then no reference twice (6.4)."""
+    parsed: list[ArtifactReference] = []
+    for index, item in enumerate(accepted):
+        try:
+            parsed.append(
+                parse_reference(item.ref, ("accepted_dispositions", str(index)))
+            )
+        except InvalidTsaArtifact as error:
+            raise _disposition_refused(
+                DecisionResultCode.DISPOSITION_UNKNOWN_REFERENCE,
+                item.ref,
+                f"is not a reference of spec 6.1: {error}",
+            ) from error
+    spelled = [str(reference) for reference in parsed]
+    for reference in spelled:
+        if spelled.count(reference) > 1:
+            raise _disposition_refused(
+                DecisionResultCode.DISPOSITION_DUPLICATE_REFERENCE,
+                reference,
+                "is named more than once in this decision.",
+            )
+    return parsed
 
-    Each is a material WHAT: approval is unavailable while it stands, and it
-    is never an acceptable risk (contract 9.3).
+
+def _resolve_disposition(
+    reference: ArtifactReference,
+    sources: dict[str, tuple[str, dict[str, object]]],
+    other_iterations: frozenset[str],
+) -> ResolvedDisposition:
+    """The source artifact, the collection for its type, the item in range."""
+    source = sources.get(reference.digest)
+    if source is None:
+        if reference.digest in other_iterations:
+            raise _disposition_refused(
+                DecisionResultCode.DISPOSITION_FOREIGN_ITERATION,
+                str(reference),
+                "names an artifact of another iteration of this cycle.",
+            )
+        raise _disposition_refused(
+            DecisionResultCode.DISPOSITION_UNKNOWN_REFERENCE,
+            str(reference),
+            "names no Process or Review Result of this cycle.",
+        )
+    artifact_type, arrays = source
+    if not reference_allows_collection(artifact_type, reference.collection):
+        raise _disposition_refused(
+            DecisionResultCode.DISPOSITION_UNKNOWN_REFERENCE,
+            str(reference),
+            f"names collection {reference.collection!r}, which a {artifact_type} "
+            "does not carry (spec 6.2).",
+        )
+    items = arrays[reference.collection]
+    if reference.index >= len(items):
+        raise _disposition_refused(
+            DecisionResultCode.DISPOSITION_UNKNOWN_REFERENCE,
+            str(reference),
+            f"is out of range: {reference.collection} holds {len(items)} items.",
+        )
+    return ResolvedDisposition(reference, artifact_type, items[reference.index])
+
+
+def _require_waivable(
+    disposition: ResolvedDisposition, open_questions: set[str]
+) -> None:
+    """A material unresolved WHAT is never accepted (6.4; contract 7.4, 9.3).
+
+    That is a Reviewer `material_unresolved_what`, an Architect material
+    product question still open (`open_material_question_refs`, the one
+    definition 10.2 also derives from), or the claim verification of one.
     """
-    outcomes = {
-        item["claim_ref"]: item["outcome"]
-        for item in review.body["reviewer_response"][CLAIM_VERIFICATIONS]
-    }
-    questions = process.body["architect_response"][PRODUCT_QUESTIONS]
-    refs = {
-        str(ArtifactReference(process.artifact_digest, PRODUCT_QUESTIONS, index))
-        for index, question in enumerate(questions)
-        if question["material"]
-    }
-    return {ref for ref in refs if outcomes.get(ref) != REJECTED}
-
-
-def _is_material_what(resolved: ResolvedDisposition, open_questions: set[str]) -> bool:
-    """A material unresolved WHAT, the Architect's or the Reviewer's (6.3, 6.4)."""
-    reference = resolved.reference
-    if reference.collection == NON_WAIVABLE_COLLECTION:
-        return True
-    if str(reference) in open_questions:
-        return True
-    item = resolved.item
-    return (
-        reference.collection == CLAIM_VERIFICATIONS
-        and isinstance(item, dict)
-        and item["claim_ref"] in open_questions
+    reference = disposition.reference
+    item = disposition.item
+    is_material_what = (
+        reference.collection == NON_WAIVABLE_COLLECTION
+        or str(reference) in open_questions
+        or (
+            reference.collection == CLAIM_VERIFICATIONS
+            and isinstance(item, dict)
+            and item["claim_ref"] in open_questions
+        )
     )
+    if is_material_what:
+        raise _disposition_refused(
+            DecisionResultCode.DISPOSITION_NOT_WAIVABLE,
+            str(reference),
+            "is a material unresolved WHAT, which is not waivable inside TSA "
+            "(contract 7.4, 9.3).",
+        )
 
 
 def validate_accepted_dispositions(
@@ -546,80 +671,22 @@ def validate_accepted_dispositions(
        anything else `DISPOSITION_UNKNOWN_REFERENCE`;
     4. the collection is allowed for that artifact type (6.2) and the index is
        in range — else `DISPOSITION_UNKNOWN_REFERENCE`;
-    5. waivability: a material unresolved WHAT is never accepted
-       (`DISPOSITION_NOT_WAIVABLE`) — a Reviewer `material_unresolved_what`,
-       an Architect material product question the Reviewer did not REJECT,
-       or the claim verification of one.
+    5. waivability: a material unresolved WHAT is `DISPOSITION_NOT_WAIVABLE`.
 
     Every other resolved item — a technical risk or finding of any severity,
     an open architecture question, an assumption, a non-material or rejected
     product question — may be accepted individually (contract 9.2). Nothing
     is required to be accepted: the frozen policy makes acceptance a MAY.
     """
-    parsed: list[ArtifactReference] = []
-    for index, item in enumerate(accepted):
-        try:
-            parsed.append(
-                parse_reference(item.ref, ("accepted_dispositions", str(index)))
-            )
-        except InvalidTsaArtifact as error:
-            raise _disposition_refused(
-                DecisionResultCode.DISPOSITION_UNKNOWN_REFERENCE,
-                item.ref,
-                f"is not a reference of spec 6.1: {error}",
-            ) from error
-    spelled = [str(reference) for reference in parsed]
+    parsed = _parse_references(accepted)
+    sources = reference_sources(process, review)
+    open_questions = open_material_question_refs(
+        review.body["reviewer_response"], process
+    )
+    resolved = []
     for reference in parsed:
-        if spelled.count(str(reference)) > 1:
-            raise _disposition_refused(
-                DecisionResultCode.DISPOSITION_DUPLICATE_REFERENCE,
-                str(reference),
-                "is named more than once in this decision.",
-            )
-    sources = {
-        process.artifact_digest: (PROCESS_RESULT, process.body["architect_response"]),
-        review.artifact_digest: (REVIEW_RESULT, review.body["reviewer_response"]),
-    }
-    open_questions = _open_material_questions(process, review)
-    resolved: list[ResolvedDisposition] = []
-    for reference in parsed:
-        source = sources.get(reference.digest)
-        if source is None:
-            foreign = reference.digest in other_iterations
-            raise _disposition_refused(
-                DecisionResultCode.DISPOSITION_FOREIGN_ITERATION
-                if foreign
-                else DecisionResultCode.DISPOSITION_UNKNOWN_REFERENCE,
-                str(reference),
-                "names an artifact of another iteration of this cycle."
-                if foreign
-                else "names no Process or Review Result of this cycle.",
-            )
-        artifact_type, arrays = source
-        if not reference_allows_collection(artifact_type, reference.collection):
-            raise _disposition_refused(
-                DecisionResultCode.DISPOSITION_UNKNOWN_REFERENCE,
-                str(reference),
-                f"names collection {reference.collection!r}, which a "
-                f"{artifact_type} does not carry (spec 6.2).",
-            )
-        items = arrays[reference.collection]
-        if reference.index >= len(items):
-            raise _disposition_refused(
-                DecisionResultCode.DISPOSITION_UNKNOWN_REFERENCE,
-                str(reference),
-                f"is out of range: {reference.collection} holds {len(items)} items.",
-            )
-        disposition = ResolvedDisposition(
-            reference, artifact_type, items[reference.index]
-        )
-        if _is_material_what(disposition, open_questions):
-            raise _disposition_refused(
-                DecisionResultCode.DISPOSITION_NOT_WAIVABLE,
-                str(reference),
-                "is a material unresolved WHAT, which is not waivable inside TSA "
-                "(contract 7.4, 9.3).",
-            )
+        disposition = _resolve_disposition(reference, sources, other_iterations)
+        _require_waivable(disposition, open_questions)
         resolved.append(disposition)
     return tuple(resolved)
 
@@ -697,17 +764,26 @@ def _sealed_decision(target: _Target, body: dict[str, object]) -> dict[str, obje
 # ---------------------------------------------------------------------------
 
 
-def _require_same_target(prepared: _Target, fresh: _Target) -> None:
+def _require_same_target(
+    prepared: _Target, fresh: _Target, prefix: str = "", *, mutated: bool = False
+) -> None:
     """Immediately before a mutation the target still binds the same tuple.
 
-    A fresh pass that validates a different Review, Process, Manifest or
-    Architecture binding for N is not the boundary this Decision was prepared
-    for: nothing is re-bound to it.
+    A fresh pass that validates a different Review, Process, Manifest (and so
+    UX evidence) or Architecture binding for N is not the boundary this
+    Decision was prepared for: nothing is re-bound to it.
     """
     bound = (
+        (prepared.iteration, fresh.iteration),
+        (prepared.review_document_id, fresh.review_document_id),
         (prepared.review.artifact_digest, fresh.review.artifact_digest),
+        (prepared.process_document_id, fresh.process_document_id),
         (prepared.process.artifact_digest, fresh.process.artifact_digest),
         (prepared.manifest.artifact_digest, fresh.manifest.artifact_digest),
+        (
+            prepared.context.architecture_document_id,
+            fresh.context.architecture_document_id,
+        ),
         (
             prepared.review.body["architecture_fingerprint"],
             fresh.review.body["architecture_fingerprint"],
@@ -717,7 +793,9 @@ def _require_same_target(prepared: _Target, fresh: _Target) -> None:
         raise _not_current(
             f"Review Result {prepared.review_document_id!r} no longer binds the "
             f"tuple this decision was prepared against for iteration "
-            f"{prepared.iteration}."
+            f"{prepared.iteration}.",
+            prefix,
+            mutated=mutated,
         )
 
 
@@ -736,9 +814,10 @@ def _create_decision_shell(call: _Call, prepared: _Target) -> DecisionResult | N
     immediately before the mutation (14.1). After an unknown outcome that
     resolution is the rediscovery of window F at both levels: the gate first,
     then the slot. An empty shell it finds is `DECISION_SHELL_UNRECOVERABLE`
-    (the gate's own refusal), a durable Decision is compared (11.3), and an
-    absent slot permits one retry at the same id. Returns a result only when
-    a durable Decision settled the call.
+    (the gate's own refusal) and is never completed, a durable Decision is
+    compared (11.3), and an absent slot permits one retry at the same id.
+    Returns a result only when a durable Decision settled the call; None
+    means this call's own create returned normally.
     """
     context = prepared.context
     name = decision_document_name(context, prepared.iteration)
@@ -754,7 +833,9 @@ def _create_decision_shell(call: _Call, prepared: _Target) -> DecisionResult | N
                 prepared.decision_document_id, name, root.document_id
             )
         except FiberyError:
-            current = _resolve(call, "After an unknown Decision create outcome: ")
+            current = _resolve(
+                call, "After an unknown Decision create outcome: ", mutated=True
+            )
             continue
         return None
     settled = _settled(call, prepared, current)
@@ -768,33 +849,49 @@ def _create_decision_shell(call: _Call, prepared: _Target) -> DecisionResult | N
     )
 
 
-def _write_decision_body(call: _Call, prepared: _Target, carrier: str) -> str:
-    """Write the body into the shell this call just created; never over content.
+def _revalidate_own_shell(call: _Call, prepared: _Target) -> DecisionResult | None:
+    """After this call's own known create: the full target again, then the slot.
 
-    The shell is the call's own, so it is read once more to be sure it is
-    still empty: content found there is somebody's evidence and is not
-    overwritten — the read-back decides what it is. Returns how the write
-    went, for the read-back's message.
+    The pre-create pass is no authority for the body write (contract 10,
+    14.2): the whole gate runs again — discovery, Manifest, Architecture,
+    lineage, Requirement and UX currentness — reading the new shell rather
+    than refusing it, and the tuple must still be the prepared one. A Decision
+    found in the slot instead is compared and never written over; a slot that
+    is no longer this call's empty shell is a write failure. Every refusal
+    says the shell exists and stays empty.
     """
     document_id = prepared.decision_document_id
-    with _shared():
+    prefix = SHELL_KEPT.format(document_id=document_id)
+    fresh = _resolve(call, prefix, mutated=True, reads_own_shell=True)
+    if fresh.durable is not None:
+        return _compared(call, fresh, fresh.durable)
+    if not fresh.own_shell:
+        raise _write_failed(
+            f"The Decision create returned, but Human Decision {document_id!r} is "
+            "not observable as its empty shell now; its body was not written.",
+            (document_id,),
+        )
+    _require_same_target(prepared, fresh, prefix, mutated=True)
+    return None
+
+
+def _write_decision_body(call: _Call, prepared: _Target, carrier: str) -> str:
+    """The body write, preceded only by the fresh child and root placement.
+
+    The last remote calls before the write are the Decision child and the
+    Architecture root placement with their local predicates (2.2.1); no
+    content is read between them and it. Returns how the write went, for the
+    read-back's message.
+    """
+    document_id = prepared.decision_document_id
+    with _shared(SHELL_KEPT.format(document_id=document_id)):
         shell = resolve_child_placement(call.workspace, prepared.context, document_id)
     if shell is None or not shell.secret:
         raise _write_failed(
-            f"Human Decision {document_id!r} is not observable after its create; "
-            "nothing was written.",
+            f"The Decision create returned, but Human Decision {document_id!r} "
+            "has no writable body now; its body was not written.",
             (document_id,),
         )
-    try:
-        existing = call.workspace.read_document_content(shell.secret)
-    except FiberyError as error:
-        raise DecisionRefused(
-            CycleResultCode.FIBERY_READ_FAILED,
-            f"Reading Human Decision {document_id!r} failed: {error}",
-            (document_id,),
-        ) from error
-    if existing.strip():
-        return "The Decision shell already held content, which was not overwritten"
     try:
         call.workspace.write_document_content(shell.secret, carrier)
     except FiberyError as error:
@@ -814,7 +911,11 @@ def _confirm(
     either way. Then: exactly the artifact written is success; another valid
     Decision is compared (11.3); an absent slot is `FIBERY_WRITE_FAILED`.
     """
-    after = _resolve(call, f"{outcome}; the Decision is neither repeated nor undone. ")
+    after = _resolve(
+        call,
+        f"{outcome}; the Decision is neither repeated nor undone. ",
+        mutated=True,
+    )
     durable = after.durable
     if durable is None:
         raise _write_failed(
@@ -848,6 +949,9 @@ def _decide(call: _Call, clock: Clock) -> DecisionResult:
     )
     carrier = render_human_decision_carrier(target.context, target.iteration, sealed)
     settled = _create_decision_shell(call, target)
+    if settled is not None:
+        return settled
+    settled = _revalidate_own_shell(call, target)
     if settled is not None:
         return settled
     outcome = _write_decision_body(call, target, carrier)

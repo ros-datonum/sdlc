@@ -47,10 +47,12 @@ from reviewer_fake import (
 from sdlc import tsa_decision
 from sdlc.fibery_workspace import FiberyError
 from sdlc.model_runtime import ModelRuntimeError
+from sdlc.tsa_architect import open_material_question_refs
 from sdlc.tsa_artifacts import (
     canonical_artifact_json,
     compute_artifact_digest,
     extract_architecture_envelope,
+    manifest_digest,
     sealed_artifact,
     validate_artifact,
 )
@@ -225,6 +227,54 @@ def decision_payload(scene, iteration: int = 1) -> dict:
     return payload
 
 
+def acceptance_bound_elsewhere(scene) -> None:
+    """The Manifest's acceptance names another digest; hand-sealed (I01 refuses)."""
+    manifest = payload_of(scene, MANIFEST_ID)
+    manifest["body"]["acceptance"]["manifest_digest"] = "0" * 64
+    del manifest["artifact_digest"]
+    manifest["artifact_digest"] = compute_artifact_digest(manifest)
+    prefix = scene.tsa.content_of(MANIFEST_ID).split("```json")[0]
+    scene.tsa.set_content(
+        MANIFEST_ID, f"{prefix}```json\n{canonical_artifact_json(manifest)}\n```\n"
+    )
+
+
+def manifest_resealed(scene) -> None:
+    """Another Manifest I01 accepts on its own, which nothing else binds."""
+
+    def change(payload: dict) -> None:
+        body = payload["body"]
+        body["manifest_body"]["ux"]["reason"] = "Re-decided after the Review."
+        digest = manifest_digest(body["manifest_body"])
+        body["manifest_digest"] = digest
+        body["acceptance"]["manifest_digest"] = digest
+
+    reseal(scene, MANIFEST_ID, change)
+
+
+def review_resealed(scene) -> None:
+    """Another valid Review Result for the same slot, with another digest."""
+    reseal(
+        scene,
+        REVIEW_ID,
+        lambda payload: payload["body"]["reviewer_response"]["assessment"].update(
+            completeness="Rewritten after the decision was prepared."
+        ),
+    )
+
+
+def body_writes(scene, iteration: int = 1) -> int:
+    """Body writes attempted to that iteration's Decision Document."""
+    document = scene.tsa.documents.get(decision_id(iteration))
+    if document is None:
+        return 0
+    return scene.tsa.log.count((WRITE, document.secret))
+
+
+def ux_reads(scene) -> list[tuple[str, str]]:
+    return [entry for entry in scene.tsa.log if entry[1] == UX_DOCUMENT_ID]
+
+
 def place_decision(scene, record: dict, document_id: str = DECISION_ID) -> None:
     scene.tsa.seed_child(document_id, ARCHITECTURE_ID, carrier(document_id, record))
     reset_trace(scene)
@@ -370,14 +420,7 @@ def test_row_8_architecture_changed_after_review_makes_approval_unavailable():
 
 def test_a_manifest_acceptance_bound_elsewhere_keeps_its_specific_code():
     scene = reviewed_scene()
-    manifest = payload_of(scene, MANIFEST_ID)
-    manifest["body"]["acceptance"]["manifest_digest"] = "0" * 64
-    del manifest["artifact_digest"]
-    manifest["artifact_digest"] = compute_artifact_digest(manifest)
-    prefix = scene.tsa.content_of(MANIFEST_ID).split("```json")[0]
-    scene.tsa.set_content(
-        MANIFEST_ID, f"{prefix}```json\n{canonical_artifact_json(manifest)}\n```\n"
-    )
+    acceptance_bound_elsewhere(scene)
     reset_trace(scene)
 
     error = refused(approve, scene)
@@ -976,7 +1019,9 @@ def test_approve_revalidates_fresh_after_the_first_read_before_the_create():
     gate_reads = [
         entry for entry in scene.tsa.log if entry == ("read_project", PROJECT_ID)
     ]
-    assert len(gate_reads) == 3, "resolve, revalidate before create, read back"
+    assert len(gate_reads) == 4, (
+        "resolve, revalidate before create, revalidate after create, read back"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1097,13 +1142,7 @@ def test_row_19_a_review_replaced_after_preparation_is_refused_before_the_create
     scene = reviewed_scene()
 
     def replace_review_while_reading_the_clock() -> datetime:
-        reseal(
-            scene,
-            REVIEW_ID,
-            lambda payload: payload["body"]["reviewer_response"]["assessment"].update(
-                completeness="Rewritten after the decision was prepared."
-            ),
-        )
+        review_resealed(scene)
         return fixed_clock()
 
     error = refused(approve, scene, clock=replace_review_while_reading_the_clock)
@@ -1321,3 +1360,189 @@ def test_a_shell_filled_by_someone_else_after_the_create_is_not_written_over():
     assert error.code == "DECISION_CONFLICT"
     assert scene.tsa.count(WRITE) == 0
     assert scene.tsa.content_of(DECISION_ID) == other
+
+
+# --------------------------------------------------------------------------
+# H. After a known create, before the body write (contract 10, 14.2)
+# --------------------------------------------------------------------------
+
+
+def moved_to_another_parent(scene) -> None:
+    scene.tsa.documents[DECISION_ID].parent_document_id = "another-parent"
+
+
+def applicable_ux_edited(scene) -> None:
+    scene.tsa.set_content(UX_DOCUMENT_ID, "# Checkout flow\n\nTwo screens now.\n")
+
+
+AFTER_CREATE = {
+    "requirement": (NOT_APPLICABLE, root_edited_after_review, {"INPUTS_STALE"}),
+    "requirement-child": (NOT_APPLICABLE, child_added_after_review, {"INPUTS_STALE"}),
+    "applicable-ux": (APPLICABLE, applicable_ux_edited, {"INPUTS_STALE"}),
+    "review-replaced": (NOT_APPLICABLE, review_resealed, {"REVIEW_NOT_CURRENT"}),
+    "process-replaced": (
+        NOT_APPLICABLE,
+        lambda scene: scene.tsa.set_content(PROCESS_ID, other_process_carrier()),
+        {"ARTIFACT_MALFORMED"},
+    ),
+    "architecture-changed": (
+        NOT_APPLICABLE,
+        lambda scene: scene.tsa.set_content(
+            ARCHITECTURE_ID, other_architecture(scene, "Edited.").text
+        ),
+        {"ARCHITECTURE_DIVERGED"},
+    ),
+    "manifest-resealed": (NOT_APPLICABLE, manifest_resealed, {"ARTIFACT_MALFORMED"}),
+    "manifest-acceptance": (
+        NOT_APPLICABLE,
+        acceptance_bound_elsewhere,
+        {"MANIFEST_ACCEPTANCE_MISMATCH"},
+    ),
+    "shell-moved": (NOT_APPLICABLE, moved_to_another_parent, {"CYCLE_FOREIGN_PROJECT"}),
+}
+
+
+@pytest.mark.parametrize("drift", list(AFTER_CREATE))
+@pytest.mark.parametrize("action", [approve, rework], ids=["approve", "rework"])
+def test_drift_after_a_known_create_is_refused_before_the_body_write(
+    drift, action, recovery_only_after_a_new_rework
+):
+    ux, change, codes = AFTER_CREATE[drift]
+    scene = reviewed_scene(ux=ux)
+
+    def drift_after_the_create() -> None:
+        change(scene)
+        scene.req.mutations.clear()  # the drift itself; I11 must add none
+
+    scene.tsa.after(CREATE, 1, drift_after_the_create)
+    clock = TickingClock()
+
+    error = refused(
+        action,
+        scene,
+        clock=clock,
+        **(
+            {"architect": RecordingModel(scene), "reviewer": CoveringReviewer(scene, 2)}
+            if action is rework
+            else {}
+        ),
+    )
+
+    assert error.code in codes
+    assert body_writes(scene) == 0, "no Decision is written against a changed tuple"
+    assert scene.tsa.content_of(DECISION_ID) == "", "the shell stays empty"
+    assert scene.tsa.mutations == [f"create:{DECISION_ID}"]
+    assert scene.req.mutations == []
+    assert models_called(scene) == 0
+    assert recovery_only_after_a_new_rework == []
+    assert clock.reads == 1, "one timestamp per attempt, never regenerated"
+    assert f"{DECISION_ID!r} was created and remains an empty shell" in str(error)
+    assert "Nothing was written" not in str(error)
+
+
+def test_requirement_drift_after_create_under_not_applicable_reads_no_ux_document():
+    scene = reviewed_scene()
+    scene.tsa.after(CREATE, 1, lambda: root_edited_after_review(scene))
+
+    error = refused(approve, scene)
+
+    assert error.code == "INPUTS_STALE"
+    assert ux_reads(scene) == []
+    assert body_writes(scene) == 0
+
+
+def test_the_last_calls_before_the_body_write_are_the_placement_pair():
+    scene = reviewed_scene()
+
+    approve(scene)
+
+    secret = secret_of(scene, DECISION_ID)
+    write = scene.tsa.log.index((WRITE, secret))
+    last_read = max(
+        index for index, (call, _) in enumerate(scene.tsa.log[:write]) if call == READ
+    )
+    assert scene.tsa.log[last_read + 1 : write] == [
+        ("resolve_placement", DECISION_ID),
+        ("resolve_placement", ARCHITECTURE_ID),
+    ]
+    create = scene.tsa.log.index((CREATE, DECISION_ID))
+    assert (READ, secret) in scene.tsa.log[create:write], (
+        "the shell is read again, inside the full gate, after the create"
+    )
+
+
+def test_a_shell_that_vanished_after_the_create_is_a_write_failure_stated_truly():
+    scene = reviewed_scene()
+    scene.tsa.after(CREATE, 1, lambda: scene.tsa.documents.pop(DECISION_ID))
+
+    error = refused(approve, scene)
+
+    assert error.code == "FIBERY_WRITE_FAILED"
+    assert "Nothing was written" not in str(error)
+    assert "create returned" in str(error)
+    assert scene.tsa.count(WRITE) == 0
+
+
+# --------------------------------------------------------------------------
+# I. One definition of an open material product question (10.2, 7.4)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("outcome", "severity", "is_open"),
+    [
+        ("UNRESOLVED", None, True),
+        ("CONFIRMED", "INFO", True),
+        ("CONFIRMED", "BLOCKING", True),
+        ("REJECTED", None, False),
+    ],
+)
+def test_status_and_waivability_agree_on_an_open_material_question(
+    outcome, severity, is_open
+):
+    scene = question_scene(outcome, severity)
+    question = process_ref(scene, "product_questions")
+
+    assert (status_of(scene) == "REVIEW_BLOCKED_ON_WHAT") is is_open
+    if is_open:
+        assert refused(approve, scene).code == "REVIEW_BLOCKED_ON_WHAT"
+        error = refused(rework, scene, accept=accept(question))
+        assert error.code == "DISPOSITION_NOT_WAIVABLE"
+        nothing_happened(scene)
+    else:
+        result = approve(scene, accept=accept(question))
+        assert result.outcome is DecisionResultCode.ARCHITECTURE_APPROVED
+
+
+def test_the_shared_helper_is_the_one_status_derivation_uses():
+    scene = question_scene("UNRESOLVED")
+    process = validate_artifact(payload_of(scene, PROCESS_ID))
+    review = validate_artifact(payload_of(scene, REVIEW_ID))
+
+    refs = open_material_question_refs(review.body["reviewer_response"], process)
+
+    assert refs == {process_ref(scene, "product_questions")}
+    assert tsa_decision.open_material_question_refs is open_material_question_refs
+
+
+# --------------------------------------------------------------------------
+# J. Confirmed approval policy, pinned
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("findings", "status"),
+    [
+        ([], "REVIEW_PASS"),
+        ([finding("WARNING")], "REVIEW_NEEDS_WORK"),
+        ([finding("BLOCKING"), finding("WARNING")], "REVIEW_BLOCKING"),
+    ],
+)
+def test_approval_needs_no_disposition_for_any_technical_status(findings, status):
+    scene = reviewed_scene(new_findings=findings)
+    assert status_of(scene) == status
+
+    result = approve(scene)
+
+    assert result.outcome is DecisionResultCode.ARCHITECTURE_APPROVED
+    only_the_decision_written(scene)
