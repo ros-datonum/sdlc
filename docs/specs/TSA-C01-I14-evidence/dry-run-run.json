@@ -1,0 +1,9 @@
+{
+  "environment": "synthetic only: in-memory Fibery fakes, no Fibery API",
+  "finished_utc": "2026-10-15T19:16:52+00:00",
+  "inference_calls_used": 0,
+  "mode": "dry-run",
+  "repository_sha": "59c67968acdf9aefea1fe02ab9d3b8790ba4c9b5",
+  "runner_sha256": "23a511b3fe3f37ed16dd8b77050a64b9f5b143c911300197a1e888b7f22bb159",
+  "started_utc": "2026-10-15T19:16:52+00:00"
+}

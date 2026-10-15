@@ -1,0 +1,157 @@
+--- a/tsa_i14_probe.as-executed.py
++++ b/scripts/tsa_i14_probe.py
+@@ -44,54 +44,53 @@
+ REPOSITORY = Path(__file__).resolve().parents[1]
+ sys.path.insert(0, str(REPOSITORY / "tests"))
+
+-from apply_fake import build_apply_workspace  # noqa: E402
+-from review_fake import tree_bound_process_result, tree_manifest  # noqa: E402
+-from sdlc.fibery_workspace import (  # noqa: E402
++from apply_fake import build_apply_workspace
++from review_fake import tree_bound_process_result, tree_manifest
++from sdlc.fibery_workspace import (
+     DocumentNode,
+-    ProjectRecord,
+     RequirementRecord,
+ )
+-from sdlc.model_runtime import (  # noqa: E402
++from sdlc.model_runtime import (
+     LocalCliModelRuntime,
+     ModelResponse,
+     ModelRuntime,
+     ModelRuntimeError,
+ )
+-from sdlc.model_runtime_config import (  # noqa: E402
++from sdlc.model_runtime_config import (
+     TSA_ARCHITECT_ROLE,
+     TSA_REVIEWER_ROLE,
+     load_model_runtime_config,
+     select_runtime,
+ )
+-from sdlc.normative_tree import document_fingerprint  # noqa: E402
+-from sdlc.process_result import process_result_name, render_process_result  # noqa: E402
+-from sdlc.review_result import (  # noqa: E402
++from sdlc.normative_tree import document_fingerprint
++from sdlc.process_result import process_result_name, render_process_result
++from sdlc.review_result import (
+     build_review_result,
+     render_review_result,
+     review_result_name,
+ )
+-from sdlc.standard_analysis import AnalysisResult, NormalizedRequirement  # noqa: E402
+-from sdlc.standard_review import ReviewOutput  # noqa: E402
+-from sdlc.tsa_admission import (  # noqa: E402
++from sdlc.standard_analysis import AnalysisResult, NormalizedRequirement
++from sdlc.standard_review import ReviewOutput
++from sdlc.tsa_admission import (
+     AdmissionRefused,
+     StartInputs,
+     UxNotApplicable,
+     start_input_manifest,
+ )
+-from sdlc.tsa_architect import (  # noqa: E402
++from sdlc.tsa_architect import (
+     ArchitectRefused,
+     run_architect_stage,
+ )
+-from sdlc.tsa_artifacts import extract_artifact_payload  # noqa: E402
+-from sdlc.tsa_cycle import BootstrapContext, DocumentKind  # noqa: E402
+-from sdlc.tsa_reviewer import ReviewerRefused, run_reviewer_stage  # noqa: E402
+-from test_tsa_admission import (  # noqa: E402
++from sdlc.tsa_artifacts import extract_artifact_payload
++from sdlc.tsa_cycle import BootstrapContext, DocumentKind
++from sdlc.tsa_reviewer import ReviewerRefused, run_reviewer_stage
++from test_tsa_admission import (
+     PROJECT_CODE,
+     PROJECT_ID,
+     PUBLIC_ID,
+     TsaWorkspace,
+ )
+-from test_tsa_cycle import WORKSPACE  # noqa: E402
++from test_tsa_cycle import WORKSPACE
+
+ #: The whole run may make at most this many inference calls (I14 brief 8).
+ INFERENCE_BUDGET = 10
+@@ -179,8 +178,7 @@
+                 "Consumers rely on stored events being valid and complete.",
+                 "An acknowledged event can be read back unchanged after a service "
+                 "restart; an invalid event is never stored.",
+-                "Event type schemas are versioned; an unknown event type is "
+-                "rejected.",
++                "Event type schemas are versioned; an unknown event type is rejected.",
+                 "Does not define the event type schemas themselves.",
+                 "None.",
+             ),
+@@ -387,7 +385,9 @@
+         analysis=AnalysisResult(content, {"clarity": "adequate"}, (), ()),
+         requirement_id=item.requirement_id,
+     )
+-    node = _child(ws, root, process_result_name(item.requirement_id, 1), public_id, "process")
++    node = _child(
++        ws, root, process_result_name(item.requirement_id, 1), public_id, "process"
++    )
+     ws.content[node.secret] = render_process_result(process)
+     reviewed = tree_manifest(ws, root, item.requirement_id)
+     review = build_review_result(
+@@ -399,7 +399,9 @@
+         ReviewOutput((), (), (), {"clarity": "adequate"}),
+         reviewed,
+     )
+-    node = _child(ws, root, review_result_name(item.requirement_id, 1), public_id, "review")
++    node = _child(
++        ws, root, review_result_name(item.requirement_id, 1), public_id, "review"
++    )
+     ws.content[node.secret] = render_review_result(review)
+     return ws.content[root.secret]
+
+@@ -569,7 +571,11 @@
+     evidence["calls"] = []
+     try:
+         stage = run_architect_stage(
+-            world.tsa, world.req, architect, PROJECT_ID, scenario.cycle_id,
++            world.tsa,
++            world.req,
++            architect,
++            PROJECT_ID,
++            scenario.cycle_id,
+             clock=fixed_clock,
+         )
+     except ArchitectRefused as error:
+@@ -592,7 +598,11 @@
+     )
+     try:
+         review = run_reviewer_stage(
+-            world.tsa, world.req, reviewer, PROJECT_ID, scenario.cycle_id,
++            world.tsa,
++            world.req,
++            reviewer,
++            PROJECT_ID,
++            scenario.cycle_id,
+             clock=fixed_clock,
+         )
+     except ReviewerRefused as error:
+@@ -654,7 +664,11 @@
+     version = None
+     if executable:
+         completed = subprocess.run(
+-            [executable, "--version"], capture_output=True, text=True, timeout=30
++            [executable, "--version"],
++            capture_output=True,
++            text=True,
++            timeout=30,
++            check=False,
+         )
+         version = completed.stdout.strip().splitlines()[0] if completed.stdout else None
+     return {"roles": roles, "claude_cli_version": version}
+@@ -667,7 +681,11 @@
+
+ def repository_sha() -> str:
+     completed = subprocess.run(
+-        ["git", "rev-parse", "HEAD"], cwd=REPOSITORY, capture_output=True, text=True
++        ["git", "rev-parse", "HEAD"],
++        cwd=REPOSITORY,
++        capture_output=True,
++        text=True,
++        check=False,
+     )
+     return completed.stdout.strip()

@@ -1,0 +1,26 @@
+{
+  "environment": "synthetic only: in-memory Fibery fakes, no Fibery API",
+  "finished_utc": "2026-10-15T19:28:55+00:00",
+  "inference_calls_used": 8,
+  "mode": "live",
+  "repository_sha": "59c67968acdf9aefea1fe02ab9d3b8790ba4c9b5",
+  "runner_sha256": "23a511b3fe3f37ed16dd8b77050a64b9f5b143c911300197a1e888b7f22bb159",
+  "runtime": {
+    "claude_cli_version": "2.1.300 (Claude Code)",
+    "roles": {
+      "tsa_architect": {
+        "invocation_mode": "print",
+        "model": "local CLI default model (none configured)",
+        "preflight": "claude: logged in via claude.ai (firstParty)",
+        "runtime": "claude"
+      },
+      "tsa_reviewer": {
+        "invocation_mode": "print",
+        "model": "local CLI default model (none configured)",
+        "preflight": "claude: logged in via claude.ai (firstParty)",
+        "runtime": "claude"
+      }
+    }
+  },
+  "started_utc": "2026-10-15T19:17:19+00:00"
+}
