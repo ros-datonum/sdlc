@@ -158,6 +158,7 @@ __all__ = [
     "ProcessCheck",
     "ReviewTarget",
     "SlotState",
+    "VerifiedDecision",
     "build_process_result",
     "decode_one_json_object",
     "derive_review_status",
@@ -346,6 +347,8 @@ class _View:
     review: _Child
     #: The verified APPROVE of `iteration`, read only by the recovery read (I10).
     approval: _Decided | None = None
+    #: Every verified REWORK before `iteration`, in order; `rework` is the last.
+    reworks: tuple[_Decided, ...] = ()
 
     @property
     def manifest_body(self) -> dict[str, object]:
@@ -1128,19 +1131,20 @@ def _current_iteration(
     architecture: _Architecture,
     *,
     reads_approval: bool = False,
-) -> tuple[int, _Decided | None, _Decided | None]:
+) -> tuple[int, tuple[_Decided, ...], _Decided | None]:
     """1, or the iteration after the last durable, bound REWORK (contract 6).
 
-    An APPROVE is `CYCLE_APPROVED` for the stages. Only the recovery read
+    The second value is every verified REWORK, in iteration order. An APPROVE
+    is `CYCLE_APPROVED` for the stages. Only the recovery read
     (`reads_approval`) verifies it instead and returns it as the third value.
     """
     iteration = FIRST_ITERATION
-    rework: _Decided | None = None
+    reworks: list[_Decided] = []
     earlier: frozenset[str] = frozenset()
     while True:
         decision = _read_child(workspace, context, HUMAN_DECISION, iteration)
         if decision.state is _ChildState.ABSENT:
-            return iteration, rework, None
+            return iteration, tuple(reworks), None
         if decision.artifact is None:
             raise ArchitectRefused(
                 ArchitectResultCode.DECISION_SHELL_UNRECOVERABLE,
@@ -1150,7 +1154,7 @@ def _current_iteration(
             approval = _verify_decision(
                 workspace, context, manifest, architecture, decision.artifact, earlier
             )
-            return iteration, rework, approval
+            return iteration, tuple(reworks), approval
         if decision.artifact.body["decision"] == APPROVE:
             raise ArchitectRefused(
                 ArchitectResultCode.CYCLE_APPROVED,
@@ -1160,6 +1164,7 @@ def _current_iteration(
         rework = _verify_decision(
             workspace, context, manifest, architecture, decision.artifact, earlier
         )
+        reworks.append(rework)
         earlier |= {rework.process.artifact_digest, rework.review.artifact_digest}
         iteration += 1
         if iteration > ITERATION_MAX:
@@ -1331,9 +1336,10 @@ def _gate(
         stage.workspace, context, manifest.body["manifest_body"]
     )
     _require_not_empty(architecture, context)
-    iteration, rework, approval = _current_iteration(
+    iteration, reworks, approval = _current_iteration(
         stage.workspace, context, manifest, architecture, reads_approval=reads_approval
     )
+    rework = reworks[-1] if reworks else None
     _require_no_later_iteration(slots, iteration)
     _require_inputs_current(stage, context, manifest)
     if process_check is not None:
@@ -1345,7 +1351,15 @@ def _gate(
         stage.workspace, context, manifest, architecture, iteration, process_check
     )
     return _View(
-        context, manifest, iteration, rework, architecture, process, review, approval
+        context,
+        manifest,
+        iteration,
+        rework,
+        architecture,
+        process,
+        review,
+        approval,
+        reworks,
     )
 
 
@@ -1585,6 +1599,8 @@ def _classify(
 
 #: The observed state of one deterministic-id child slot.
 SlotState = _ChildState
+#: A durable Human Decision with the Review and Process it binds, all verified.
+VerifiedDecision = _Decided
 
 
 class ArchitectCase(StrEnum):
@@ -1697,12 +1713,16 @@ class CycleState:
 
     Dead after any model call or mutation. `decision` is the verified APPROVE
     of `target.iteration`, or None; `decision_document_id` is that iteration's
-    deterministic Human Decision id either way.
+    deterministic Human Decision id either way. `reworks` is the verified
+    REWORK of every earlier iteration, in order, from the same pass, so a
+    decision command (I11) can resolve an explicit earlier target without a
+    second copy of the verification.
     """
 
     target: ReviewTarget
     decision_document_id: str
     decision: TsaArtifact | None
+    reworks: tuple[VerifiedDecision, ...] = ()
 
 
 def _unbound(document_id: str, process: TsaArtifact) -> None:
@@ -1733,7 +1753,7 @@ def read_cycle_state(
         _require_case_one_input(view)
     decision_id = _child_id(view.context, DocumentKind.HUMAN_DECISION, view.iteration)
     approval = None if view.approval is None else view.approval.decision
-    return CycleState(_review_target(view), decision_id, approval)
+    return CycleState(_review_target(view), decision_id, approval, view.reworks)
 
 
 def read_bound_sources(
