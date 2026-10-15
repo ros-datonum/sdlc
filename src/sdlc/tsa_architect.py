@@ -166,6 +166,7 @@ __all__ = [
     "process_result_document_name",
     "read_bound_sources",
     "read_cycle_state",
+    "read_input_currentness",
     "read_review_target",
     "reference_sources",
     "render_process_result_carrier",
@@ -1828,6 +1829,26 @@ def read_cycle_state(
         view.reworks,
         view.decision_shell,
     )
+
+
+def read_input_currentness(
+    workspace: CycleWorkspace,
+    evidence: RequirementEvidenceWorkspace,
+    project_id: str,
+    raw_cycle_id: object,
+) -> None:
+    """Discovery, the accepted Manifest and input currentness only. Read-only.
+
+    For `inspect` (I12), where the full gate refused on a slot that the
+    command table still reports as a derived state (a duplicate artifact, an
+    empty Decision shell), so currentness must be established on its own. The
+    same checks as the gate, in the same order: I04 discovery, the Manifest,
+    then contract 4.4 by the recorded UX branch. Raises `ArchitectRefused`,
+    `INPUTS_STALE` on drift.
+    """
+    stage = _Stage(workspace, evidence, project_id, raw_cycle_id)
+    context = _discover(stage)
+    _require_inputs_current(stage, context, _read_manifest(workspace, context))
 
 
 def read_bound_sources(

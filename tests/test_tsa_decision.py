@@ -81,6 +81,7 @@ from test_tsa_admission import (
     child_added_after_review,
     fail,
     root_edited_after_review,
+    world,
 )
 from test_tsa_architect import other_architecture, other_process_carrier, reseal
 from test_tsa_cycle import fixed_clock
@@ -339,6 +340,25 @@ def test_a_cycle_with_no_architecture_document_is_cycle_not_found():
 
     assert error.code == "CYCLE_NOT_FOUND"
     nothing_happened(scene)
+
+
+@pytest.mark.parametrize("architecture", ["bootstrapped", "empty shell"])
+@pytest.mark.parametrize("action", [approve, rework], ids=["approve", "rework"])
+def test_a_cycle_without_an_accepted_manifest_is_review_not_current(
+    architecture, action
+):
+    """13.6 rows B and EMPTY_ARCHITECTURE_SHELL: no Review, and no repair."""
+    scene = world(architecture)
+    reset_trace(scene)
+    before = scene.tsa.content_of(ARCHITECTURE_ID)
+
+    error = refused(action, scene)
+
+    assert error.code == "REVIEW_NOT_CURRENT"
+    assert str(error).endswith("Nothing was written and no model was called.")
+    nothing_happened(scene)
+    assert scene.tsa.content_of(ARCHITECTURE_ID) == before
+    assert MANIFEST_ID not in scene.tsa.documents
 
 
 def test_an_invalid_cycle_id_keeps_its_own_code():

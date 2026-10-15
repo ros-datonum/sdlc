@@ -7,12 +7,14 @@ import functools
 import sys
 import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
 from sdlc.config import ConfigurationError, FiberySettings, load_fibery_settings
 from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_http import (
+    FiberyArchitectureWorkspace,
     FiberyHttpWorkspace,
     FiberyRawProcessorWorkspace,
     FiberyRequirementWorkspace,
@@ -27,6 +29,8 @@ from sdlc.model_runtime_config import (
     RAW_REQUIREMENT_PROCESSOR_ROLE,
     STANDARD_REQUIREMENT_PROCESSOR_ROLE,
     STANDARD_REQUIREMENT_REVIEWER_ROLE,
+    TSA_ARCHITECT_ROLE,
+    TSA_REVIEWER_ROLE,
     ModelRuntimeConfigError,
     load_model_runtime_config,
     select_runtime,
@@ -75,6 +79,29 @@ from sdlc.standard_processor import (
 )
 from sdlc.standard_review import ReviewVerdict
 from sdlc.standard_reviewer import review_standard_requirement
+from sdlc.tsa_admission import (
+    RequirementEvidenceWorkspace,
+    StartInputs,
+    UxApplicable,
+    UxNotApplicable,
+)
+from sdlc.tsa_cli import (
+    ArchitectureCommand,
+    ArchitectureSession,
+    ConfiguredRoleRuntime,
+    ProjectCodeLookup,
+    approve_cycle,
+    exit_code_for,
+    inspect_cycle,
+    render_architecture_result,
+    resume_cycle,
+    rework_cycle,
+    run_guarded,
+    start_cycle,
+    workspace_unavailable,
+)
+from sdlc.tsa_cycle import CycleWorkspace
+from sdlc.tsa_decision import AcceptedDisposition
 from sdlc.worker_runner_guard import (
     WorkerRunnerBusy,
     WorkerRunnerGuardUnavailable,
@@ -161,6 +188,30 @@ WORKER_RUN_DESCRIPTION = (
 )
 
 NEXT_STEP_HINT = "Use:\nsdlc project requirement add\nto add requirements."
+
+ARCHITECTURE_DESCRIPTION = (
+    "The Technical Solution Architecture cycle of TSA-C01: explicit and "
+    "synchronous, never dispatched by `sdlc worker run`. Every command names "
+    "its cycle with --cycle. start, resume, rework and approve hold the "
+    "workspace guard for their whole run; inspect is read-only and takes none. "
+    "Each prints its result code first; exit 0 is a normal outcome, 1 a "
+    "refusal or failure, 2 a usage error."
+)
+ARCHITECTURE_START_DESCRIPTION = (
+    "Start or continue one cycle with explicitly accepted inputs. "
+    "--accept-inputs and --accept-ux are the auditable human acceptance: "
+    "without either, nothing is written (HUMAN_ACCEPTANCE_REQUIRED). A repeated "
+    "start with the same inputs continues the same cycle; different inputs need "
+    "a new cycle id."
+)
+ARCHITECTURE_APPROVE_DESCRIPTION = (
+    "Record APPROVE against the exact cycle, iteration and Review Result. "
+    "Deterministic and model-free; --confirm is the explicit approval act. Each "
+    "--accept-risk names a disposition reference and is followed by its own "
+    "--accept-reason."
+)
+UX_APPLICABLE_CHOICE = "applicable"
+UX_NOT_APPLICABLE_CHOICE = "not-applicable"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -322,9 +373,181 @@ def build_parser() -> argparse.ArgumentParser:
     )
     apply.set_defaults(handler=_run_requirement_apply)
 
+    _add_architecture_commands(project_commands)
     _add_worker_commands(commands)
 
     return parser
+
+
+def _add_architecture_commands(
+    project_commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """`sdlc project architecture`: exactly five actions (TSA-C01 spec 12)."""
+    architecture = project_commands.add_parser(
+        "architecture",
+        help="Technical Solution Architecture cycle commands.",
+        description=ARCHITECTURE_DESCRIPTION,
+    )
+    actions = architecture.add_subparsers(dest="action", required=True)
+
+    start = actions.add_parser(
+        "start",
+        allow_abbrev=False,
+        help="Start or continue a cycle with explicitly accepted inputs.",
+        description=ARCHITECTURE_START_DESCRIPTION,
+    )
+    _add_cycle_selector(start)
+    start.add_argument(
+        "--requirement",
+        dest="requirements",
+        action="append",
+        metavar="REQUIREMENT-ID",
+        help="A selected Requirement ID. Repeat for each Requirement.",
+    )
+    start.add_argument(
+        "--ux",
+        required=True,
+        choices=[UX_APPLICABLE_CHOICE, UX_NOT_APPLICABLE_CHOICE],
+        help="Whether a UX Document applies to this cycle.",
+    )
+    start.add_argument(
+        "--ux-document",
+        metavar="FIBERY-DOC-ID",
+        help="The approved UX Document. Required iff --ux applicable.",
+    )
+    start.add_argument(
+        "--ux-scope",
+        action="append",
+        metavar="REQUIREMENT-ID",
+        help="A Requirement the UX Document covers. Repeatable; defaults to "
+        "every selected Requirement. Only with --ux applicable.",
+    )
+    start.add_argument(
+        "--ux-reason",
+        help="Why no UX Document applies. Required iff --ux not-applicable.",
+    )
+    start.add_argument(
+        "--accept-inputs",
+        action="store_true",
+        help="Explicitly accept the selected inputs for this cycle.",
+    )
+    start.add_argument(
+        "--accept-ux",
+        action="store_true",
+        help="Explicitly accept the UX decision for this cycle.",
+    )
+    start.set_defaults(handler=_run_architecture_start, parser=start)
+
+    resume = actions.add_parser(
+        "resume", allow_abbrev=False, help="Continue a cycle from its durable state."
+    )
+    _add_cycle_selector(resume)
+    resume.set_defaults(handler=_run_architecture_resume)
+
+    rework = actions.add_parser(
+        "rework",
+        allow_abbrev=False,
+        help="Record REWORK against the exact Review Result.",
+    )
+    _add_decision_target(rework)
+    rework.add_argument(
+        "--reason", type=_non_empty_text, help="Why the iteration is reworked."
+    )
+    rework.set_defaults(handler=_run_architecture_rework)
+
+    approve = actions.add_parser(
+        "approve",
+        allow_abbrev=False,
+        help="Record APPROVE against the exact Review Result.",
+        description=ARCHITECTURE_APPROVE_DESCRIPTION,
+    )
+    _add_decision_target(approve)
+    approve.add_argument(
+        "--accept-risk",
+        dest="dispositions",
+        action=_AcceptRisk,
+        metavar="REF",
+        help="A disposition reference accepted as a known risk. Repeatable.",
+    )
+    approve.add_argument(
+        "--accept-reason",
+        dest="dispositions",
+        action=_AcceptReason,
+        type=_non_empty_text,
+        metavar="TEXT",
+        help="The reason for the --accept-risk just before it.",
+    )
+    approve.add_argument(
+        "--confirm",
+        required=True,
+        action="store_true",
+        help="The explicit human approval act.",
+    )
+    approve.set_defaults(handler=_run_architecture_approve, parser=approve)
+
+    inspect = actions.add_parser(
+        "inspect",
+        allow_abbrev=False,
+        help="Report a cycle's state and freshness. Read-only.",
+    )
+    _add_cycle_selector(inspect)
+    inspect.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="After the result code line, print one JSON object.",
+    )
+    inspect.set_defaults(handler=_run_architecture_inspect)
+
+
+def _add_cycle_selector(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--project", required=True, help="Project Code or Project entity id."
+    )
+    command.add_argument("--cycle", required=True, help="The cycle id.")
+
+
+def _add_decision_target(command: argparse.ArgumentParser) -> None:
+    """The full target triple: none of it is ever inferred (spec 12.2)."""
+    _add_cycle_selector(command)
+    command.add_argument(
+        "--iteration", required=True, type=int, metavar="N", help="The iteration."
+    )
+    command.add_argument(
+        "--review-result-id",
+        required=True,
+        metavar="FIBERY-DOC-ID",
+        help="The exact Review Result Document decided on.",
+    )
+
+
+def _non_empty_text(text: str) -> str:
+    """A reason is recorded text: blank is a usage error, never a default."""
+    if not text.strip():
+        raise argparse.ArgumentTypeError("must not be blank")
+    return text
+
+
+class _AcceptRisk(argparse.Action):
+    """Opens one (reference, reason) pair; the previous one must be complete."""
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:
+        pairs = list(getattr(namespace, self.dest) or [])
+        if pairs and pairs[-1][1] is None:
+            raise argparse.ArgumentError(
+                self, f"{pairs[-1][0]!r} has no --accept-reason before this one"
+            )
+        setattr(namespace, self.dest, [*pairs, (values, None)])
+
+
+class _AcceptReason(argparse.Action):
+    """Completes the one open pair: exactly one reason per reference, in order."""
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:
+        pairs = list(getattr(namespace, self.dest) or [])
+        if not pairs or pairs[-1][1] is not None:
+            raise argparse.ArgumentError(self, "must follow its own --accept-risk")
+        setattr(namespace, self.dest, [*pairs[:-1], (pairs[-1][0], values)])
 
 
 def _add_worker_commands(
@@ -693,6 +916,168 @@ def _run_requirement_apply(
     )
     render_apply_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
+
+
+def _architecture_workspaces(
+    settings: FiberySettings,
+) -> tuple[ProjectCodeLookup, CycleWorkspace, RequirementEvidenceWorkspace]:
+    """The Project, Architecture and Requirement adapters of one workspace.
+
+    All three share one client, so one invocation reads one Fibery workspace
+    under one workspace identity, the one the guard is scoped by. The Space id
+    is resolved here, before the guard, and nothing else is read.
+    """
+    client = _client_with_space_id(settings)
+    return (
+        FiberyHttpWorkspace(client=client, space=settings.space),
+        FiberyArchitectureWorkspace(client=client, space=settings.space),
+        FiberyRawProcessorWorkspace(client=client, space=settings.space),
+    )
+
+
+def _tsa_clock() -> datetime:
+    return datetime.now(UTC)
+
+
+def _tsa_role_runtime(role: str) -> ModelRuntime:
+    """One TSA role through the unchanged selection; no command overrides it."""
+    return LocalCliModelRuntime(select_runtime(load_model_runtime_config(), role))
+
+
+def _architecture_session(settings: FiberySettings) -> ArchitectureSession:
+    """The invocation's adapters; each TSA role is configured only when used."""
+    projects, workspace, evidence = _architecture_workspaces(settings)
+    return ArchitectureSession(
+        projects=projects,
+        workspace=workspace,
+        evidence=evidence,
+        architect_model=ConfiguredRoleRuntime(TSA_ARCHITECT_ROLE, _tsa_role_runtime),
+        reviewer_model=ConfiguredRoleRuntime(TSA_REVIEWER_ROLE, _tsa_role_runtime),
+        clock=_tsa_clock,
+    )
+
+
+def _run_architecture(
+    command: ArchitectureCommand,
+    out: TextIO,
+    error_out: TextIO,
+    *,
+    is_mutating: bool,
+    as_json: bool = False,
+) -> int:
+    """Build the session, guard a mutating command, render its one result."""
+    try:
+        session = _architecture_session(load_fibery_settings())
+    except ConfigurationError as error:
+        result = workspace_unavailable(error)
+    else:
+        result = run_guarded(session, command) if is_mutating else command(session)
+    stream = out if result.is_normal else error_out
+    render_architecture_result(result, stream, as_json=as_json)
+    return exit_code_for(result.code)
+
+
+def _start_inputs(arguments: argparse.Namespace) -> StartInputs:
+    """Flag presence decides the UX branch; every value is I05's to validate.
+
+    Requirement ids pass through as given, so I05 normalizes them and reports
+    a duplicate; an omitted --ux-scope is every selected Requirement.
+    """
+    usage_error = arguments.parser.error
+    requirements = tuple(arguments.requirements or ())
+    if arguments.ux == UX_APPLICABLE_CHOICE:
+        if arguments.ux_document is None:
+            usage_error("--ux applicable requires --ux-document")
+        if arguments.ux_reason is not None:
+            usage_error("--ux-reason is only for --ux not-applicable")
+        scope = requirements if arguments.ux_scope is None else arguments.ux_scope
+        ux: UxApplicable | UxNotApplicable = UxApplicable(
+            arguments.ux_document, tuple(scope)
+        )
+    else:
+        if arguments.ux_reason is None:
+            usage_error("--ux not-applicable requires --ux-reason")
+        if arguments.ux_document is not None or arguments.ux_scope is not None:
+            usage_error("--ux-document and --ux-scope are only for --ux applicable")
+        ux = UxNotApplicable(arguments.ux_reason)
+    return StartInputs(
+        requirement_ids=requirements,
+        ux=ux,
+        accept_inputs=arguments.accept_inputs,
+        accept_ux=arguments.accept_ux,
+    )
+
+
+def _run_architecture_start(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    command = functools.partial(
+        start_cycle,
+        project=arguments.project,
+        cycle_id=arguments.cycle,
+        inputs=_start_inputs(arguments),
+    )
+    return _run_architecture(command, out, error_out, is_mutating=True)
+
+
+def _run_architecture_resume(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    command = functools.partial(
+        resume_cycle, project=arguments.project, cycle_id=arguments.cycle
+    )
+    return _run_architecture(command, out, error_out, is_mutating=True)
+
+
+def _run_architecture_rework(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    command = functools.partial(
+        rework_cycle,
+        project=arguments.project,
+        cycle_id=arguments.cycle,
+        iteration=arguments.iteration,
+        review_result_document_id=arguments.review_result_id,
+        reason=arguments.reason,
+    )
+    return _run_architecture(command, out, error_out, is_mutating=True)
+
+
+def _accepted_dispositions(
+    arguments: argparse.Namespace,
+) -> tuple[AcceptedDisposition, ...]:
+    """Every --accept-risk with its own reason, in the caller's order."""
+    pairs = arguments.dispositions or []
+    if pairs and pairs[-1][1] is None:
+        arguments.parser.error(f"--accept-risk {pairs[-1][0]!r} has no --accept-reason")
+    return tuple(AcceptedDisposition(ref, reason) for ref, reason in pairs)
+
+
+def _run_architecture_approve(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    """Model-free: no TSA role is configured, selected or launched."""
+    command = functools.partial(
+        approve_cycle,
+        project=arguments.project,
+        cycle_id=arguments.cycle,
+        iteration=arguments.iteration,
+        review_result_document_id=arguments.review_result_id,
+        dispositions=_accepted_dispositions(arguments),
+    )
+    return _run_architecture(command, out, error_out, is_mutating=True)
+
+
+def _run_architecture_inspect(
+    arguments: argparse.Namespace, out: TextIO, error_out: TextIO
+) -> int:
+    """Read-only, unguarded and model-free."""
+    command = functools.partial(
+        inspect_cycle, project=arguments.project, cycle_id=arguments.cycle
+    )
+    return _run_architecture(
+        command, out, error_out, is_mutating=False, as_json=arguments.as_json
+    )
 
 
 def _poll_interval_seconds(text: str) -> int:

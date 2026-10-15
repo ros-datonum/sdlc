@@ -348,18 +348,34 @@ def _resolve(
     Review Result. Anything else is `REVIEW_NOT_CURRENT`. Nothing is inferred
     and nothing slides to another iteration.
 
+    A cycle without a valid accepted Input Manifest — bootstrap state B or an
+    empty Architecture shell — resolves but has no Review Result, so it is
+    `REVIEW_NOT_CURRENT` (13.6, rows B and `EMPTY_ARCHITECTURE_SHELL`), not the
+    `resume`-only `MANIFEST_INPUTS_REQUIRED` the gate reports, and nothing is
+    repaired.
+
     `prefix` and `mutated` keep every refusal message truthful about what this
     call already wrote. `reads_own_shell` is passed only after this call's own
     known create, so that empty shell is read instead of refused.
     """
-    with _shared(prefix, mutated=mutated):
-        state = read_cycle_state(
-            call.workspace,
-            call.evidence,
-            call.project_id,
-            call.cycle_id,
-            reads_own_decision_shell=reads_own_shell,
-        )
+    try:
+        with _shared(prefix, mutated=mutated):
+            state = read_cycle_state(
+                call.workspace,
+                call.evidence,
+                call.project_id,
+                call.cycle_id,
+                reads_own_decision_shell=reads_own_shell,
+            )
+    except DecisionRefused as refused:
+        if refused.code is not ArchitectResultCode.MANIFEST_INPUTS_REQUIRED:
+            raise
+        raise _not_current(
+            f"Cycle {call.cycle_id!r} has no valid accepted Input Manifest, so it "
+            "has no Review Result to decide; nothing is repaired.",
+            prefix,
+            mutated=mutated,
+        ) from refused
     current = state.target
     context = current.context
     iteration = call.iteration
