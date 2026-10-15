@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -64,7 +64,8 @@ from sdlc.tsa_architecture import ArchitectureResultCode
 from sdlc.tsa_cli import TsaResultCode, exit_code_for
 from sdlc.tsa_cycle import CycleResultCode
 from sdlc.tsa_decision import DecisionResultCode
-from sdlc.tsa_reviewer import ReviewerResultCode
+from sdlc.tsa_recovery import message_after_progress
+from sdlc.tsa_reviewer import ReviewerRefused, ReviewerResultCode, run_reviewer_stage
 from sdlc.worker_runner_guard import hold_workspace
 from standard_fake import REQUIREMENT_ID
 from test_tsa_admission import (
@@ -86,10 +87,12 @@ from test_tsa_admission import (
 from test_tsa_architect import other_architecture, persisted_but_not_applied, reseal
 from test_tsa_cycle import fixed_clock
 from test_tsa_decision import acceptance_bound_elsewhere, process_ref, review_ref
+from test_tsa_reviewer import is_review_carrier
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 SPEC_V03 = REPOSITORY / "docs/specs/TSA-C01-Implementation-Spec-v0.3.md"
 SPEC_V05 = REPOSITORY / "docs/specs/TSA-C01-Implementation-Spec-v0.5.md"
+SPEC_V06 = REPOSITORY / "docs/specs/TSA-C01-Implementation-Spec-v0.6.md"
 
 ENVIRONMENT = {
     ENV_HOST: "example.fibery.io",
@@ -118,8 +121,6 @@ SPEC_NORMAL = {
     "INSPECT_STALE",
     "INSPECT_INCOMPLETE",
 }
-#: The approved addition (human instruction of 2026-10-15); no spec file yet.
-APPROVED_ADDITIONS = {"WORKSPACE_GUARD_UNAVAILABLE": 1}
 
 
 def expected_exit(code: str) -> int:
@@ -293,8 +294,11 @@ def catalogue_rows(path: Path, heading: str) -> dict[str, int]:
 def frozen_catalogue() -> dict[str, int]:
     v03 = catalogue_rows(SPEC_V03, "### 13.8 Result-code catalogue")
     v05 = catalogue_rows(SPEC_V05, "## 2. New result code")
-    assert len(v03) == 53 and v05 == {"REVIEW_INPUT_CHANGED": 1}
-    return {**v03, **v05, **APPROVED_ADDITIONS}
+    v06 = catalogue_rows(SPEC_V06, "## 2. New result code")
+    assert len(v03) == 53
+    assert v05 == {"REVIEW_INPUT_CHANGED": 1}
+    assert v06 == {"WORKSPACE_GUARD_UNAVAILABLE": 1}
+    return {**v03, **v05, **v06}
 
 
 def test_the_catalogue_is_exactly_the_frozen_one_with_its_exit_classes():
@@ -1291,8 +1295,11 @@ def test_a_recovery_stopped_short_reports_resumed_and_says_so(make_cli, monkeypa
     run = make_cli(scene)(*start_argv())
 
     assert_result(run, "ARCHITECTURE_CYCLE_RESUMED")
-    assert "stopped before the Human Decision boundary" in run.out
+    assert "The Human Decision boundary was not reached." in run.out
     assert "sdlc project architecture resume" in run.out
+    assert "re-read durable state" in run.out
+    assert "changed under this command" not in run.out
+    assert "This start wrote" not in run.out, "the Manifest was reused"
     assert len(calls) == 1
 
 
@@ -1306,7 +1313,9 @@ def test_a_rework_whose_continuation_stopped_short_reports_the_durable_rework(
 
     assert_result(run, "ARCHITECTURE_CYCLE_RESUMED")
     assert "REWORK of iteration 1 is durable" in run.out
-    assert "stopped before its Human Decision boundary" in run.out
+    assert "It was recorded before downstream recovery stopped." in run.out
+    assert "The Human Decision boundary was not reached." in run.out
+    assert "changed under this command" not in run.out
     assert payload_of(scene, DECISION_ID)["body"]["decision"] == "REWORK"
 
 
@@ -1540,7 +1549,8 @@ def test_inspect_prints_identities_never_content(make_cli):
 
     lines = run.out.splitlines()
     assert lines[:2] == ["INSPECT_CURRENT", ""]
-    assert f"Project: {PROJECT_CODE}" in lines
+    assert f"Project: {PROJECT_ID}" in lines
+    assert f"Project Code: {PROJECT_CODE}" in lines
     assert f"Cycle: {CYCLE}" in lines
     assert "Durable state: D" in lines
     assert "Recovery case: REVIEW_RECORDED" in lines
@@ -1577,6 +1587,7 @@ INSPECT_KEYS = {
     "iteration",
     "message",
     "process_result",
+    "project_code",
     "project_id",
     "review_result",
     "state",
@@ -1616,9 +1627,12 @@ def test_inspect_json_carries_the_current_identities(make_cli):
 
     record = json_of(harness(*INSPECT, "--json"))
 
+    assert record["project_id"] == PROJECT_ID
+    assert record["project_code"] == PROJECT_CODE
+    assert record["cycle_id"] == CYCLE
     assert record["state"] == "D"
     assert record["case"] == "APPROVED"
-    assert record["inputs"] == "CURRENT"
+    assert record["inputs"]["status"] == "CURRENT"
     assert record["iteration"] == 1
     assert record["human_decision"] == {
         "decision": "APPROVE",
@@ -1734,3 +1748,362 @@ def test_requirement_approve_and_architecture_approve_do_not_collide():
 
     assert requirement.handler is cli._run_requirement_approve
     assert architecture.handler is cli._run_architecture_approve
+
+
+# --------------------------------------------------------------------------
+# K. Truthful partial progress (spec v0.6 section 3)
+# --------------------------------------------------------------------------
+
+FALSE_CLAIMS = ("Nothing was persisted.", "Nothing was persisted or applied.")
+REVIEWER_DOWN = "reviewer exited 1"
+ARCHITECT_DOWN = "architect exited 1"
+
+
+def failing(scene, role: str, iteration: int = 1):
+    if role == TSA_ARCHITECT_ROLE:
+        return RecordingModel(scene, error=ModelRuntimeError(ARCHITECT_DOWN))
+    return CoveringReviewer(scene, iteration, error=ModelRuntimeError(REVIEWER_DOWN))
+
+
+def assert_no_false_claim(text: str) -> None:
+    for claim in FALSE_CLAIMS:
+        assert claim not in text, text
+
+
+def test_the_major_reproducer_start_from_b_then_the_reviewer_fails(make_cli):
+    scene = scene_b()
+    harness = make_cli(scene, reviewer=failing(scene, TSA_REVIEWER_ROLE))
+
+    run = harness(*start_argv())
+
+    assert_result(run, "MODEL_RUNTIME_FAILED")
+    assert_no_false_claim(run.err)
+    assert f"This start wrote the cycle's accepted Input Manifest '{MANIFEST_ID}'" in (
+        run.err
+    )
+    assert "This recovery already made durable progress" in run.err
+    assert f"Process Result '{PROCESS_ID}' of iteration 1 was persisted" in run.err
+    assert "was applied to the Architecture Document" in run.err
+    assert "The Human Decision boundary was not reached." in run.err
+    assert "sdlc project architecture resume" in run.err
+    assert f"- {REVIEWER_DOWN}" in run.err, "the original failure reason is kept"
+    assert harness.model_calls == (1, 1)
+    assert scene.tsa.count(CREATE) == 2, "the Manifest and the Process only"
+    assert scene.tsa.count(WRITE) == 3, "Manifest, Process and Architecture"
+    payload_of(scene, MANIFEST_ID)
+    payload_of(scene, PROCESS_ID)
+    assert REVIEW_ID not in scene.tsa.documents
+    reset_trace(scene)
+    harness.reviewer = CoveringReviewer(scene)
+
+    again = harness(*RESUME)
+
+    assert_result(again, "ARCHITECTURE_CYCLE_RESUMED")
+    assert harness.model_calls == (1, 1), "case 3: no new Architect call"
+    assert scene.tsa.count(CREATE) == 1, "the Review only; nothing redone"
+
+
+def test_resume_case_1_architect_then_failing_reviewer_reports_i10_progress(
+    make_cli,
+):
+    scene = accepted_scene()
+    harness = make_cli(scene, reviewer=failing(scene, TSA_REVIEWER_ROLE))
+
+    run = harness(*RESUME)
+
+    assert_result(run, "MODEL_RUNTIME_FAILED")
+    assert_no_false_claim(run.err)
+    assert "This recovery already made durable progress" in run.err
+    assert "This start wrote" not in run.err, "resume owns no write of its own"
+    assert "The Human Decision boundary was not reached." in run.err
+    assert run.err.count("The Human Decision boundary was not reached.") == 1
+    assert harness.model_calls == (1, 1)
+    assert (scene.tsa.count(CREATE), scene.tsa.count(WRITE)) == (1, 2)
+
+
+def test_an_architect_failure_with_no_progress_keeps_the_stage_message(make_cli):
+    scene = accepted_scene()
+    harness = make_cli(scene, architect=failing(scene, TSA_ARCHITECT_ROLE))
+
+    run = harness(*start_argv())
+
+    assert_result(run, "MODEL_RUNTIME_FAILED")
+    assert "Nothing was persisted or applied." in run.err, "true: nothing was"
+    assert "This recovery already made durable progress" not in run.err
+    assert "This start wrote" not in run.err
+    assert scene.tsa.mutations == []
+
+
+def test_an_architect_failure_after_start_wrote_the_manifest(make_cli):
+    scene = scene_b()
+    harness = make_cli(scene, architect=failing(scene, TSA_ARCHITECT_ROLE))
+
+    run = harness(*start_argv())
+
+    assert_result(run, "MODEL_RUNTIME_FAILED")
+    assert_no_false_claim(run.err)
+    assert "This start wrote the cycle's accepted Input Manifest" in run.err
+    assert "This recovery already made durable progress" not in run.err
+    assert "Process Result" not in run.err, "no Process is claimed"
+    assert "The Human Decision boundary was not reached." in run.err
+    assert PROCESS_ID not in scene.tsa.documents
+    assert harness.model_calls == (1, 0)
+
+
+def test_a_failed_apply_keeps_the_architect_stage_own_truth(make_cli):
+    """I07 raised itself after persisting the Process: its message is kept."""
+    scene = accepted_scene()
+    scene.tsa.before(WRITE, 2, fail("connection reset"))
+    harness = make_cli(scene)
+
+    run = harness(*start_argv())
+
+    assert_result(run, "FIBERY_WRITE_FAILED")
+    assert_no_false_claim(run.err)
+    message = run.err.splitlines()[2]
+    assert not message.startswith(("This recovery", "This start"))
+    payload_of(scene, PROCESS_ID)
+    assert harness.model_calls == (1, 0)
+
+
+def test_resume_case_2_replay_progress_is_acknowledged(make_cli):
+    scene = scene_case_2()
+    harness = make_cli(scene, reviewer=failing(scene, TSA_REVIEWER_ROLE))
+
+    run = harness(*RESUME)
+
+    assert_result(run, "MODEL_RUNTIME_FAILED")
+    assert_no_false_claim(run.err)
+    assert "was applied to the Architecture Document" in run.err
+    assert "RECORDED_OUTPUT_APPLIED" in run.err
+    assert "was persisted (" not in run.err, "the replay persisted no Process"
+    assert harness.model_calls == (0, 1)
+
+
+def test_a_review_written_but_not_confirmed_keeps_the_reviewer_own_truth(
+    make_cli,
+):
+    """I08's post-write message survives inside I10's progress statement."""
+    direct = applied_scene()
+    direct.tsa.store_as = lambda md: "" if is_review_carrier(md) else md
+    with pytest.raises(ReviewerRefused) as caught:
+        run_reviewer_stage(
+            direct.tsa, direct.req, CoveringReviewer(direct), PROJECT_ID, CYCLE
+        )
+    reviewer_truth = message_after_progress(str(caught.value))
+    scene = accepted_scene()
+    scene.tsa.store_as = lambda md: "" if is_review_carrier(md) else md
+    harness = make_cli(scene)
+
+    run = harness(*RESUME)
+
+    assert_result(run, "FIBERY_WRITE_FAILED")
+    assert "This recovery already made durable progress" in run.err
+    assert reviewer_truth in run.err
+    assert_no_false_claim(run.err)
+
+
+# --------------------------------------------------------------------------
+# L. Canonical identities in every output (spec 12.3)
+# --------------------------------------------------------------------------
+
+NONCANONICAL_CYCLE = f"  {CYCLE.upper()} "
+
+
+def noncanonical(argv: list[str]) -> list[str]:
+    return [NONCANONICAL_CYCLE if item == CYCLE else item for item in argv]
+
+
+@pytest.mark.parametrize(
+    ("build", "command"),
+    [
+        (scene_a, "start"),
+        (reviewed_scene, "resume"),
+        (reviewed_scene, "rework"),
+        (reviewed_scene, "approve"),
+        (reviewed_scene, "inspect"),
+    ],
+)
+def test_outputs_carry_the_resolved_project_and_canonical_cycle(
+    build, command, make_cli
+):
+    harness = make_cli(build(), iteration=2 if command == "rework" else 1)
+
+    run = harness(*noncanonical(ARGV[command]))
+
+    lines = run.stream.splitlines()
+    assert run.exit_code == 0, run.stream
+    assert f"Project: {PROJECT_ID}" in lines
+    assert f"Project Code: {PROJECT_CODE}" in lines
+    assert f"Cycle: {CYCLE}" in lines
+    assert f"Project: {PROJECT_CODE}" not in lines
+    assert NONCANONICAL_CYCLE.strip() not in run.stream
+
+
+def test_inspect_json_carries_the_entity_id_and_canonical_cycle(make_cli):
+    harness = make_cli(reviewed_scene())
+
+    by_code = json_of(harness(*noncanonical(INSPECT), "--json"))
+    by_id = json_of(
+        harness("inspect", "--project", PROJECT_ID, "--cycle", CYCLE, "--json")
+    )
+
+    for record in (by_code, by_id):
+        assert record["project_id"] == PROJECT_ID
+        assert record["project_code"] == PROJECT_CODE
+        assert record["cycle_id"] == CYCLE
+
+
+def test_an_unresolved_project_is_never_reported_as_an_id(make_cli):
+    harness = make_cli(reviewed_scene())
+    harness.projects.error = FiberyError("connection reset")
+
+    run = harness(*INSPECT, "--json")
+
+    record = json_of(run)
+    assert record["code"] == "FIBERY_READ_FAILED"
+    assert record["project_id"] is None and record["project_code"] is None
+    assert record["cycle_id"] == CYCLE
+
+
+def test_no_document_secret_is_printed(make_cli):
+    scene = reviewed_scene()
+    harness = make_cli(scene)
+
+    outputs = harness(*INSPECT).out + harness(*INSPECT, "--json").out
+    outputs += harness(*approve_argv()).out
+
+    for document in scene.tsa.documents.values():
+        assert document.secret not in outputs
+
+
+# --------------------------------------------------------------------------
+# M. inspect: per-input currentness (spec 13.5)
+# --------------------------------------------------------------------------
+
+
+def requirement_entity(scene):
+    return next(
+        record
+        for record in scene.req.requirements.values()
+        if record.requirement_id == REQUIREMENT_ID
+    )
+
+
+def test_not_applicable_current_reports_each_input_and_reads_no_ux(make_cli):
+    scene = reviewed_scene()
+    harness = make_cli(scene)
+
+    human = harness(*INSPECT)
+    record = json_of(harness(*INSPECT, "--json"))
+
+    assert record["inputs"] == {
+        "status": "CURRENT",
+        "requirements": [{"requirement_id": REQUIREMENT_ID, "current": True}],
+        "ux": {"kind": "NOT_APPLICABLE", "current": True},
+        "selection_refusal": None,
+    }
+    assert f"- Requirement {REQUIREMENT_ID}: current" in human.out
+    assert "- UX NOT_APPLICABLE: current" in human.out
+    assert [e for e in scene.tsa.log if e[1] == UX_DOCUMENT_ID] == []
+
+
+def test_requirement_drift_under_not_applicable_names_both_stale_inputs(make_cli):
+    scene = scene_stale()
+    harness = make_cli(scene)
+
+    human = harness(*INSPECT)
+    record = json_of(harness(*INSPECT, "--json"))
+
+    assert_result(human, "INSPECT_STALE")
+    assert record["inputs"] == {
+        "status": "STALE",
+        "requirements": [{"requirement_id": REQUIREMENT_ID, "current": False}],
+        "ux": {"kind": "NOT_APPLICABLE", "current": False},
+        "selection_refusal": "REQUIREMENT_NOT_ADMISSIBLE",
+    }
+    assert f"- Requirement {REQUIREMENT_ID}: stale" in human.out
+    assert "- UX NOT_APPLICABLE: stale" in human.out
+    assert [e for e in scene.tsa.log if e[1] == UX_DOCUMENT_ID] == []
+
+
+def test_an_edited_applicable_ux_is_the_one_stale_input(make_cli):
+    scene = reviewed_scene(ux=APPLICABLE)
+    scene.tsa.set_content(UX_DOCUMENT_ID, "# Checkout flow\n\nTwo screens now.\n")
+    reset_trace(scene)
+    harness = make_cli(scene)
+
+    record = json_of(harness(*INSPECT, "--json"))
+
+    assert record["code"] == "INSPECT_STALE"
+    assert record["inputs"]["requirements"] == [
+        {"requirement_id": REQUIREMENT_ID, "current": True}
+    ]
+    assert record["inputs"]["ux"] == {
+        "kind": "APPLICABLE",
+        "document_id": UX_DOCUMENT_ID,
+        "current": False,
+    }
+
+
+def test_an_inadmissible_requirement_is_stale_and_the_selection_refused(make_cli):
+    scene = reviewed_scene()
+    record = requirement_entity(scene)
+    scene.req.requirements[record.id] = replace(record, state="Draft")
+    reset_trace(scene)
+
+    inputs = json_of(make_cli(scene)(*INSPECT, "--json"))["inputs"]
+
+    assert inputs["status"] == "STALE"
+    assert inputs["requirements"] == [
+        {"requirement_id": REQUIREMENT_ID, "current": False}
+    ]
+    assert inputs["selection_refusal"] == "REQUIREMENT_NOT_ADMISSIBLE"
+    assert inputs["ux"] == {"kind": "NOT_APPLICABLE", "current": False}
+
+
+@pytest.mark.parametrize("build", [scene_b, scene_case_4, scene_malformed_process])
+def test_an_incomplete_state_never_claims_its_inputs_current(build, make_cli):
+    record = json_of(make_cli(build())(*INSPECT, "--json"))
+
+    assert record["code"] == "INSPECT_INCOMPLETE"
+    assert record["inputs"] == {
+        "status": "NOT_ESTABLISHED",
+        "requirements": [],
+        "ux": None,
+        "selection_refusal": None,
+    }
+
+
+def test_a_duplicate_with_current_inputs_stays_inspect_current(make_cli):
+    record = json_of(make_cli(scene_duplicate())(*INSPECT, "--json"))
+
+    assert record["code"] == "INSPECT_CURRENT"
+    assert record["inputs"]["status"] == "CURRENT"
+    assert record["inputs"]["requirements"][0]["current"] is True
+
+
+# --------------------------------------------------------------------------
+# N. Busy and empty-shell wording (spec v0.6 sections 2, 3)
+# --------------------------------------------------------------------------
+
+
+def test_the_busy_message_claims_only_what_held(make_cli):
+    scene = reviewed_scene()
+    harness = make_cli(scene)
+
+    with hold_workspace(scene.tsa.lock_scope):
+        run = harness(*RESUME)
+
+    assert "No Project or cycle data was read after the lock attempt" in run.err
+    assert "no lifecycle mutation was made and no model was called" in run.err
+    assert "Nothing was read" not in run.err
+
+
+def test_resume_on_an_empty_shell_states_only_the_read_back_state(make_cli):
+    run = make_cli(scene_shell())(*RESUME)
+
+    assert_result(run, "ARCHITECTURE_CYCLE_RESUMED")
+    assert "discovered as an empty shell" in run.out
+    assert "the cycle is in durable state B" in run.out
+    assert "completed in place" not in run.out

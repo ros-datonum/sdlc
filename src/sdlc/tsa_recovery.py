@@ -62,6 +62,7 @@ __all__ = [
     "RecoveryRefused",
     "RecoveryResult",
     "classify_recovery_case",
+    "message_after_progress",
     "recover_architecture_cycle",
 ]
 
@@ -122,6 +123,33 @@ _REQUIRED = {
 }
 
 
+#: The exact trailing sentences a gate or stage refusal can end with that deny
+#: any write, each with what stays true of it once this invocation already
+#: made durable progress. Only these exact endings are changed.
+NO_PROGRESS_CLAIMS = (
+    (" Nothing was written and no model was called.", ""),
+    (
+        " The whole selection is refused and nothing was written.",
+        " The whole selection is refused.",
+    ),
+    (" Nothing was persisted or applied.", ""),
+    (" Nothing was persisted.", ""),
+    (" Nothing was written.", ""),
+)
+
+
+def message_after_progress(message: str) -> str:
+    """A refusal message without its own trailing no-write claim.
+
+    That claim describes one stage or gate pass; it is no longer true of an
+    invocation that already made durable progress. The diagnosis is kept.
+    """
+    for claim, remains in NO_PROGRESS_CLAIMS:
+        if message.endswith(claim):
+            return f"{message[: -len(claim)]}{remains}"
+    return message
+
+
 class RecoveryRefused(Exception):
     """A controlled refusal with the frozen code the gate or a stage decided.
 
@@ -134,10 +162,59 @@ class RecoveryRefused(Exception):
         code: ResultCode | ReviewerResultCode,
         message: str,
         details: tuple[str, ...] = (),
+        *,
+        after_progress: bool = False,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.details = details
+        #: True when this invocation already made durable progress, which the
+        #: message states; the boundary was not reached.
+        self.after_progress = after_progress
+
+
+@dataclass
+class _Progress:
+    """What this invocation itself made durable before a later refusal."""
+
+    architect: ArchitectStageResult | None = None
+
+
+def _wrote(result: ArchitectStageResult | None) -> bool:
+    return result is not None and (
+        result.process_written or result.architecture_written
+    )
+
+
+def _after_progress(
+    refused: RecoveryRefused, architect: ArchitectStageResult
+) -> RecoveryRefused:
+    """A refusal that says what this invocation already made durable.
+
+    Only what the Architect stage result reports — read back by the stage
+    before it returned — is claimed. The code and details are unchanged, and
+    the refusal's own text is kept except a trailing no-write claim.
+    """
+    done = []
+    if architect.process_written:
+        done.append(
+            f"Process Result {architect.process_result_document_id!r} of "
+            f"iteration {architect.iteration} was persisted"
+        )
+    if architect.architecture_written:
+        done.append(
+            f"the output of Process Result {architect.process_result_document_id!r} "
+            "was applied to the Architecture Document"
+        )
+    return RecoveryRefused(
+        refused.code,
+        f"This recovery already made durable progress: {' and '.join(done)} "
+        f"({architect.outcome}). That remains and nothing was rolled back. The "
+        "Human Decision boundary was not reached. "
+        f"{message_after_progress(str(refused))}",
+        refused.details,
+        after_progress=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -283,7 +360,40 @@ def recover_architecture_cycle(
     When the fresh gate after a stage still asks for a stage this invocation
     may not run again, it stops at `ARCHITECT_REQUIRED` or `REVIEWER_REQUIRED`
     and leaves the decision to a later invocation.
+
+    A refusal after the Architect stage already wrote in this invocation says
+    so, with the same code and details (`_after_progress`): that progress is
+    durable and never rolled back.
     """
+    progress = _Progress()
+    try:
+        return _carry(
+            workspace,
+            evidence,
+            architect_model,
+            reviewer_model,
+            project_id,
+            cycle_id,
+            clock,
+            progress,
+        )
+    except RecoveryRefused as refused:
+        if progress.architect is None:
+            raise
+        raise _after_progress(refused, progress.architect) from refused
+
+
+def _carry(
+    workspace: CycleWorkspace,
+    evidence: RequirementEvidenceWorkspace,
+    architect_model: ModelRuntime,
+    reviewer_model: ModelRuntime,
+    project_id: str,
+    cycle_id: object,
+    clock: Clock,
+    progress: _Progress,
+) -> RecoveryResult:
+    """The pass loop of `recover_architecture_cycle`; records its own writes."""
     architect: ArchitectStageResult | None = None
     reviewer: ReviewerStageResult | None = None
     delegated: set[_Stage] = set()
@@ -305,6 +415,8 @@ def recover_architecture_cycle(
                     workspace, evidence, project_id, cycle_id
                 )
             )
+            if _wrote(architect):
+                progress.architect = architect
             continue
         if stage is _Stage.ARCHITECT:
             architect = _delegated(
@@ -317,6 +429,8 @@ def recover_architecture_cycle(
                     clock=clock,
                 )
             )
+            if _wrote(architect):
+                progress.architect = architect
             continue
         try:
             reviewer = _delegated(

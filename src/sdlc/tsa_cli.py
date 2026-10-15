@@ -13,18 +13,11 @@ command (contract 13), the lazy TSA model roles (spec 15), the mapping of a
 domain outcome to one result code and its exit class (spec 12.3), and the
 rendering. `cli.py` owns argparse and builds the adapters.
 
-Approved additions to the catalogue, recorded by the human instruction of
-2026-10-15 for this item (no spec file carries them yet):
-
-- `WORKSPACE_GUARD_UNAVAILABLE`, exit 1: the workspace guard could not be set
-  up, so the command did not run, rather than run unguarded;
-- a recovery that stops short of the Human Decision boundary (I10
-  `ARCHITECT_REQUIRED` / `REVIEWER_REQUIRED`) reports
-  `ARCHITECTURE_CYCLE_RESUMED` and says so;
-- a Fibery workspace that cannot be established before any engine runs is
-  `FIBERY_READ_FAILED`; a TSA role that cannot be configured fails when it is
-  first asked to run, inside its stage, as `MODEL_RUNTIME_FAILED`;
-- `inspect --json` prints the code line, a blank line, then one JSON object.
+Spec v0.6 records what this layer adds: the `WORKSPACE_GUARD_UNAVAILABLE`
+code; truthful progress when recovery refuses or stops before the Human
+Decision boundary (the specific code stays authoritative, and each layer states
+only the progress it owns); the `inspect --json` framing; and the mapping of
+failures before any engine runs.
 """
 
 from __future__ import annotations
@@ -41,6 +34,7 @@ from sdlc.model_runtime import ModelResponse, ModelRuntime, ModelRuntimeError
 from sdlc.model_runtime_config import ModelRuntimeConfigError
 from sdlc.tsa_admission import (
     AdmissionRefused,
+    ManifestResult,
     RequirementEvidenceWorkspace,
     StartInputs,
     start_input_manifest,
@@ -48,10 +42,13 @@ from sdlc.tsa_admission import (
 from sdlc.tsa_architect import (
     ArchitectRefused,
     CycleState,
+    InputCurrentnessReport,
     read_cycle_state,
     read_input_currentness,
 )
+from sdlc.tsa_artifacts import InvalidTsaArtifact, canonical_cycle_id
 from sdlc.tsa_cycle import (
+    BootstrapContext,
     Clock,
     CycleDiscovery,
     CycleOutcome,
@@ -74,6 +71,7 @@ from sdlc.tsa_recovery import (
     RecoveryRefused,
     RecoveryResult,
     classify_recovery_case,
+    message_after_progress,
     recover_architecture_cycle,
 )
 from sdlc.worker_runner_guard import (
@@ -144,7 +142,7 @@ class TsaResultCode(StrEnum):
     FIBERY_WRITE_FAILED = "FIBERY_WRITE_FAILED"
     #: Spec v0.5 section 2.
     REVIEW_INPUT_CHANGED = "REVIEW_INPUT_CHANGED"
-    #: Approved addition (module docstring): the guard could not be set up.
+    #: Spec v0.6 section 2: the guard could not be set up.
     WORKSPACE_GUARD_UNAVAILABLE = "WORKSPACE_GUARD_UNAVAILABLE"
 
 
@@ -229,23 +227,35 @@ NEXT_DECISION = (
     "Nothing is approved: a human decides with `sdlc project architecture "
     "approve` or `rework` against this exact iteration and Review Result."
 )
+RESUME_HINT = (
+    "Run `sdlc project architecture resume` with the same --project and --cycle "
+    "to re-read durable state and continue from what is actually persisted."
+)
+BOUNDARY_NOT_REACHED = "The Human Decision boundary was not reached."
 BUSY_MESSAGE = (
-    "Another cooperating SDLC command holds this Fibery workspace on this host "
-    "(same OS user, same lock directory). Nothing was read or written and no "
-    "model was called."
+    "Another cooperating SDLC command owns this Fibery workspace's lock on this "
+    "host (same OS user, same lock directory). No Project or cycle data was read "
+    "after the lock attempt, no lifecycle mutation was made and no model was "
+    "called."
 )
 GUARD_UNAVAILABLE_MESSAGE = (
     "The workspace guard could not be set up ({error}), so the command did not "
-    "run unguarded. Nothing was read or written and no model was called."
+    "run unguarded. No Project or cycle data was read, no lifecycle mutation was "
+    "made and no model was called."
 )
 WORKSPACE_UNAVAILABLE_MESSAGE = (
     "The Fibery workspace could not be established ({error}). No cycle was "
     "read and nothing was written."
 )
+STALE_MESSAGE = (
+    "At least one bound input drifted since the Input Manifest was accepted. "
+    "Any durable decision of this cycle is historical, not a current approval."
+)
 
 #: The human label of each fact, in the order facts are built.
 FACT_LABELS = {
     "project_id": "Project",
+    "project_code": "Project Code",
     "cycle_id": "Cycle",
     "state": "Durable state",
     "case": "Recovery case",
@@ -260,6 +270,8 @@ FACT_LABELS = {
     "continued_iteration": "Continued at iteration",
     "continued_review_result": "Continued Review Result",
 }
+#: How a per-input `current` value reads to a human.
+CURRENTNESS_WORDS = {True: "current", False: "stale"}
 
 Fact = tuple[str, object]
 
@@ -269,7 +281,8 @@ class ArchitectureCommandResult:
     """One command's outcome: a frozen code, a truthful message, its facts.
 
     `facts` are identities and digests only — never Requirement content,
-    architecture prose, prompts, model output or credentials.
+    architecture prose, prompts, model output, Document secrets or
+    credentials.
     """
 
     code: TsaResultCode
@@ -370,7 +383,7 @@ Refusal = (
 )
 
 
-def _refused(error: Refusal, facts: tuple[Fact, ...] = ()) -> ArchitectureCommandResult:
+def _refused(error: Refusal, facts: tuple[Fact, ...]) -> ArchitectureCommandResult:
     """The domain's own frozen code and message, mapped by value, unchanged."""
     if isinstance(error, CycleRefused):
         details = (
@@ -430,7 +443,20 @@ def workspace_unavailable(error: Exception) -> ArchitectureCommandResult:
     )
 
 
-def _resolve_project(session: ArchitectureSession, selector: str) -> str:
+# ---------------------------------------------------------------------------
+# Identities: the resolved Project and the canonical cycle id
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Project:
+    """The Project the command acts on: its entity id, and its Code if known."""
+
+    entity_id: str
+    code: str | None
+
+
+def _resolve_project(session: ArchitectureSession, selector: str) -> _Project:
     """`--project <CODE|entity-id>`: an exact Project Code, else an entity id.
 
     The id is handed to the domain unchanged, whose fresh Project read refuses
@@ -444,16 +470,40 @@ def _resolve_project(session: ArchitectureSession, selector: str) -> str:
             TsaResultCode.FIBERY_READ_FAILED,
             f"Looking up Project {selector!r} failed: {error}. Nothing was written.",
         ) from error
-    return selector if project is None else project.id
+    if project is None:
+        return _Project(selector, None)
+    return _Project(project.id, project.code)
+
+
+def _canonical_cycle(raw_cycle_id: str) -> str | None:
+    """The I01 canonical cycle id, or None when the argument is not one."""
+    try:
+        return canonical_cycle_id(raw_cycle_id)
+    except InvalidTsaArtifact:
+        return None
+
+
+def _identity(project: _Project | None, raw_cycle_id: str) -> tuple[Fact, ...]:
+    """Always the same three keys; a value that is not known is None."""
+    return (
+        ("project_id", None if project is None else project.entity_id),
+        ("project_code", None if project is None else project.code),
+        ("cycle_id", _canonical_cycle(raw_cycle_id)),
+    )
+
+
+def _discovered_identity(context: BootstrapContext) -> tuple[Fact, ...]:
+    """The identity I04 fixed from a fresh Project read."""
+    return (
+        ("project_id", context.project_entity_id),
+        ("project_code", context.project_code),
+        ("cycle_id", context.cycle_id),
+    )
 
 
 # ---------------------------------------------------------------------------
 # Facts: identities and digests only
 # ---------------------------------------------------------------------------
-
-
-def _target(project: str, cycle_id: str) -> tuple[Fact, ...]:
-    return (("project_id", project), ("cycle_id", cycle_id))
 
 
 def _state_facts(state: CycleState) -> tuple[Fact, ...]:
@@ -475,7 +525,7 @@ def _state_facts(state: CycleState) -> tuple[Fact, ...]:
                 "document_id": target.process_document_id,
                 "digest": None
                 if target.process is None
-                else (target.process.artifact_digest),
+                else target.process.artifact_digest,
             },
         ),
         (
@@ -485,7 +535,7 @@ def _state_facts(state: CycleState) -> tuple[Fact, ...]:
                 "digest": None if review is None else review.artifact_digest,
                 "derived_status": None
                 if review is None
-                else (review.body["derived_status"]),
+                else review.body["derived_status"],
             },
         ),
         (
@@ -499,8 +549,14 @@ def _state_facts(state: CycleState) -> tuple[Fact, ...]:
     )
 
 
+def _stage_fact(outcome: object, model_invoked: bool) -> str:
+    return f"{outcome}, model {'invoked' if model_invoked else 'not invoked'}"
+
+
 def _recovery_facts(result: RecoveryResult) -> tuple[Fact, ...]:
     is_approved = result.boundary is RecoveryBoundary.APPROVED
+    architect = result.architect
+    reviewer = result.reviewer
     return (
         ("iteration", result.iteration),
         (
@@ -536,20 +592,14 @@ def _recovery_facts(result: RecoveryResult) -> tuple[Fact, ...]:
         (
             "architect_stage",
             None
-            if result.architect is None
-            else (
-                f"{result.architect.outcome}, model "
-                f"{'invoked' if result.architect.model_invoked else 'not invoked'}"
-            ),
+            if architect is None
+            else _stage_fact(architect.outcome, architect.model_invoked),
         ),
         (
             "reviewer_stage",
             None
-            if result.reviewer is None
-            else (
-                f"{result.reviewer.outcome}, model "
-                f"{'invoked' if result.reviewer.model_invoked else 'not invoked'}"
-            ),
+            if reviewer is None
+            else _stage_fact(reviewer.outcome, reviewer.model_invoked),
         ),
     )
 
@@ -594,23 +644,28 @@ def _first_case_code(command: Command, state: CycleState) -> TsaResultCode:
     return CONTINUING_CODES[command][case]
 
 
+def _manifest_written(manifest: ManifestResult) -> str:
+    """The one durable write `start` itself owns before recovery (I05 read-back)."""
+    return (
+        f"This start wrote the cycle's accepted Input Manifest "
+        f"{manifest.context.input_manifest_document_id!r} and read it back; it "
+        "remains and nothing was rolled back."
+    )
+
+
 def _continued(
-    code: TsaResultCode, recovery: RecoveryResult, facts: tuple[Fact, ...]
+    code: TsaResultCode,
+    recovery: RecoveryResult,
+    facts: tuple[Fact, ...],
+    written: ManifestResult | None = None,
 ) -> ArchitectureCommandResult:
     cycle_facts = (*facts, *_recovery_facts(recovery))
     iteration = recovery.iteration
     if recovery.boundary in STOPPED_SHORT:
-        stage = (
-            "Architect"
-            if (recovery.boundary is RecoveryBoundary.ARCHITECT_REQUIRED)
-            else "Reviewer"
-        )
+        owned = "" if written is None else f"{_manifest_written(written)} "
         return ArchitectureCommandResult(
             TsaResultCode.ARCHITECTURE_CYCLE_RESUMED,
-            f"The cycle stopped before the Human Decision boundary of iteration "
-            f"{iteration}: durable state changed under this command and still "
-            f"needs the {stage} stage, which one invocation runs at most once. "
-            "Run `sdlc project architecture resume` to continue from durable state.",
+            f"{owned}{BOUNDARY_NOT_REACHED} {RESUME_HINT}",
             facts=cycle_facts,
         )
     messages = {
@@ -631,6 +686,34 @@ def _continued(
         ),
     }
     return ArchitectureCommandResult(code, messages[code], facts=cycle_facts)
+
+
+def _recovery_refused(
+    refused: RecoveryRefused,
+    facts: tuple[Fact, ...],
+    written: ManifestResult | None = None,
+) -> ArchitectureCommandResult:
+    """A recovery refusal, truthful about durable progress and who owns it.
+
+    I10 states its own progress inside the refusal (`after_progress`); this
+    layer adds only what the command itself wrote before recovery ran, and
+    then drops the refusal's trailing no-write claim, which no longer holds.
+    The specific code and details are kept; partial progress is never a
+    success code.
+    """
+    if written is None and not refused.after_progress:
+        return _refused(refused, facts)
+    parts = [] if written is None else [_manifest_written(written)]
+    parts.append(message_after_progress(str(refused)))
+    if not refused.after_progress:
+        parts.append(BOUNDARY_NOT_REACHED)
+    parts.append(RESUME_HINT)
+    return ArchitectureCommandResult(
+        TsaResultCode(str(refused.code)),
+        " ".join(parts),
+        tuple(refused.details),
+        facts,
+    )
 
 
 def _read_state(
@@ -665,13 +748,13 @@ def start_cycle(
     Architecture shell). An existing one was compared with the caller's
     inputs by I05 and never rewritten; the first gate then names the row.
     """
-    facts = _target(project, cycle_id)
+    resolved: _Project | None = None
     try:
-        project_id = _resolve_project(session, project)
+        resolved = _resolve_project(session, project)
         manifest = start_input_manifest(
             session.workspace,
             session.evidence,
-            project_id,
+            resolved.entity_id,
             cycle_id,
             inputs,
             clock=session.clock,
@@ -679,23 +762,26 @@ def start_cycle(
         code = TsaResultCode.ARCHITECTURE_CYCLE_STARTED
         if not manifest.is_newly_written:
             code = _first_case_code(
-                Command.START, _read_state(session, project_id, cycle_id)
+                Command.START, _read_state(session, resolved.entity_id, cycle_id)
             )
-        recovery = _recover(session, project_id, cycle_id)
     except REFUSALS as error:
-        return _refused(error, facts)
-    return _continued(code, recovery, facts)
+        return _refused(error, _identity(resolved, cycle_id))
+    facts = _discovered_identity(manifest.context)
+    written = manifest if manifest.is_newly_written else None
+    try:
+        recovery = _recover(session, resolved.entity_id, cycle_id)
+    except RecoveryRefused as refused:
+        return _recovery_refused(refused, facts, written)
+    return _continued(code, recovery, facts, written)
 
 
 def _resume_bootstrap(
     session: ArchitectureSession,
-    project_id: str,
-    cycle_id: str,
-    outcome: CycleOutcome,
+    found: CycleDiscovery,
     facts: tuple[Fact, ...],
 ) -> ArchitectureCommandResult:
     """`resume` before state D: spec 13.7-1 and 13.7-1a."""
-    if outcome is CycleOutcome.A:
+    if found.outcome is CycleOutcome.A:
         return ArchitectureCommandResult(
             TsaResultCode.CYCLE_NOT_FOUND,
             "No Architecture Document exists for this cycle: the deterministic "
@@ -703,7 +789,7 @@ def _resume_bootstrap(
             "creates a cycle.",
             facts=facts,
         )
-    if outcome is CycleOutcome.B:
+    if found.outcome is CycleOutcome.B:
         return ArchitectureCommandResult(
             TsaResultCode.MANIFEST_INPUTS_REQUIRED,
             "The cycle has no Input Manifest yet, and `resume` carries no "
@@ -711,10 +797,11 @@ def _resume_bootstrap(
             "--cycle and its inputs. Nothing was written.",
             facts=facts,
         )
+    context = found.context
     completed = ensure_bootstrap_architecture(
         session.workspace,
-        project_id,
-        cycle_id,
+        context.project_entity_id,
+        context.cycle_id,
         create_if_absent=False,
         clock=session.clock,
     )
@@ -722,10 +809,10 @@ def _resume_bootstrap(
         return _bootstrap_refusal(completed, facts)
     return ArchitectureCommandResult(
         TsaResultCode.ARCHITECTURE_CYCLE_RESUMED,
-        f"The empty Architecture shell {completed.context.architecture_document_id!r}"
-        f" was completed in place with its bootstrap carrier; the cycle is now "
-        f"in durable state {completed.outcome}. No model was called. Supply its "
-        "inputs with `sdlc project architecture start` and the same --cycle.",
+        f"Architecture Document {context.architecture_document_id!r} was "
+        "discovered as an empty shell; after the bootstrap gate and its "
+        f"read-back the cycle is in durable state {completed.outcome}. No model "
+        "was called.",
         facts=(*facts, ("state", str(completed.outcome))),
     )
 
@@ -733,23 +820,31 @@ def _resume_bootstrap(
 def resume_cycle(
     session: ArchitectureSession, project: str, cycle_id: str
 ) -> ArchitectureCommandResult:
-    """`resume`: classify durable state, then the bootstrap or normal gate."""
-    facts = _target(project, cycle_id)
+    """`resume`: classify durable state, then the bootstrap or normal gate.
+
+    `resume` carries no inputs and writes nothing of its own before I10, so
+    the progress a refusal reports is I10's own.
+    """
+    resolved: _Project | None = None
+    facts = _identity(None, cycle_id)
     try:
-        project_id = _resolve_project(session, project)
-        found = discover_cycle(session.workspace, project_id, cycle_id)
+        resolved = _resolve_project(session, project)
+        facts = _identity(resolved, cycle_id)
+        found = discover_cycle(session.workspace, resolved.entity_id, cycle_id)
+        facts = _discovered_identity(found.context)
         if found.outcome is CycleOutcome.E:
             return _bootstrap_refusal(found, facts)
         if found.outcome is not CycleOutcome.D:
-            return _resume_bootstrap(
-                session, project_id, cycle_id, found.outcome, facts
-            )
+            return _resume_bootstrap(session, found, facts)
         code = _first_case_code(
-            Command.RESUME, _read_state(session, project_id, cycle_id)
+            Command.RESUME, _read_state(session, resolved.entity_id, cycle_id)
         )
-        recovery = _recover(session, project_id, cycle_id)
     except REFUSALS as error:
         return _refused(error, facts)
+    try:
+        recovery = _recover(session, resolved.entity_id, cycle_id)
+    except RecoveryRefused as refused:
+        return _recovery_refused(refused, facts)
     return _continued(code, recovery, facts)
 
 
@@ -816,9 +911,8 @@ def _reworked(
     if recovery.boundary in STOPPED_SHORT:
         return ArchitectureCommandResult(
             TsaResultCode.ARCHITECTURE_CYCLE_RESUMED,
-            f"{durable} Iteration {recovery.iteration} stopped before its Human "
-            "Decision boundary: durable state changed under this command. Run "
-            "`sdlc project architecture resume` to continue from durable state.",
+            f"{durable} It was recorded before downstream recovery stopped. "
+            f"{BOUNDARY_NOT_REACHED} {RESUME_HINT}",
             facts=continued,
         )
     return ArchitectureCommandResult(
@@ -838,15 +932,15 @@ def rework_cycle(
     reason: str | None,
 ) -> ArchitectureCommandResult:
     """`rework` against the exact target triple; I11 then hands over to I10."""
-    facts = _target(project, cycle_id)
+    resolved: _Project | None = None
     try:
-        project_id = _resolve_project(session, project)
+        resolved = _resolve_project(session, project)
         result = record_rework(
             session.workspace,
             session.evidence,
             session.architect_model,
             session.reviewer_model,
-            project_id,
+            resolved.entity_id,
             cycle_id,
             iteration,
             review_result_document_id,
@@ -854,8 +948,8 @@ def rework_cycle(
             clock=session.clock,
         )
     except REFUSALS as error:
-        return _refused(error, facts)
-    return _decided(result, facts)
+        return _refused(error, _identity(resolved, cycle_id))
+    return _decided(result, _identity(resolved, cycle_id))
 
 
 def approve_cycle(
@@ -871,13 +965,13 @@ def approve_cycle(
     `--confirm` is checked by argparse before this runs; no model runtime is
     handed to I11, so none is reachable.
     """
-    facts = _target(project, cycle_id)
+    resolved: _Project | None = None
     try:
-        project_id = _resolve_project(session, project)
+        resolved = _resolve_project(session, project)
         result = record_approve(
             session.workspace,
             session.evidence,
-            project_id,
+            resolved.entity_id,
             cycle_id,
             iteration,
             review_result_document_id,
@@ -885,13 +979,38 @@ def approve_cycle(
             clock=session.clock,
         )
     except REFUSALS as error:
-        return _refused(error, facts)
-    return _decided(result, facts)
+        return _refused(error, _identity(resolved, cycle_id))
+    return _decided(result, _identity(resolved, cycle_id))
 
 
 # ---------------------------------------------------------------------------
 # inspect: read-only, unguarded, model-free (spec 13.5)
 # ---------------------------------------------------------------------------
+
+
+def _inputs_record(
+    status: InputCurrentness, report: InputCurrentnessReport | None
+) -> dict[str, object]:
+    """Per-input currentness (spec 13.5); the same keys whatever is known."""
+    if report is None:
+        return {
+            "status": status.value,
+            "requirements": [],
+            "ux": None,
+            "selection_refusal": None,
+        }
+    ux: dict[str, object] = {"kind": report.ux.kind, "current": report.ux.is_current}
+    if report.ux.document_id is not None:
+        ux["document_id"] = report.ux.document_id
+    return {
+        "status": status.value,
+        "requirements": [
+            {"requirement_id": item.requirement_id, "current": item.is_current}
+            for item in report.requirements
+        ],
+        "ux": ux,
+        "selection_refusal": report.selection_refusal,
+    }
 
 
 def _inspected(
@@ -902,6 +1021,7 @@ def _inspected(
     state: str,
     case: str | None,
     inputs: InputCurrentness,
+    report: InputCurrentnessReport | None = None,
     cycle: tuple[Fact, ...] = (),
     details: tuple[str, ...] = (),
 ) -> ArchitectureCommandResult:
@@ -921,57 +1041,24 @@ def _inspected(
             *facts,
             ("state", state),
             ("case", case),
-            ("inputs", inputs.value),
+            ("inputs", _inputs_record(inputs, report)),
             *(cycle or unknown),
         ),
     )
 
 
-def _inspect_refusal(
-    session: ArchitectureSession,
-    project_id: str,
-    cycle_id: str,
-    refused: ArchitectRefused,
-    facts: tuple[Fact, ...],
+def _not_established(
+    refused: ArchitectRefused, facts: tuple[Fact, ...]
 ) -> ArchitectureCommandResult:
-    """Spec 13.6 `inspect` for a state D whose normal gate refused."""
+    """A state D whose lifecycle or currentness could not be established."""
     code = TsaResultCode(str(refused.code))
-    found = f"{code}: {refused}"
     if code in INSPECT_PASSES_THROUGH:
         return _refused(refused, facts)
-    if code is TsaResultCode.INPUTS_STALE:
-        return _inspected(
-            TsaResultCode.INSPECT_STALE,
-            "At least one bound input drifted since the Input Manifest was "
-            "accepted. Any durable decision of this cycle is historical, not a "
-            f"current approval. {refused}",
-            facts,
-            state=CycleOutcome.D,
-            case=None,
-            inputs=InputCurrentness.STALE,
-            details=tuple(refused.details),
-        )
-    if code in INSPECTED_AS_DERIVED:
-        try:
-            read_input_currentness(
-                session.workspace, session.evidence, project_id, cycle_id
-            )
-        except ArchitectRefused as again:
-            return _inspect_refusal(session, project_id, cycle_id, again, facts)
-        return _inspected(
-            TsaResultCode.INSPECT_CURRENT,
-            f"The lifecycle state is derived and every bound input is current; "
-            f"the cycle cannot advance as it is. {found}",
-            facts,
-            state=CycleOutcome.D,
-            case=None,
-            inputs=InputCurrentness.CURRENT,
-            details=tuple(refused.details),
-        )
     return _inspected(
         TsaResultCode.INSPECT_INCOMPLETE,
-        f"The cycle is in durable state D, but its state is incomplete, "
-        f"malformed or diverged, so currentness was not established. {found}",
+        "The cycle is in durable state D, but its state is incomplete, "
+        f"malformed or diverged, so currentness was not established. {code}: "
+        f"{refused}",
         facts,
         state=CycleOutcome.D,
         case=None,
@@ -980,16 +1067,67 @@ def _inspect_refusal(
     )
 
 
+def _derived(
+    session: ArchitectureSession,
+    project_id: str,
+    cycle_id: str,
+    facts: tuple[Fact, ...],
+    *,
+    current_message: str,
+    stale_message: str,
+    case: str | None = None,
+    cycle: tuple[Fact, ...] = (),
+    details: tuple[str, ...] = (),
+    gate_found_stale: bool = False,
+) -> ArchitectureCommandResult:
+    """A derived state D: per-input currentness, read now, decides the class.
+
+    Drift the gate already observed stays `INSPECT_STALE` whatever a later read
+    shows; otherwise any stale input is `INSPECT_STALE` and all-current is
+    `INSPECT_CURRENT` (spec 13.6).
+    """
+    try:
+        report = read_input_currentness(
+            session.workspace, session.evidence, project_id, cycle_id
+        )
+    except ArchitectRefused as refused:
+        return _not_established(refused, facts)
+    if report.is_current and not gate_found_stale:
+        return _inspected(
+            TsaResultCode.INSPECT_CURRENT,
+            current_message,
+            facts,
+            state=CycleOutcome.D,
+            case=case,
+            inputs=InputCurrentness.CURRENT,
+            report=report,
+            cycle=cycle,
+            details=details,
+        )
+    return _inspected(
+        TsaResultCode.INSPECT_STALE,
+        stale_message,
+        facts,
+        state=CycleOutcome.D,
+        case=None,
+        inputs=InputCurrentness.STALE,
+        report=report,
+        details=details,
+    )
+
+
 def inspect_cycle(
     session: ArchitectureSession, project: str, cycle_id: str
 ) -> ArchitectureCommandResult:
     """Derive lifecycle state and freshness from durable artifacts alone."""
-    facts = _target(project, cycle_id)
+    resolved: _Project | None = None
     try:
-        project_id = _resolve_project(session, project)
-        found = discover_cycle(session.workspace, project_id, cycle_id)
+        resolved = _resolve_project(session, project)
+        found = discover_cycle(session.workspace, resolved.entity_id, cycle_id)
     except REFUSALS as error:
-        return _refused(error, facts)
+        return _refused(error, _identity(resolved, cycle_id))
+    facts = _discovered_identity(found.context)
+    project_id = found.context.project_entity_id
     if found.outcome is CycleOutcome.A:
         return ArchitectureCommandResult(
             TsaResultCode.CYCLE_NOT_FOUND,
@@ -1013,16 +1151,44 @@ def inspect_cycle(
     try:
         state = _read_state(session, project_id, cycle_id)
     except ArchitectRefused as refused:
-        return _inspect_refusal(session, project_id, cycle_id, refused, facts)
+        code = TsaResultCode(str(refused.code))
+        if code is TsaResultCode.INPUTS_STALE:
+            return _derived(
+                session,
+                project_id,
+                cycle_id,
+                facts,
+                current_message="",
+                stale_message=f"{STALE_MESSAGE} {refused}",
+                details=tuple(refused.details),
+                gate_found_stale=True,
+            )
+        if code in INSPECTED_AS_DERIVED:
+            return _derived(
+                session,
+                project_id,
+                cycle_id,
+                facts,
+                current_message=(
+                    "The lifecycle state is derived and every bound input is "
+                    f"current; the cycle cannot advance as it is. {code}: {refused}"
+                ),
+                stale_message=f"{STALE_MESSAGE} {code}: {refused}",
+                details=tuple(refused.details),
+            )
+        return _not_established(refused, facts)
     case = classify_recovery_case(state)
-    return _inspected(
-        TsaResultCode.INSPECT_CURRENT,
-        f"The cycle is in durable state D, case {case}, and every bound input "
-        "is current.",
+    return _derived(
+        session,
+        project_id,
+        cycle_id,
         facts,
-        state=CycleOutcome.D,
+        current_message=(
+            f"The cycle is in durable state D, case {case}, and every bound input "
+            "is current."
+        ),
+        stale_message=STALE_MESSAGE,
         case=case,
-        inputs=InputCurrentness.CURRENT,
         cycle=_state_facts(state),
     )
 
@@ -1046,6 +1212,27 @@ def _human_value(value: object) -> str:
     return f"{document_id} ({parts})" if parts else str(document_id)
 
 
+def _input_lines(inputs: Mapping[str, object]) -> list[str]:
+    """`Inputs:` then one line per Requirement and one for the UX input."""
+    lines = [f"{FACT_LABELS['inputs']}: {inputs['status']}"]
+    for item in inputs["requirements"]:
+        word = CURRENTNESS_WORDS[item["current"]]
+        lines.append(f"- Requirement {item['requirement_id']}: {word}")
+    ux = inputs["ux"]
+    if ux is not None:
+        where = f" {ux['document_id']}" if "document_id" in ux else ""
+        lines.append(f"- UX {ux['kind']}{where}: {CURRENTNESS_WORDS[ux['current']]}")
+    if inputs["selection_refusal"] is not None:
+        lines.append(f"- Selection as a whole refused: {inputs['selection_refusal']}")
+    return lines
+
+
+def _fact_lines(key: str, value: object) -> list[str]:
+    if key == "inputs":
+        return _input_lines(value)
+    return [f"{FACT_LABELS[key]}: {_human_value(value)}"]
+
+
 def render_architecture_result(
     result: ArchitectureCommandResult, stream: TextIO, *, as_json: bool = False
 ) -> None:
@@ -1057,9 +1244,10 @@ def render_architecture_result(
         return
     print(result.message, file=stream)
     lines = [
-        f"{FACT_LABELS[key]}: {_human_value(value)}"
+        line
         for key, value in result.facts
         if value is not None
+        for line in _fact_lines(key, value)
     ]
     if lines:
         print(file=stream)

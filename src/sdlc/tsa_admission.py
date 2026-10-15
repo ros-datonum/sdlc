@@ -754,6 +754,24 @@ def admit_inputs(
     )
 
 
+def admit_requirements(
+    evidence: RequirementEvidenceWorkspace,
+    context: BootstrapContext,
+    selection: tuple[str, ...],
+) -> tuple[dict[str, object], ...]:
+    """The Requirement half of `admit_inputs`, unchanged. Read-only.
+
+    For a read that attributes currentness to each selected Requirement
+    (`inspect`, through the I10 read side); the rows are the same rows.
+    """
+    return _admit_requirements(evidence, context, selection)
+
+
+def admit_ux(workspace: CycleWorkspace, ux: UxInput) -> dict[str, object]:
+    """The UX half of `admit_inputs`, unchanged. `NOT_APPLICABLE` reads nothing."""
+    return _admit_ux(workspace, ux)
+
+
 def _readmit_unchanged(
     start: _Start, context: BootstrapContext, admitted: AdmittedInputs
 ) -> None:

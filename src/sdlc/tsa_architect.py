@@ -76,6 +76,8 @@ from sdlc.tsa_admission import (
     UxApplicable,
     UxNotApplicable,
     admit_inputs,
+    admit_requirements,
+    admit_ux,
 )
 from sdlc.tsa_architect_prompt import (
     ArchitectInputTooLarge,
@@ -155,9 +157,12 @@ __all__ = [
     "ArchitectStageOutcome",
     "ArchitectStageResult",
     "CycleState",
+    "InputCurrentnessReport",
     "ProcessCheck",
+    "RequirementCurrentness",
     "ReviewTarget",
     "SlotState",
+    "UxCurrentness",
     "VerifiedDecision",
     "build_process_result",
     "decode_one_json_object",
@@ -1286,21 +1291,35 @@ def _readmit(
         ) from refused
 
 
+def _ux_is_current(
+    recorded_ux: dict[str, object],
+    fresh_ux: dict[str, object],
+    fresh_digest: str | None,
+) -> bool:
+    """Contract 4.4, by the recorded branch only.
+
+    `APPLICABLE` compares the Document id, scope and content digest read now;
+    `NOT_APPLICABLE` compares its recorded binding with `fresh_digest`, the
+    requirement input digest of the current rows, and reads no Document.
+    """
+    if recorded_ux["kind"] == UX_APPLICABLE:
+        recorded = {key: recorded_ux[key] for key in fresh_ux}
+        return json.loads(canonical_json(fresh_ux)) == recorded
+    return recorded_ux["requirement_input_digest"] == fresh_digest
+
+
 def _require_ux_current(
     recorded_ux: dict[str, object], fresh_ux: dict[str, object], fresh_digest: str
 ) -> None:
     """Contract 4.4, by the recorded branch only."""
+    if _ux_is_current(recorded_ux, fresh_ux, fresh_digest):
+        return
     if recorded_ux["kind"] == UX_APPLICABLE:
-        recorded = {key: recorded_ux[key] for key in fresh_ux}
-        if json.loads(canonical_json(fresh_ux)) != recorded:
-            raise _stale(
-                "The UX Document no longer matches its accepted digest and scope.",
-                (str(recorded_ux["document_id"]),),
-            )
-    elif recorded_ux["requirement_input_digest"] != fresh_digest:
         raise _stale(
-            "The NOT_APPLICABLE UX decision no longer binds the current inputs."
+            "The UX Document no longer matches its accepted digest and scope.",
+            (str(recorded_ux["document_id"]),),
         )
+    raise _stale("The NOT_APPLICABLE UX decision no longer binds the current inputs.")
 
 
 # ---------------------------------------------------------------------------
@@ -1831,24 +1850,150 @@ def read_cycle_state(
     )
 
 
+@dataclass(frozen=True)
+class RequirementCurrentness:
+    """One selected Requirement, as contract 4.4 reads it now.
+
+    `is_current` is True when its fresh admission row digests as the Manifest's
+    row, and False when it does not or the Requirement is no longer admissible.
+    """
+
+    requirement_id: str
+    is_current: bool
+
+
+@dataclass(frozen=True)
+class UxCurrentness:
+    """The UX input on its recorded branch; `document_id` only for APPLICABLE.
+
+    A `NOT_APPLICABLE` decision binds the requirement input digest, so it is
+    current only while every selected Requirement admits and digests as
+    recorded (contract 4.4, row 50).
+    """
+
+    kind: str
+    document_id: str | None
+    is_current: bool
+
+
+@dataclass(frozen=True)
+class InputCurrentnessReport:
+    """Per-input currentness of one cycle's accepted inputs (spec 13.5).
+
+    `selection_refusal` is the admission code that refused the selection as a
+    whole, which can hold even when each Requirement admits on its own.
+    """
+
+    requirements: tuple[RequirementCurrentness, ...]
+    ux: UxCurrentness
+    selection_refusal: str | None
+
+    @property
+    def is_current(self) -> bool:
+        return (
+            self.selection_refusal is None
+            and self.ux.is_current
+            and all(item.is_current for item in self.requirements)
+        )
+
+
+def _admitted[Admitted](admit: Callable[[], Admitted]) -> Admitted | None:
+    """One admission, or None when it refused: drift. A read failure is raised."""
+    try:
+        return admit()
+    except AdmissionRefused as refused:
+        if refused.code is CycleResultCode.FIBERY_READ_FAILED:
+            raise ArchitectRefused(
+                refused.code, str(refused), refused.details
+            ) from refused
+        return None
+
+
+def _fresh_rows(
+    stage: _Stage, context: BootstrapContext, selection: tuple[str, ...]
+) -> tuple[tuple[dict[str, object] | None, ...], str | None]:
+    """Fresh admission rows in Manifest order, and any whole-selection refusal.
+
+    The whole selection is admitted first, exactly as the gate admits it. Only
+    when that refuses is each Requirement admitted on its own, so the refusal
+    is attributed to the Requirements it concerns.
+    """
+    try:
+        rows = admit_requirements(stage.evidence, context, selection)
+    except AdmissionRefused as refused:
+        if refused.code is CycleResultCode.FIBERY_READ_FAILED:
+            raise ArchitectRefused(
+                refused.code, str(refused), refused.details
+            ) from refused
+        single = tuple(
+            _admitted(
+                lambda requirement_id=requirement_id: admit_requirements(
+                    stage.evidence, context, (requirement_id,)
+                )
+            )
+            for requirement_id in selection
+        )
+        return tuple(None if row is None else row[0] for row in single), str(
+            refused.code
+        )
+    return rows, None
+
+
+def _ux_currentness(
+    stage: _Stage,
+    recorded_ux: dict[str, object],
+    fresh_rows: tuple[dict[str, object] | None, ...],
+) -> UxCurrentness:
+    """Contract 4.4 by the recorded branch; `NOT_APPLICABLE` reads no Document."""
+    if recorded_ux["kind"] == UX_APPLICABLE:
+        fresh_ux = _admitted(
+            lambda: admit_ux(stage.workspace, _recorded_ux_input(recorded_ux))
+        )
+        is_current = fresh_ux is not None and _ux_is_current(
+            recorded_ux, fresh_ux, None
+        )
+        return UxCurrentness(UX_APPLICABLE, str(recorded_ux["document_id"]), is_current)
+    if any(row is None for row in fresh_rows):
+        return UxCurrentness(str(recorded_ux["kind"]), None, False)
+    fresh_digest = requirement_input_digest(list(fresh_rows))
+    return UxCurrentness(
+        str(recorded_ux["kind"]),
+        None,
+        _ux_is_current(recorded_ux, {}, fresh_digest),
+    )
+
+
 def read_input_currentness(
     workspace: CycleWorkspace,
     evidence: RequirementEvidenceWorkspace,
     project_id: str,
     raw_cycle_id: object,
-) -> None:
-    """Discovery, the accepted Manifest and input currentness only. Read-only.
+) -> InputCurrentnessReport:
+    """Per-input currentness of the accepted inputs (contract 4.4). Read-only.
 
-    For `inspect` (I12), where the full gate refused on a slot that the
-    command table still reports as a derived state (a duplicate artifact, an
-    empty Decision shell), so currentness must be established on its own. The
-    same checks as the gate, in the same order: I04 discovery, the Manifest,
-    then contract 4.4 by the recorded UX branch. Raises `ArchitectRefused`,
-    `INPUTS_STALE` on drift.
+    For `inspect` (I12): I04 discovery and the Manifest, as the gate reads
+    them, then I05 admission of the recorded selection and UX branch, compared
+    row by row through the I01 requirement input digest and by the same UX
+    rule the gate applies. Raises `ArchitectRefused` only when a read fails or
+    the cycle has no accepted Manifest; drift is reported, not raised.
     """
     stage = _Stage(workspace, evidence, project_id, raw_cycle_id)
     context = _discover(stage)
-    _require_inputs_current(stage, context, _read_manifest(workspace, context))
+    body = _read_manifest(workspace, context).body["manifest_body"]
+    recorded = body["requirements"]
+    selection = tuple(str(row["requirement_id"]) for row in recorded)
+    fresh, selection_refusal = _fresh_rows(stage, context, selection)
+    requirements = tuple(
+        RequirementCurrentness(
+            str(row["requirement_id"]),
+            now is not None
+            and requirement_input_digest([row]) == requirement_input_digest([now]),
+        )
+        for row, now in zip(recorded, fresh, strict=True)
+    )
+    return InputCurrentnessReport(
+        requirements, _ux_currentness(stage, body["ux"], fresh), selection_refusal
+    )
 
 
 def read_bound_sources(
