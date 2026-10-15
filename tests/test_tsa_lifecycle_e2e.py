@@ -55,6 +55,7 @@ from sdlc.fibery_workspace import FiberyError, ProjectRecord
 from sdlc.model_runtime import ModelResponse, ModelRuntimeError
 from sdlc.model_runtime_config import TSA_ARCHITECT_ROLE, TSA_REVIEWER_ROLE
 from sdlc.normative_tree import document_fingerprint
+from sdlc.tsa_architecture import render_architecture
 from sdlc.tsa_artifacts import (
     extract_architecture_envelope,
     ux_evidence_digest,
@@ -281,11 +282,17 @@ class Lifecycle:
     clock: Clock
     capsys: pytest.CaptureFixture[str]
     journal: list = field(default_factory=list)
+    roles_built: list[str] = field(default_factory=list)
 
     def __call__(self, *argv: str) -> Run:
         exit_code = cli.main(["project", "architecture", *argv])
         captured = self.capsys.readouterr()
         return Run(exit_code, captured.out, captured.err)
+
+    def runtime(self, selection) -> RoleRuntime:
+        """The model factory: a role is built only when the engine resolves it."""
+        self.roles_built.append(selection.role)
+        return RoleRuntime(self.models, selection.role)
 
     def workspaces(self, settings):
         return (
@@ -333,11 +340,7 @@ def lifecycle(monkeypatch, capsys):
             monkeypatch.setenv(name, value)
         monkeypatch.setattr(cli, "_architecture_workspaces", cycle.workspaces)
         monkeypatch.setattr(cli, "_tsa_clock", clock)
-        monkeypatch.setattr(
-            cli,
-            "LocalCliModelRuntime",
-            lambda selection: RoleRuntime(cycle.models, selection.role),
-        )
+        monkeypatch.setattr(cli, "LocalCliModelRuntime", cycle.runtime)
         built.append(cycle)
         return cycle
 
@@ -447,13 +450,14 @@ def assert_result(run: Run, code: str, exit_code: int) -> None:
 
 
 def ux_reads(cycle: Lifecycle) -> list:
+    """Every engine operation that named the UX Document or its secret."""
+    targets = {UX_DOCUMENT_ID, cycle.scene.tsa.documents[UX_DOCUMENT_ID].secret}
     return [
         entry
         for entry in cycle.journal
-        if entry[0] == "tsa"
-        and entry[1] == "read_document_content"
-        and entry[2]
-        and entry[2][0] == cycle.scene.tsa.documents[UX_DOCUMENT_ID].secret
+        if any(
+            argument in targets for argument in entry[2] if isinstance(argument, str)
+        )
     ]
 
 
@@ -520,8 +524,10 @@ def test_row_1_start_inspect_approve_resume_and_every_retry(lifecycle):
     # C — approve: one immutable APPROVE, read back, model-free.
     mark = cycle.mark()
     reads_before = cycle.clock.reads
+    roles_before = list(cycle.roles_built)
     approve = cycle(*decision_argv("approve"))
     assert_result(approve, "ARCHITECTURE_APPROVED", 0)
+    assert cycle.roles_built == roles_before, "no TSA role is even constructed"
     assert [name for name, _ in cycle.mutations_since(mark)] == [CREATE, WRITE]
     assert cycle.models.counts == (1, 1), "APPROVE invokes no model"
     assert cycle.clock.reads == reads_before + 1, "recorded_at read once"
@@ -589,6 +595,24 @@ def lineage_is_exact(scene, iteration: int) -> None:
     assert [row["requirement_id"] for row in requirements] == [REQUIREMENT_ID]
 
 
+#: The closed `tsa.human_decision` body of I01 (4.6.5), without the optional
+#: `reason` no command here supplies. No field names an approver.
+DECISION_BODY_KEYS = frozenset(
+    {
+        "accepted_dispositions",
+        "architecture_document_id",
+        "architecture_fingerprint",
+        "decision",
+        "manifest_digest",
+        "process_result",
+        "recorded_at",
+        "review_result",
+        "target",
+        "ux_evidence_digest",
+    }
+)
+
+
 def approve_binds_the_exact_tuple(scene, iteration: int = 1) -> dict:
     decision = artifact(scene, decision_id(iteration))
     manifest = artifact(scene, MANIFEST_ID)
@@ -614,7 +638,7 @@ def approve_binds_the_exact_tuple(scene, iteration: int = 1) -> dict:
     assert body["ux_evidence_digest"] == ux_evidence_digest(
         manifest["body"]["manifest_body"]["ux"]
     )
-    assert not {"approver", "approved_by", "user", "identity"} & set(body)
+    assert set(body) == DECISION_BODY_KEYS, "the frozen schema; no approver"
     return decision
 
 
@@ -731,15 +755,20 @@ def test_rework_opens_n_plus_1_and_keeps_every_earlier_artifact(lifecycle):
     lineage_is_exact(scene, iteration=2)
     assert {process_id(2), review_id(2)} <= set(scene.tsa.documents)
     assert decision_id(2) not in scene.tsa.documents, "no automatic approval"
-    trace = [
-        name if name != TRACE_MODEL_CALL else "model"
-        for name, _ in scene.tsa.log
-        if name in TSA_MUTATIONS or name == TRACE_MODEL_CALL
-    ]
-    decision_write = trace.index(WRITE, trace.index(CREATE, 11))
-    assert trace.index("model", decision_write) > decision_write, (
-        "the REWORK is durable before any N+1 model call"
-    )
+    events = semantic_events(scene)
+    decision_written = events.index(f"write:{decision_id(1)}")
+    decision_read_back = events.index(f"read:{decision_id(1)}", decision_written)
+    models_before = [e for e in events[:decision_written] if e.startswith("model:")]
+    models_after = [e for e in events[decision_written:] if e.startswith("model:")]
+    assert models_before == [
+        f"model:{TSA_ARCHITECT_ROLE}",
+        f"model:{TSA_REVIEWER_ROLE}",
+    ], "iteration 1 only, before the REWORK"
+    assert models_after == models_before, "iteration 2 only after the REWORK"
+    first_after = events.index(models_after[0], decision_written)
+    assert events.index(f"create:{decision_id(1)}") < decision_written
+    assert decision_read_back < first_after, "durable and read back before N+1"
+    assert events.index(f"create:{process_id(2)}") > first_after
 
     approve = cycle(*decision_argv("approve", 2))
     assert_result(approve, "ARCHITECTURE_APPROVED", 0)
@@ -752,6 +781,46 @@ def test_rework_opens_n_plus_1_and_keeps_every_earlier_artifact(lifecycle):
     assert cycle.mutations_since(mark) == []
     assert cycle.models.counts == (2, 2) and cycle.clock.reads == reads_before
     assert process_id(3) not in scene.tsa.documents
+
+
+def semantic_events(scene) -> list[str]:
+    """Model calls and TSA operations, named by role or by Document id."""
+    by_secret = {
+        document.secret: document_id
+        for document_id, document in scene.tsa.documents.items()
+    }
+    events = []
+    for name, argument in scene.tsa.log:
+        if name == TRACE_MODEL_CALL:
+            events.append(f"model:{argument}")
+        elif name in (CREATE_ROOT, CREATE):
+            events.append(f"create:{argument}")
+        elif name == WRITE:
+            events.append(f"write:{by_secret[argument]}")
+        elif name == "read_document_content" and argument in by_secret:
+            events.append(f"read:{by_secret[argument]}")
+    return events
+
+
+def test_approve_after_rework_on_the_same_target_is_a_conflict(lifecycle):
+    cycle = lifecycle()
+    started(cycle)
+    assert_result(cycle(*decision_argv("rework")), "ARCHITECTURE_REWORK_RECORDED", 0)
+    stored = cycle.scene.tsa.content_of(decision_id(1))
+    history = {
+        d: cycle.scene.tsa.content_of(d)
+        for d in (process_id(1), review_id(1), process_id(2), review_id(2))
+    }
+    counts = cycle.models.counts
+    mark = cycle.mark()
+
+    run = cycle(*decision_argv("approve", 1))
+
+    assert_result(run, "DECISION_CONFLICT", 1)
+    assert cycle.mutations_since(mark) == [] and cycle.models.counts == counts
+    assert cycle.scene.tsa.content_of(decision_id(1)) == stored, "no rewrite"
+    assert artifact(cycle.scene, decision_id(1))["body"]["decision"] == "REWORK"
+    assert {d: cycle.scene.tsa.content_of(d) for d in history} == history
 
 
 def test_rework_after_approve_is_a_conflict_and_the_cycle_stays_closed(lifecycle):
@@ -828,7 +897,11 @@ def test_an_applied_output_without_a_review_resumes_with_the_reviewer(lifecycle)
     first = cycle(*start_argv())
     assert_result(first, "MODEL_RUNTIME_FAILED", 1)
     assert "This start wrote the cycle's accepted Input Manifest" in first.err
+    assert f"Process Result '{process_id(1)}' of iteration 1 was persisted" in (
+        first.err
+    ), "the durable Process is stated positively"
     assert "was applied to the Architecture Document" in first.err
+    assert "othing was persisted" not in first.err
 
     assert_result(cycle(*RESUME), "ARCHITECTURE_CYCLE_RESUMED", 0)
     assert cycle.models.counts == (1, 2)
@@ -840,12 +913,28 @@ def test_an_empty_review_shell_is_completed_in_place_by_resume(lifecycle):
     cycle.scene.tsa.before(WRITE, 5, fail_with("connection reset"))
 
     first = cycle(*start_argv())
-    assert first.exit_code == 1
+    assert_result(first, "FIBERY_WRITE_FAILED", 1)
+    assert (
+        f"Review Result '{review_id(1)}' of iteration 1"
+        not in first.err.split("The Human Decision")[0]
+    ), "no Review is claimed before it was written"
     assert cycle.scene.tsa.content_of(review_id(1)) == ""
+    assert cycle.models.counts == (1, 1)
 
-    assert_result(cycle(*RESUME), "ARCHITECTURE_CYCLE_RESUMED", 0)
+    resumed = cycle(*RESUME)
+
+    assert_result(resumed, "ARCHITECTURE_CYCLE_RESUMED", 0)
+    assert "advanced to the Human Decision boundary of iteration 1" in resumed.out
+    assert f"Review Result: {review_id(1)} (digest " in resumed.out
+    assert "Reviewer stage: REVIEW_RECORDED, model invoked" in resumed.out
     assert creates(cycle, review_id(1)) == 1, "the shell, never a second Review"
+    assert cycle.models.counts == (1, 2), "one Reviewer call, no Architect"
     lineage_is_exact(cycle.scene, iteration=1)
+    record = json_of(cycle(*INSPECT, "--json"))
+    assert (record["case"], record["review_result"]["document_id"]) == (
+        "REVIEW_RECORDED",
+        review_id(1),
+    )
 
 
 def test_a_valid_review_without_a_decision_is_re_presented_without_a_model(
@@ -911,7 +1000,16 @@ def test_a_lost_response_during_start_is_rediscovered_never_redone(window, lifec
     assert_result(run, "ARCHITECTURE_CYCLE_STARTED", 0)
     for document_id in (ARCHITECTURE_ID, MANIFEST_ID, process_id(1), review_id(1)):
         assert creates(cycle, document_id) == 1, f"{document_id} created twice"
+    writes = [event for event in semantic_events(cycle.scene) if event[:6] == "write:"]
+    assert writes == [
+        f"write:{ARCHITECTURE_ID}",
+        f"write:{MANIFEST_ID}",
+        f"write:{process_id(1)}",
+        f"write:{ARCHITECTURE_ID}",
+        f"write:{review_id(1)}",
+    ], "every body written once: a landed write is confirmed, never redone"
     assert cycle.models.counts == (1, 1), "no model call was retried"
+    assert "othing was" not in run.out and "rolled back" not in run.out
     lineage_is_exact(cycle.scene, iteration=1)
 
 
@@ -922,8 +1020,14 @@ def test_c_a_persisted_process_survives_a_later_failure_truthfully(lifecycle):
     run = cycle(*start_argv())
 
     assert_result(run, "FIBERY_WRITE_FAILED", 1)
-    assert "Nothing was persisted" not in run.err
+    assert "This start wrote the cycle's accepted Input Manifest" in run.err
+    assert "the Architecture still holds the recorded input" in run.err, (
+        "I07's own mutation-aware diagnostic is kept"
+    )
+    assert "The Human Decision boundary was not reached." in run.err
+    assert "othing was persisted" not in run.err
     artifact(cycle.scene, process_id(1))
+    assert cycle.models.counts == (1, 0)
 
 
 def test_g_a_landed_decision_create_is_an_unrecoverable_shell(lifecycle):
@@ -976,15 +1080,30 @@ def edit_architecture(scene) -> None:
     )
 
 
-def replace_process(scene) -> None:
+def process_of_another_manifest(scene) -> None:
+    """A valid Process sealed under another Manifest: lineage invariant 2."""
     scene.tsa.set_content(process_id(1), other_process_carrier())
+
+
+def review_binds_a_replaced_process(scene) -> None:
+    """P2 for the same Manifest, cycle, iteration and output: invariant 3 only."""
+    resealed_process(scene)
 
 
 STALENESS = {
     "A-requirement-after-freeze": ((), root_edited_after_review, "INPUTS_STALE"),
     "B-applicable-ux-edited": (APPLICABLE_ARGV, edit_ux, "INPUTS_STALE"),
     "D-architecture-after-review": ((), edit_architecture, "ARCHITECTURE_DIVERGED"),
-    "E-process-binding": ((), replace_process, "ARTIFACT_MALFORMED"),
+    "E-review-process-binding": (
+        (),
+        review_binds_a_replaced_process,
+        ("ARTIFACT_MALFORMED"),
+    ),
+    "E0-process-of-another-manifest": (
+        (),
+        process_of_another_manifest,
+        ("ARTIFACT_MALFORMED"),
+    ),
 }
 
 
@@ -1225,6 +1344,109 @@ def test_no_output_carries_a_secret_or_document_content(lifecycle):
     assert ENVIRONMENT[ENV_TOKEN] not in text
     assert not [secret for secret in secrets if secret in text]
     assert "One Requirement about model execution guards." not in text
-    assert UX_CONTENT.splitlines()[-1] not in text
     for run in outputs:
         assert run.exit_code == 0 and run.err == ""
+
+
+# --------------------------------------------------------------------------
+# M. The Review/Process binding alone (lineage invariant 3)
+# --------------------------------------------------------------------------
+
+
+def test_a_review_bound_to_a_replaced_process_is_refused_for_that_reason(
+    lifecycle,
+):
+    """P2 is valid on its own and for the cycle; only R1 -> P1 is broken."""
+    cycle = lifecycle()
+    scene = cycle.scene
+    started(cycle)
+    first = artifact(scene, process_id(1))
+    review = artifact(scene, review_id(1))
+    manifest = artifact(scene, MANIFEST_ID)
+    envelope = extract_architecture_envelope(scene.tsa.content_of(ARCHITECTURE_ID))
+
+    resealed_process(scene)
+    second = artifact(scene, process_id(1))
+
+    assert second["artifact_digest"] != first["artifact_digest"]
+    assert second["iteration"] == first["iteration"] == 1
+    assert (second["cycle_id"], second["project_entity_id"]) == (CYCLE, PROJECT_ID)
+    assert second["body"]["manifest_digest"] == manifest["body"]["manifest_digest"]
+    assert second["body"]["intended_output"] == first["body"]["intended_output"]
+    rendered = render_architecture(
+        second["body"]["intended_output"], manifest["body"]["manifest_body"]
+    )
+    assert rendered.content_fingerprint == envelope["body"]["content_fingerprint"]
+    assert review["body"]["process_result_digest"] == first["artifact_digest"]
+    before = {d: scene.tsa.content_of(d) for d in scene.tsa.documents}
+    mark = cycle.mark()
+
+    for argv in (
+        decision_argv("approve"),
+        decision_argv("rework"),
+        RESUME,
+        start_argv(),
+    ):
+        run = cycle(*argv)
+        assert_result(run, "ARTIFACT_MALFORMED", 1)
+        assert "process_result_digest does not name the supplied Process" in run.err
+    record = json_of(cycle(*INSPECT, "--json"))
+
+    assert record["code"] == "INSPECT_INCOMPLETE"
+    assert cycle.mutations_since(mark) == [] and cycle.models.counts == (1, 1)
+    after = {d: scene.tsa.content_of(d) for d in scene.tsa.documents}
+    assert after == before, "the historical Review is not repaired"
+
+
+# --------------------------------------------------------------------------
+# N. Project prose and UX content never reach a prompt they may not
+# --------------------------------------------------------------------------
+
+PROJECT_PROSE = "PROJECT_DESCRIPTION_NOT_NORMATIVE_5b1e9c"
+UX_SENTINEL = "UX_ONLY_SENTINEL_d41c07"
+
+
+def with_project_prose(scene) -> None:
+    """A Project-level context Document the engine can read, never authority."""
+    scene.tsa.seed_root(
+        "project-context-doc",
+        f"# SDLC project context\n\nThis Project ships safely. {PROJECT_PROSE}\n",
+        name="SDLC — Project context",
+    )
+
+
+def test_project_prose_never_reaches_the_reviewer_as_authority(lifecycle):
+    scene = base_scene()
+    with_project_prose(scene)
+    cycle = lifecycle(scene)
+
+    started(cycle)
+
+    architect, reviewer = cycle.models.calls
+    process = artifact(scene, process_id(1))
+    manifest = artifact(scene, MANIFEST_ID)
+    selected = scene.req.content[scene.root.secret]
+    assert any(line in reviewer.text for line in selected.splitlines() if line)
+    assert manifest["body"]["manifest_digest"] in reviewer.text
+    assert "A runtime gate in front of every model call." in reviewer.text
+    assert process["body"]["architect_response"]["risks"][0]["detail"] in (
+        reviewer.text
+    ), "the persisted Architect claims"
+    for call in (architect, reviewer):
+        assert PROJECT_PROSE not in call.text, f"Project prose reached {call.role}"
+        assert SECOND_ID not in call.text
+    for document_id in (ARCHITECTURE_ID, MANIFEST_ID, process_id(1), review_id(1)):
+        assert PROJECT_PROSE not in scene.tsa.content_of(document_id)
+
+
+@pytest.mark.parametrize("branch", ["not-applicable", "applicable"])
+def test_ux_content_reaches_the_prompts_only_when_applicable(branch, lifecycle):
+    scene = base_scene()
+    scene.tsa.set_content(UX_DOCUMENT_ID, f"# Checkout flow\n\n{UX_SENTINEL}\n")
+    cycle = lifecycle(scene)
+
+    started(cycle, *(APPLICABLE_ARGV if branch == "applicable" else ()))
+
+    for call in cycle.models.calls:
+        assert (UX_SENTINEL in call.text) is (branch == "applicable"), call.role
+    assert bool(ux_reads(cycle)) is (branch == "applicable")
