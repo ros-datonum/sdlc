@@ -254,14 +254,52 @@ def _utc_now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+#: The exact trailing no-write claims a gate refusal can end with, each with
+#: what stays true of it once this call has mutated something.
+NO_WRITE_CLAIMS = (
+    (" Nothing was written and no model was called.", ""),
+    (
+        " The whole selection is refused and nothing was written.",
+        " The whole selection is refused.",
+    ),
+    (" Nothing was written.", ""),
+)
+#: After the body write: what the call did, whatever the read-back says.
+BODY_WRITE_KEPT = (
+    "{outcome}; it is neither repeated nor rolled back, and no success is "
+    "reported because its read-back did not validate. "
+)
+
+
+def _message_after_mutation(message: str) -> str:
+    """A gate refusal without its own trailing no-write claim, which this call
+    can no longer make once it has created or written the Decision.
+
+    Only an exact known trailing sentence is changed; the gate's diagnosis,
+    code and details are kept as they are.
+    """
+    for claim, remains in NO_WRITE_CLAIMS:
+        if message.endswith(claim):
+            return f"{message[: -len(claim)]}{remains}"
+    return message
+
+
 @contextmanager
-def _shared(prefix: str = "") -> Iterator[None]:
-    """A refusal of the shared gate keeps its code and details."""
+def _shared(prefix: str = "", *, mutated: bool = False) -> Iterator[None]:
+    """A refusal of the shared gate keeps its code and details.
+
+    `prefix` says what this call already did; once it has mutated anything,
+    the gate's own "nothing was written" sentence is no longer true and is
+    dropped (`_message_after_mutation`).
+    """
     try:
         yield
     except ArchitectRefused as refused:
+        message = str(refused)
+        if mutated:
+            message = _message_after_mutation(message)
         raise DecisionRefused(
-            refused.code, f"{prefix}{refused}", refused.details
+            refused.code, f"{prefix}{message}", refused.details
         ) from refused
 
 
@@ -314,7 +352,7 @@ def _resolve(
     call already wrote. `reads_own_shell` is passed only after this call's own
     known create, so that empty shell is read instead of refused.
     """
-    with _shared(prefix):
+    with _shared(prefix, mutated=mutated):
         state = read_cycle_state(
             call.workspace,
             call.evidence,
@@ -884,7 +922,7 @@ def _write_decision_body(call: _Call, prepared: _Target, carrier: str) -> str:
     read-back's message.
     """
     document_id = prepared.decision_document_id
-    with _shared(SHELL_KEPT.format(document_id=document_id)):
+    with _shared(SHELL_KEPT.format(document_id=document_id), mutated=True):
         shell = resolve_child_placement(call.workspace, prepared.context, document_id)
     if shell is None or not shell.secret:
         raise _write_failed(
@@ -895,8 +933,8 @@ def _write_decision_body(call: _Call, prepared: _Target, carrier: str) -> str:
     try:
         call.workspace.write_document_content(shell.secret, carrier)
     except FiberyError as error:
-        return f"The Decision write outcome was unknown ({error})"
-    return "The Decision write returned"
+        return f"The Decision body write outcome was unknown ({error})"
+    return "The Decision body was written"
 
 
 def _confirm(
@@ -913,14 +951,14 @@ def _confirm(
     """
     after = _resolve(
         call,
-        f"{outcome}; the Decision is neither repeated nor undone. ",
+        BODY_WRITE_KEPT.format(outcome=outcome),
         mutated=True,
     )
     durable = after.durable
     if durable is None:
         raise _write_failed(
-            f"{outcome}; Human Decision {prepared.decision_document_id!r} reads "
-            "back no Decision, so it is not durable. Nothing was retried.",
+            f"{outcome}, but Human Decision {prepared.decision_document_id!r} "
+            "reads back no Decision, so it is not durable. Nothing was retried.",
             (prepared.decision_document_id,),
         )
     if durable.artifact_digest != sealed["artifact_digest"]:

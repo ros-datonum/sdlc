@@ -1371,6 +1371,10 @@ def moved_to_another_parent(scene) -> None:
     scene.tsa.documents[DECISION_ID].parent_document_id = "another-parent"
 
 
+def architecture_emptied(scene) -> None:
+    scene.tsa.set_content(ARCHITECTURE_ID, "")
+
+
 def applicable_ux_edited(scene) -> None:
     scene.tsa.set_content(UX_DOCUMENT_ID, "# Checkout flow\n\nTwo screens now.\n")
 
@@ -1390,6 +1394,11 @@ AFTER_CREATE = {
         lambda scene: scene.tsa.set_content(
             ARCHITECTURE_ID, other_architecture(scene, "Edited.").text
         ),
+        {"ARCHITECTURE_DIVERGED"},
+    ),
+    "architecture-emptied": (
+        NOT_APPLICABLE,
+        architecture_emptied,
         {"ARCHITECTURE_DIVERGED"},
     ),
     "manifest-resealed": (NOT_APPLICABLE, manifest_resealed, {"ARTIFACT_MALFORMED"}),
@@ -1437,7 +1446,8 @@ def test_drift_after_a_known_create_is_refused_before_the_body_write(
     assert recovery_only_after_a_new_rework == []
     assert clock.reads == 1, "one timestamp per attempt, never regenerated"
     assert f"{DECISION_ID!r} was created and remains an empty shell" in str(error)
-    assert "Nothing was written" not in str(error)
+    assert "its body was not written and nothing was rolled back" in str(error)
+    assert "othing was written" not in str(error)
 
 
 def test_requirement_drift_after_create_under_not_applicable_reads_no_ux_document():
@@ -1546,3 +1556,60 @@ def test_approval_needs_no_disposition_for_any_technical_status(findings, status
 
     assert result.outcome is DecisionResultCode.ARCHITECTURE_APPROVED
     only_the_decision_written(scene)
+
+
+# --------------------------------------------------------------------------
+# K. Refusal messages stay truthful about what this call already wrote
+# --------------------------------------------------------------------------
+
+
+def test_a_refusal_after_the_body_write_acknowledges_the_durable_write():
+    scene = reviewed_scene()
+    scene.tsa.after(WRITE, 1, lambda: architecture_emptied(scene))
+
+    error = refused(approve, scene)
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert body_writes(scene) == 1
+    assert decision_payload(scene)["body"]["decision"] == "APPROVE", (
+        "the written Decision stays durable"
+    )
+    message = str(error)
+    assert message.startswith("The Decision body was written; it is neither ")
+    assert "neither repeated nor rolled back" in message
+    assert "no success is reported" in message
+    assert "is empty although an accepted Manifest exists" in message, (
+        "the gate's own diagnosis is kept"
+    )
+    assert "othing was written" not in message
+    assert models_called(scene) == 0
+
+
+def test_an_unknown_body_write_refusal_does_not_claim_the_write_landed_or_not():
+    scene = reviewed_scene()
+
+    def empty_then_fail() -> None:
+        architecture_emptied(scene)
+        fail(DOWN)()
+
+    scene.tsa.after(WRITE, 1, empty_then_fail)
+
+    error = refused(approve, scene)
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert str(error).startswith("The Decision body write outcome was unknown")
+    assert "othing was written" not in str(error)
+    assert body_writes(scene) == 1
+
+
+def test_before_any_mutation_the_gate_message_is_kept_as_it_is():
+    scene = reviewed_scene()
+    architecture_emptied(scene)
+    reset_trace(scene)
+
+    error = refused(approve, scene)
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert str(error).endswith("Nothing was written.")
+    assert "was created" not in str(error)
+    nothing_happened(scene)
