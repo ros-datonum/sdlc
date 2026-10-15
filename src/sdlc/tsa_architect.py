@@ -154,6 +154,7 @@ __all__ = [
     "ArchitectResultCode",
     "ArchitectStageOutcome",
     "ArchitectStageResult",
+    "CycleState",
     "ProcessCheck",
     "ReviewTarget",
     "SlotState",
@@ -162,6 +163,7 @@ __all__ = [
     "derive_review_status",
     "process_result_document_name",
     "read_bound_sources",
+    "read_cycle_state",
     "read_review_target",
     "render_process_result_carrier",
     "resolve_child_placement",
@@ -321,8 +323,8 @@ class _Architecture:
 
 
 @dataclass(frozen=True)
-class _Rework:
-    """The durable REWORK that opened the current iteration, with its lineage."""
+class _Decided:
+    """A durable Human Decision of one iteration, with its verified lineage."""
 
     iteration: int
     decision: TsaArtifact
@@ -337,10 +339,12 @@ class _View:
     context: BootstrapContext
     manifest: TsaArtifact
     iteration: int
-    rework: _Rework | None
+    rework: _Decided | None
     architecture: _Architecture
     process: _Child
     review: _Child
+    #: The verified APPROVE of `iteration`, read only by the recovery read (I10).
+    approval: _Decided | None = None
 
     @property
     def manifest_body(self) -> dict[str, object]:
@@ -988,13 +992,18 @@ def _unresolved_disposition(
     decision: TsaArtifact, reference: ArtifactReference, code: str
 ) -> ArchitectRefused:
     """Invariant 6 of 4.6.5 violated on read: `ARTIFACT_MALFORMED`, 6.4 code kept."""
+    kind = decision.body["decision"]
     return ArchitectRefused(
         CycleResultCode.ARTIFACT_MALFORMED,
-        f"The REWORK of iteration {decision.iteration} accepts {reference}, which "
+        f"The {kind} of iteration {decision.iteration} accepts {reference}, which "
         "does not resolve to an item of that iteration's Process or Review "
-        "Result; it opens no iteration.",
+        f"Result; {_UNHONOURED[kind]}",
         (code, str(reference)),
     )
+
+
+#: What an unverifiable durable Decision does not do.
+_UNHONOURED = {REWORK: "it opens no iteration.", APPROVE: "it closes nothing."}
 
 
 def _require_dispositions_resolve(
@@ -1032,15 +1041,18 @@ def _require_dispositions_resolve(
             )
 
 
-def _verify_rework(
+def _verify_decision(
     workspace: CycleWorkspace,
     context: BootstrapContext,
     manifest: TsaArtifact,
     architecture: _Architecture,
     decision: TsaArtifact,
     earlier: frozenset[str],
-) -> _Rework:
-    """A durable REWORK opens iteration + 1 only if its evidence holds on read.
+) -> _Decided:
+    """A durable Decision is honoured only if its evidence holds on read.
+
+    A REWORK opens iteration + 1 only then; an APPROVE, read by recovery (I10),
+    is the closed cycle only then.
 
     Read-only: the Review and Process it names exist at their derived ids, all
     seven invariants of 4.6.5 hold — dispositions resolved (6) and the bound
@@ -1049,14 +1061,14 @@ def _verify_rework(
     disposition idempotency, stay I08's and I11's.
     """
     iteration = decision.iteration
+    subject = f"The {decision.body['decision']} of iteration {iteration}"
     review = _read_child(workspace, context, REVIEW_RESULT, iteration)
     process = _read_child(workspace, context, PROCESS_RESULT, iteration)
     if review.artifact is None or process.artifact is None:
         raise _malformed(
-            f"The REWORK of iteration {iteration} names no durable Review and "
-            "Process Result for that iteration."
+            f"{subject} names no durable Review and Process Result for that iteration."
         )
-    with _validating(f"The REWORK of iteration {iteration}"):
+    with _validating(subject):
         validate_structural_lineage(
             architecture=architecture.artifact,
             input_manifest=manifest,
@@ -1067,21 +1079,21 @@ def _verify_rework(
         )
     _require_process_lineage(context, manifest, architecture, process)
     _require_review_lineage(context, manifest, architecture, process, review)
-    _require_rework_bindings(context, manifest, decision, process)
+    _require_decision_bindings(context, manifest, decision, process)
     _require_dispositions_resolve(decision, process.artifact, review.artifact, earlier)
-    return _Rework(iteration, decision, review.artifact, process.artifact)
+    return _Decided(iteration, decision, review.artifact, process.artifact)
 
 
-def _require_rework_bindings(
+def _require_decision_bindings(
     context: BootstrapContext,
     manifest: TsaArtifact,
     decision: TsaArtifact,
     process: _Child,
 ) -> None:
-    """Every id and digest the REWORK repeats is the real one (invariant 7 too)."""
+    """Every id and digest the Decision repeats is the real one (invariant 7 too)."""
     assert process.artifact is not None
     iteration = decision.iteration
-    subject = f"The REWORK of iteration {iteration}"
+    subject = f"The {decision.body['decision']} of iteration {iteration}"
     body = decision.body
     bound = {
         "architecture_document_id": context.architecture_document_id,
@@ -1110,27 +1122,38 @@ def _current_iteration(
     context: BootstrapContext,
     manifest: TsaArtifact,
     architecture: _Architecture,
-) -> tuple[int, _Rework | None]:
-    """1, or the iteration after the last durable, bound REWORK (contract 6)."""
+    *,
+    reads_approval: bool = False,
+) -> tuple[int, _Decided | None, _Decided | None]:
+    """1, or the iteration after the last durable, bound REWORK (contract 6).
+
+    An APPROVE is `CYCLE_APPROVED` for the stages. Only the recovery read
+    (`reads_approval`) verifies it instead and returns it as the third value.
+    """
     iteration = FIRST_ITERATION
-    rework: _Rework | None = None
+    rework: _Decided | None = None
     earlier: frozenset[str] = frozenset()
     while True:
         decision = _read_child(workspace, context, HUMAN_DECISION, iteration)
         if decision.state is _ChildState.ABSENT:
-            return iteration, rework
+            return iteration, rework, None
         if decision.artifact is None:
             raise ArchitectRefused(
                 ArchitectResultCode.DECISION_SHELL_UNRECOVERABLE,
                 f"Human Decision Document {decision.document_id!r} is an empty shell.",
             )
+        if decision.artifact.body["decision"] == APPROVE and reads_approval:
+            approval = _verify_decision(
+                workspace, context, manifest, architecture, decision.artifact, earlier
+            )
+            return iteration, rework, approval
         if decision.artifact.body["decision"] == APPROVE:
             raise ArchitectRefused(
                 ArchitectResultCode.CYCLE_APPROVED,
                 f"Iteration {iteration} carries an APPROVE; the cycle is closed to "
                 "writes and nothing was written.",
             )
-        rework = _verify_rework(
+        rework = _verify_decision(
             workspace, context, manifest, architecture, decision.artifact, earlier
         )
         earlier |= {rework.process.artifact_digest, rework.review.artifact_digest}
@@ -1279,7 +1302,12 @@ def _require_no_later_iteration(
 ProcessCheck = Callable[[str, TsaArtifact], None]
 
 
-def _gate(stage: _Stage, process_check: ProcessCheck | None = None) -> _View:
+def _gate(
+    stage: _Stage,
+    process_check: ProcessCheck | None = None,
+    *,
+    reads_approval: bool = False,
+) -> _View:
     """Everything the Architect stage relies on, read fresh, in one pass.
 
     Discovery (I04), the accepted Manifest, the children cross-check, the
@@ -1289,6 +1317,8 @@ def _gate(stage: _Stage, process_check: ProcessCheck | None = None) -> _View:
     the normal gate, not I10's complete dispatcher. `process_check`, given only
     by the Reviewer's read boundary, runs on a validated Process before the
     Review slot is validated against it (spec v0.5 section 3).
+    `reads_approval`, given only by the recovery read, verifies a durable
+    APPROVE instead of refusing it as `CYCLE_APPROVED`.
     """
     context = _discover(stage)
     manifest = _read_manifest(stage.workspace, context)
@@ -1297,8 +1327,8 @@ def _gate(stage: _Stage, process_check: ProcessCheck | None = None) -> _View:
         stage.workspace, context, manifest.body["manifest_body"]
     )
     _require_not_empty(architecture, context)
-    iteration, rework = _current_iteration(
-        stage.workspace, context, manifest, architecture
+    iteration, rework, approval = _current_iteration(
+        stage.workspace, context, manifest, architecture, reads_approval=reads_approval
     )
     _require_no_later_iteration(slots, iteration)
     _require_inputs_current(stage, context, manifest)
@@ -1310,7 +1340,9 @@ def _gate(stage: _Stage, process_check: ProcessCheck | None = None) -> _View:
     process, review = _read_iteration_slots(
         stage.workspace, context, manifest, architecture, iteration, process_check
     )
-    return _View(context, manifest, iteration, rework, architecture, process, review)
+    return _View(
+        context, manifest, iteration, rework, architecture, process, review, approval
+    )
 
 
 #: A slot placeholder for a view whose slots are not read yet.
@@ -1616,6 +1648,10 @@ def read_review_target(
     `process_check` raises.
     """
     view = _gate(_Stage(workspace, evidence, project_id, raw_cycle_id), process_check)
+    return _review_target(view)
+
+
+def _review_target(view: _View) -> ReviewTarget:
     case, output_fingerprint = _architect_case(view)
     return ReviewTarget(
         context=view.context,
@@ -1632,6 +1668,51 @@ def read_review_target(
         review=view.review.artifact,
         review_payload=view.review.payload,
     )
+
+
+@dataclass(frozen=True)
+class CycleState:
+    """One fresh normal-gate pass for recovery (I10), as values.
+
+    Dead after any model call or mutation. `decision` is the verified APPROVE
+    of `target.iteration`, or None; `decision_document_id` is that iteration's
+    deterministic Human Decision id either way.
+    """
+
+    target: ReviewTarget
+    decision_document_id: str
+    decision: TsaArtifact | None
+
+
+def _unbound(document_id: str, process: TsaArtifact) -> None:
+    """Recovery fixes no operation, so it binds no Process (spec v0.5 section 4).
+
+    Passing it still puts case 4 before the Review slot (`_case_four_first`).
+    """
+
+
+def read_cycle_state(
+    workspace: CycleWorkspace,
+    evidence: RequirementEvidenceWorkspace,
+    project_id: str,
+    raw_cycle_id: object,
+) -> CycleState:
+    """The stages' gate for recovery: read-only, with no stage's own refusal.
+
+    Everything `read_review_target` checks, plus what only recovery needs: a
+    durable APPROVE is verified like a REWORK (all seven invariants of 4.6.5)
+    and returned rather than refused; case 4 is decided before any Review is
+    validated, so no Review suppresses it; and without a valid Process the
+    Architecture must be the input the current iteration starts from. Raises
+    `ArchitectRefused` with the frozen code. Nothing is written.
+    """
+    stage = _Stage(workspace, evidence, project_id, raw_cycle_id)
+    view = _gate(stage, _unbound, reads_approval=True)
+    if view.process.state is not _ChildState.VALID:
+        _require_case_one_input(view)
+    decision_id = _child_id(view.context, DocumentKind.HUMAN_DECISION, view.iteration)
+    approval = None if view.approval is None else view.approval.decision
+    return CycleState(_review_target(view), decision_id, approval)
 
 
 def read_bound_sources(
