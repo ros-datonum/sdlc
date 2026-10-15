@@ -16,6 +16,7 @@ import pytest
 
 from architect_fake import (
     RecordingModel,
+    architecture_writes,
     payload_of,
     process_id,
     resealed_carrier,
@@ -59,6 +60,7 @@ from test_tsa_admission import (
     ARCHITECTURE_ID,
     CYCLE,
     MANIFEST_ID,
+    NOT_APPLICABLE,
     PROJECT_ID,
     UX_DOCUMENT_ID,
     bootstrap_carrier,
@@ -328,9 +330,11 @@ def test_an_empty_review_shell_is_completed_in_place_by_one_reviewer_call():
     result = recover(scene, no_model(scene), reviewer)
 
     assert result.boundary is RecoveryBoundary.HUMAN_DECISION
+    assert result.architect is None
     assert len(reviewer.calls) == 1
     assert scene.tsa.count(CREATE) == 0
     assert review_writes(scene) == 1
+    assert writes_other_than_review(scene) == [], "no Architecture write"
     assert result.review_result_document_id == REVIEW_ID
 
 
@@ -370,20 +374,6 @@ def test_an_empty_architecture_is_not_normal_recovery():
     nothing_happened(scene, architect)
 
 
-def test_a_review_shell_beside_an_unapplied_output_keeps_i07s_refusal():
-    """The open v0.5 tension: no new policy here, I07 refuses with no write."""
-    scene = accepted_scene()
-    persisted_but_not_applied(scene)
-    seed_shell(scene, REVIEW_ID)
-    architect, reviewer = models(scene)
-
-    error = refusal(scene, architect, reviewer)
-
-    assert error.code == "ARTIFACT_MALFORMED"
-    nothing_happened(scene, architect, reviewer)
-    assert scene.tsa.content_of(REVIEW_ID) == ""
-
-
 def test_an_empty_document_named_like_an_artifact_decides_nothing():
     scene = applied_scene()
     scene.tsa.seed_child("named-only", ARCHITECTURE_ID, "")
@@ -392,6 +382,274 @@ def test_an_empty_document_named_like_an_artifact_decides_nothing():
     result = recover(scene, no_model(scene), CoveringReviewer(scene))
 
     assert result.boundary is RecoveryBoundary.HUMAN_DECISION
+
+
+# --------------------------------------------------------------------------
+# Case 2 beside an empty Review shell: replay, fresh gate, then the shell
+# --------------------------------------------------------------------------
+
+
+def pending_beside_review_shell(ux=NOT_APPLICABLE):
+    """A durable Process, the Architecture at its input, an empty Review."""
+    scene = accepted_scene(ux=ux)
+    persisted_but_not_applied(scene)
+    seed_shell(scene, REVIEW_ID)
+    return scene
+
+
+def gate_passes(monkeypatch) -> list[str]:
+    """Each full recovery gate pass, counted where I10 runs it."""
+    passes = []
+    real = tsa_recovery.read_cycle_state
+
+    def counted(*args, **kwargs):
+        passes.append("gate")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(tsa_recovery, "read_cycle_state", counted)
+    return passes
+
+
+def boundary_of(result) -> tuple:
+    return (
+        result.boundary,
+        result.case,
+        result.iteration,
+        result.architecture_document_id,
+        result.architecture_fingerprint,
+        result.process_result_document_id,
+        result.process_result_digest,
+        result.review_result_document_id,
+        result.review_result_digest,
+        result.derived_review_status,
+        result.human_decision_document_id,
+        result.human_decision_digest,
+    )
+
+
+def without_shell():
+    """The same pending output with no Review slot at all, recovered."""
+    scene = accepted_scene()
+    persisted_but_not_applied(scene)
+    return scene, recover(scene, no_model(scene), CoveringReviewer(scene))
+
+
+def test_a_review_shell_beside_a_pending_output_is_replayed_then_completed(
+    monkeypatch,
+):
+    scene = pending_beside_review_shell()
+    process = scene.tsa.content_of(PROCESS_ID)
+    manifest = scene.tsa.content_of(MANIFEST_ID)
+    shell_secret = scene.tsa.documents[REVIEW_ID].secret
+    passes = gate_passes(monkeypatch)
+    architect, reviewer = no_model(scene), CoveringReviewer(scene)
+
+    result = recover(scene, architect, reviewer)
+
+    assert result.boundary is RecoveryBoundary.HUMAN_DECISION
+    assert result.case is RecoveryCase.REVIEW_RECORDED
+    assert passes == ["gate"] * 3, "replay, fresh gate and shell, fresh gate"
+    assert (len(architect.calls), len(reviewer.calls)) == (0, 1)
+    assert result.architect.outcome is ArchitectStageOutcome.RECORDED_OUTPUT_APPLIED
+    assert result.architect.model_invoked is False
+    assert result.reviewer.outcome is ReviewerStageOutcome.REVIEW_RECORDED
+    assert architecture_writes(scene) == 1
+    assert review_writes(scene) == 1
+    assert scene.tsa.count(WRITE) == 2, "no Process and no Decision write"
+    assert scene.tsa.count(CREATE) == 0, "the shell is completed, not recreated"
+    assert scene.tsa.documents[REVIEW_ID].secret == shell_secret
+    assert DECISION_ID not in scene.tsa.documents
+    assert scene.tsa.content_of(PROCESS_ID) == process
+    assert scene.tsa.content_of(MANIFEST_ID) == manifest
+    review = validate_artifact(payload_of(scene, REVIEW_ID))
+    assert review.body["process_result_digest"] == result.process_result_digest
+    assert result.review_result_document_id == REVIEW_ID
+    twin, expected = without_shell()
+    assert scene.tsa.content_of(ARCHITECTURE_ID) == twin.tsa.content_of(
+        ARCHITECTURE_ID
+    ), "exactly the recorded output"
+    assert boundary_of(result) == boundary_of(expected)
+
+
+def test_without_a_review_slot_the_replay_is_followed_by_a_review_create():
+    scene, result = without_shell()
+
+    assert result.boundary is RecoveryBoundary.HUMAN_DECISION
+    assert architecture_writes(scene) == 1
+    assert scene.tsa.count(CREATE) == 1, "the Review only"
+
+
+def test_the_architect_stage_alone_still_refuses_a_review_shell_before_apply():
+    """Only recovery's replay opts out; I07's default classification stands."""
+    scene = pending_beside_review_shell()
+
+    with pytest.raises(ArchitectRefused) as stage:
+        run_architect_stage(scene.tsa, scene.req, no_model(scene), PROJECT_ID, CYCLE)
+
+    assert stage.value.code == "ARTIFACT_MALFORMED"
+    nothing_happened(scene)
+    assert scene.tsa.content_of(REVIEW_ID) == ""
+
+
+def test_a_review_shell_does_not_hide_a_divergent_architecture():
+    scene = pending_beside_review_shell()
+    divergent = other_architecture(scene, "Edited by hand before the apply.")
+    scene.tsa.set_content(ARCHITECTURE_ID, divergent.text)
+    architect, reviewer = models(scene)
+
+    error = refusal(scene, architect, reviewer)
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert error.details[-1] == f"current {divergent.content_fingerprint}"
+    nothing_happened(scene, architect, reviewer)
+
+
+def test_a_non_empty_malformed_review_beside_a_pending_output_blocks_replay():
+    scene = pending_beside_review_shell()
+    scene.tsa.set_content(REVIEW_ID, "A note someone left here.\n")
+    reset_trace(scene)
+    before = contents(scene)
+    architect, reviewer = models(scene)
+
+    error = refusal(scene, architect, reviewer)
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    nothing_happened(scene, architect, reviewer)
+    assert contents(scene) == before
+
+
+def test_stale_inputs_block_replay_beside_a_review_shell():
+    scene = pending_beside_review_shell()
+    root_edited_after_review(scene)
+    architect, reviewer = models(scene)
+
+    error = refusal(scene, architect, reviewer)
+
+    assert error.code == "INPUTS_STALE"
+    nothing_happened(scene, architect, reviewer)
+
+
+def test_a_duplicate_review_blocks_replay_beside_a_review_shell():
+    twin, _ = without_shell()
+    scene = pending_beside_review_shell()
+    scene.tsa.seed_child(
+        "rogue-review", ARCHITECTURE_ID, twin.tsa.content_of(REVIEW_ID)
+    )
+    reset_trace(scene)
+    architect, reviewer = models(scene)
+
+    error = refusal(scene, architect, reviewer)
+
+    assert error.code == "ARTIFACT_DUPLICATE"
+    assert error.details == ("rogue-review",)
+    nothing_happened(scene, architect, reviewer)
+
+
+def ux_edited(scene) -> None:
+    scene.tsa.set_content(UX_DOCUMENT_ID, "# Checkout flow\n\nTwo screens now.\n")
+
+
+def process_replaced(scene) -> None:
+    reseal(
+        scene, PROCESS_ID, lambda p: p["body"].update(created_at="2027-01-02T03:04:05Z")
+    )
+
+
+def review_shell_scribbled(scene) -> None:
+    scene.tsa.set_content(REVIEW_ID, "A note someone left here.\n")
+
+
+#: Durable change right after the replay lands, before the next gate pass.
+AFTER_REPLAY = {
+    "requirement": (NOT_APPLICABLE, root_edited_after_review, "INPUTS_STALE"),
+    "applicable-ux": (APPLICABLE, ux_edited, "INPUTS_STALE"),
+    "process-replaced": (NOT_APPLICABLE, process_replaced, "FIBERY_WRITE_FAILED"),
+    "review-malformed": (NOT_APPLICABLE, review_shell_scribbled, "ARTIFACT_MALFORMED"),
+}
+
+
+@pytest.mark.parametrize("drift", AFTER_REPLAY)
+def test_the_gate_runs_fresh_after_the_replay_before_any_reviewer_call(drift):
+    ux, change, code = AFTER_REPLAY[drift]
+    scene = pending_beside_review_shell(ux=ux)
+    scene.tsa.after(WRITE, 1, lambda: change(scene))
+    architect, reviewer = models(scene)
+
+    error = refusal(scene, architect, reviewer)
+
+    assert error.code == code
+    assert (len(architect.calls), len(reviewer.calls)) == (0, 0)
+    assert architecture_writes(scene) == 1, "the replay landed, nothing more"
+    assert review_writes(scene) == 0
+
+
+def test_a_landed_replay_with_a_lost_response_moves_on_to_the_shell():
+    scene = pending_beside_review_shell()
+    scene.tsa.after(WRITE, 1, fail(FIBERY_DOWN))
+    architect, reviewer = no_model(scene), CoveringReviewer(scene)
+
+    result = recover(scene, architect, reviewer)
+
+    assert result.boundary is RecoveryBoundary.HUMAN_DECISION
+    assert architecture_writes(scene) == 1, "confirmed from durable state"
+    assert (len(architect.calls), len(reviewer.calls)) == (0, 1)
+    assert review_writes(scene) == 1
+    assert scene.tsa.count(CREATE) == 0
+
+
+def test_a_replay_that_never_landed_is_not_retried_and_calls_no_model():
+    scene = pending_beside_review_shell()
+    scene.tsa.before(WRITE, 1, fail(FIBERY_DOWN))
+    architect, reviewer = models(scene)
+
+    error = refusal(scene, architect, reviewer)
+    assert error.code == "FIBERY_WRITE_FAILED"
+    assert architecture_writes(scene) == 1, "attempted once"
+    assert (len(architect.calls), len(reviewer.calls)) == (0, 0)
+    reset_trace(scene)
+    reviewer = CoveringReviewer(scene)
+
+    result = recover(scene, no_model(scene), reviewer)
+
+    assert result.boundary is RecoveryBoundary.HUMAN_DECISION
+    assert len(reviewer.calls) == 1
+    assert scene.tsa.count(CREATE) == 0
+
+
+def test_a_replay_finding_no_process_left_writes_nothing(monkeypatch):
+    """The Process emptied between the gate and the replay: a later invocation."""
+    scene = accepted_scene()
+    persisted_but_not_applied(scene)
+    real = tsa_recovery.replay_recorded_output
+
+    def process_emptied(*args):
+        scene.tsa.set_content(PROCESS_ID, "")
+        scene.tsa.mutations.clear()
+        return real(*args)
+
+    monkeypatch.setattr(tsa_recovery, "replay_recorded_output", process_emptied)
+    architect, reviewer = models(scene)
+
+    result = recover(scene, architect, reviewer)
+
+    assert result.boundary is RecoveryBoundary.ARCHITECT_REQUIRED
+    assert result.case is RecoveryCase.PROCESS_SHELL
+    assert result.architect is None
+    nothing_happened(scene, architect, reviewer)
+
+
+def test_review_input_changed_after_the_replay_is_propagated_not_retried():
+    scene = pending_beside_review_shell()
+    architect = RecordingModel(scene)
+    reviewer = CoveringReviewer(scene, during=lambda: process_replaced(scene))
+
+    error = refusal(scene, architect, reviewer)
+
+    assert error.code == "REVIEW_INPUT_CHANGED"
+    assert (len(architect.calls), len(reviewer.calls)) == (0, 1)
+    assert architecture_writes(scene) == 1
+    assert review_writes(scene) == 0
+    assert scene.tsa.content_of(REVIEW_ID) == ""
 
 
 # --------------------------------------------------------------------------

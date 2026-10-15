@@ -166,6 +166,7 @@ __all__ = [
     "read_cycle_state",
     "read_review_target",
     "render_process_result_carrier",
+    "replay_recorded_output",
     "resolve_child_placement",
     "resolve_root_placement",
     "review_coverage_defects",
@@ -389,6 +390,9 @@ class _Stage:
     evidence: RequirementEvidenceWorkspace
     project_id: str
     cycle_id: object
+    #: False only for recovery's case-2 replay (I10): an empty Review shell is
+    #: then no Review evidence when the apply is classified (spec 14.4).
+    review_shell_is_evidence: bool = True
 
 
 def _utc_now() -> datetime:
@@ -1527,6 +1531,25 @@ class _Case(StrEnum):
     OUTPUT = "OUTPUT"
 
 
+def _without_review_shell(view: _View) -> _View:
+    """The view with an empty Review slot read as absent; the shell stays put.
+
+    A shell is no Review evidence (spec 14.4). A valid Review and a non-empty
+    malformed one are untouched: the first still refuses beside an unapplied
+    output, the second never reaches here (the gate refused it).
+    """
+    if view.review.state is not _ChildState.EMPTY:
+        return view
+    return replace(view, review=_Child(_ChildState.ABSENT, view.review.document_id))
+
+
+def _review_evidence(stage: _Stage, view: _View) -> _View:
+    """What the apply classifies: the shell counts unless recovery opted out."""
+    if stage.review_shell_is_evidence:
+        return view
+    return _without_review_shell(view)
+
+
 def _classify(
     view: _View, process: TsaArtifact, expected: ArchitectureCarrier
 ) -> _Case:
@@ -1621,9 +1644,7 @@ def _architect_case(view: _View) -> tuple[ArchitectCase, str | None]:
             return ArchitectCase.PROCESS_SHELL, None
         return ArchitectCase.NO_PROCESS, None
     expected = _expected_carrier(view, process)
-    if view.review.state is _ChildState.EMPTY:
-        view = replace(view, review=_Child(_ChildState.ABSENT, view.review.document_id))
-    if _classify(view, process, expected) is _Case.INPUT:
+    if _classify(_without_review_shell(view), process, expected) is _Case.INPUT:
         return ArchitectCase.RECORDED_INPUT, None
     return ArchitectCase.OUTPUT_APPLIED, expected.content_fingerprint
 
@@ -1828,7 +1849,7 @@ def _apply(
     _require_same_operation(operation, view)
     process = _require_same_process(view.process, persisted, ARCHITECTURE_NOT_WRITTEN)
     expected = _expected_carrier(view, process)
-    if _classify(view, process, expected) is _Case.OUTPUT:
+    if _classify(_review_evidence(stage, view), process, expected) is _Case.OUTPUT:
         return False, expected
     root = _resolve_root(stage.workspace, view.context)
     if not root.secret:
@@ -1841,7 +1862,7 @@ def _apply(
         after = _gate(stage)
         _require_same_operation(operation, after)
         _require_same_process(after.process, persisted, ARCHITECTURE_WRITE_KEPT)
-        if _classify(after, process, expected) is _Case.OUTPUT:
+        if _classify(_review_evidence(stage, after), process, expected) is _Case.OUTPUT:
             return True, expected
         raise _write_failed(
             f"The Architecture write outcome was unknown ({error}) and the "
@@ -2239,6 +2260,36 @@ def run_architect_stage(
             raise ArchitectRefused(
                 AdmissionResultCode.INPUT_TOO_LARGE, str(error)
             ) from error
+    return _replay(stage, view)
+
+
+def replay_recorded_output(
+    workspace: CycleWorkspace,
+    evidence: RequirementEvidenceWorkspace,
+    project_id: str,
+    raw_cycle_id: object,
+) -> ArchitectStageResult | None:
+    """Case 2 for recovery (I10): apply the persisted output, never a model.
+
+    The Architect stage's replay path, with one difference that recovery opts
+    into: an empty Review shell is no Review evidence while the apply is
+    classified (spec 14.4, 13.7-7), so a pending output beside it is applied
+    and the shell is left in place for the Reviewer stage to complete. A valid
+    Review beside an unapplied output, and a divergent Architecture, refuse
+    exactly as in `run_architect_stage`. None, with nothing written, when the
+    fresh gate shows no persisted Process Result to replay.
+    """
+    stage = _Stage(
+        workspace, evidence, project_id, raw_cycle_id, review_shell_is_evidence=False
+    )
+    view = _gate(stage)
+    if view.process.state is not _ChildState.VALID:
+        return None
+    return _replay(stage, view)
+
+
+def _replay(stage: _Stage, view: _View) -> ArchitectStageResult:
+    """Cases 2 and 3 from a valid Process Result: apply it, or confirm it."""
     assert view.process.payload is not None and view.process.artifact is not None
     written, expected = _apply(stage, _operation(view), view.process.payload)
     outcome = (

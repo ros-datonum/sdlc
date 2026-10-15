@@ -8,9 +8,11 @@ cycle with a valid accepted Input Manifest (durable state D) this item owns:
   fully validated snapshot (`read_cycle_state`), never on an earlier one;
 - the case table: which of contract 14.3 cases 1-10 that snapshot is, and the
   one action each case permits;
-- the order of delegation: the Architect stage (I07) for case 1, case 2 and
-  an empty Process shell; the Reviewer stage (I08) for case 3 and an empty
-  Review shell; nothing for cases 5, 6 and 10; a refusal for every gate
+- the order of delegation: the Architect stage (I07) for case 1 and an
+  empty Process shell, and its model-free replay for case 2, which reads an
+  empty Review shell as no Review evidence (spec 14.4) so the shell is
+  completed after the apply rather than blocking it; the Reviewer stage (I08)
+  for case 3 and an empty Review shell; nothing for cases 5, 6 and 10; a refusal for every gate
   failure, including cases 4 and 8 and the empty Decision shell.
 
 Nothing here writes. Every mutation is the delegated stage's own, behind its
@@ -42,6 +44,7 @@ from sdlc.tsa_architect import (
     ResultCode,
     SlotState,
     read_cycle_state,
+    replay_recorded_output,
     run_architect_stage,
 )
 from sdlc.tsa_cycle import Clock, CycleWorkspace
@@ -144,7 +147,8 @@ class RecoveryResult:
     Every id and digest is the one that final gate validated, so a later
     decision command (I11) can name its exact target from it. Not persisted
     and not an artifact. `architect` and `reviewer` are what each delegated
-    stage reported, None when it was not delegated.
+    stage reported, None when it was not delegated or a replay found no
+    Process Result left to apply.
     """
 
     boundary: RecoveryBoundary
@@ -262,8 +266,9 @@ def recover_architecture_cycle(
     Each pass runs the full normal gate fresh, classifies the snapshot, and
     acts only as its case permits:
 
-    - case 1, an empty Process shell, or case 2: the Architect stage (I07),
-      which calls the model only for case 1 and the shell;
+    - case 1 or an empty Process shell: the Architect stage (I07), one model
+      call; case 2: its replay of the recorded output, no model call, beside
+      an empty Review shell too;
     - case 3 or an empty Review shell: the Reviewer stage (I08);
     - cases 5 and 10: the Human Decision boundary, no model call;
     - case 6: an APPROVE is the closed cycle, no model call and no write; a
@@ -294,6 +299,13 @@ def recover_architecture_cycle(
         if stage in delegated or _Stage.REVIEWER in delegated:
             return _result(state, case, _REQUIRED[stage], architect, reviewer)
         delegated.add(stage)
+        if case is RecoveryCase.RECORDED_INPUT:
+            architect = _delegated(
+                lambda: replay_recorded_output(
+                    workspace, evidence, project_id, cycle_id
+                )
+            )
+            continue
         if stage is _Stage.ARCHITECT:
             architect = _delegated(
                 lambda: run_architect_stage(
