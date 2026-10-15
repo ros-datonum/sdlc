@@ -550,9 +550,19 @@ def _confirm_review(
 
     The gate validates the slot first — schema, identity, lineage and the
     stored status — so a specific durable refusal keeps its own code; only
-    then is a valid but different artifact `FIBERY_WRITE_FAILED`.
+    then is a valid but different artifact `FIBERY_WRITE_FAILED`. A divergent
+    Architecture says that the write it follows was already executed.
     """
-    after = _gate(stage, operation)
+    try:
+        after = _gate(stage, operation)
+    except ReviewerRefused as refused:
+        if refused.code != ArchitectResultCode.ARCHITECTURE_DIVERGED:
+            raise
+        raise ReviewerRefused(
+            refused.code,
+            f"{outcome}; the Review written is neither repeated nor undone. {refused}",
+            refused.details,
+        ) from refused
     _require_same_operation(operation, after)
     document_id = operation.review_document_id
     if after.review_payload is None:

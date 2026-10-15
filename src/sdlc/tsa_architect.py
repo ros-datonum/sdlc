@@ -1302,10 +1302,49 @@ def _gate(stage: _Stage, process_check: ProcessCheck | None = None) -> _View:
     )
     _require_no_later_iteration(slots, iteration)
     _require_inputs_current(stage, context, manifest)
+    if process_check is not None:
+        unclassified = _View(
+            context, manifest, iteration, rework, architecture, _ABSENT, _ABSENT
+        )
+        process_check = _case_four_first(unclassified, process_check)
     process, review = _read_iteration_slots(
         stage.workspace, context, manifest, architecture, iteration, process_check
     )
     return _View(context, manifest, iteration, rework, architecture, process, review)
+
+
+#: A slot placeholder for a view whose slots are not read yet.
+_ABSENT = _Child(_ChildState.ABSENT, "")
+
+
+def _case_four_first(unclassified: _View, process_check: ProcessCheck) -> ProcessCheck:
+    """Case 4 against the validated Process, before `process_check` runs.
+
+    Spec v0.5 section 3: a divergent Architecture (contract 14.3 case 4) is
+    more specific than any check of the review input, and no Review, even a
+    valid one, suppresses it. Only the read boundary that passes a
+    `process_check` does this; the Architect stage's own gate is unchanged.
+    """
+
+    def check(document_id: str, process: TsaArtifact) -> None:
+        view = replace(
+            unclassified, process=_Child(_ChildState.VALID, document_id, process)
+        )
+        expected = _expected_carrier(view, process)
+        if not _holds_output(view.architecture, expected) and (
+            view.architecture.fingerprint != process.body["input_fingerprint"]
+        ):
+            raise ArchitectRefused(
+                ArchitectResultCode.ARCHITECTURE_DIVERGED,
+                f"Architecture Document {view.context.architecture_document_id!r} "
+                "matches neither the recorded input nor the recorded output of "
+                f"iteration {view.iteration}; a human decides which is "
+                "authoritative. Nothing was overwritten.",
+                _three_fingerprints(process, expected, view.architecture.fingerprint),
+            )
+        process_check(document_id, process)
+
+    return check
 
 
 def _read_iteration_slots(

@@ -1520,3 +1520,111 @@ def test_an_unchanged_exact_process_is_reviewed_and_confirmed():
         == (process["artifact_digest"])
     )
     assert (len(model.calls), review_writes(scene)) == (1, 1)
+
+
+# --------------------------------------------------------------------------
+# H. Spec v0.5 section 3: Architecture case 4 outranks REVIEW_INPUT_CHANGED
+# --------------------------------------------------------------------------
+
+
+def case_four(scene, divergent) -> tuple[str, ...]:
+    """The three fingerprints of contract 14.3 case 4, read before any drift."""
+    recorded = payload_of(scene, PROCESS_ID)["body"]
+    intended = architecture_envelope(scene)["body"]["content_fingerprint"]
+    return (
+        f"input {recorded['input_fingerprint']}",
+        f"output {intended}",
+        f"current {divergent.content_fingerprint}",
+    )
+
+
+#: Where both drifts land: (hook, operation, then lose, creates, Review, writes).
+JOINT_WINDOWS = {
+    "during-the-call": ("during", None, False, 0, None, 0),
+    "after-a-known-create": ("after", "create_tsa_child_document", False, 1, "", 0),
+    "before-a-lost-create": ("before", "create_tsa_child_document", True, 1, None, 0),
+    "after-the-write-normal-return": (
+        "after",
+        "write_document_content",
+        False,
+        1,
+        "review",
+        1,
+    ),
+    "after-the-write-lost-response": (
+        "after",
+        "write_document_content",
+        True,
+        1,
+        "review",
+        1,
+    ),
+}
+
+
+@pytest.mark.parametrize("window", JOINT_WINDOWS)
+def test_a_divergent_architecture_outranks_a_replaced_process(window):
+    hook, operation, then_lose, creates, review_state, writes = JOINT_WINDOWS[window]
+    scene = applied_scene()
+    divergent = other_architecture(scene, "Replaced beside the Process.")
+    expected = case_four(scene, divergent)
+
+    def both_drift() -> None:
+        same_output_other_process(scene)
+        scene.tsa.set_content(ARCHITECTURE_ID, divergent.text)
+        if then_lose:
+            raise FiberyError(FIBERY_DOWN)
+
+    if hook == "during":
+        model = reviewer_model(scene, during=both_drift)
+    else:
+        getattr(scene.tsa, hook)(operation, 1, both_drift)
+        model = reviewer_model(scene)
+
+    error = refusal(scene, model)
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert error.details == expected
+    accepted_by_i01(scene, PROCESS_ID)
+    assert len(model.calls) == 1
+    assert scene.tsa.count("create_tsa_child_document") == creates
+    assert review_writes(scene) == writes, "nothing written, repeated or undone"
+    assert writes_other_than_review(scene) == []
+    if review_state is None:
+        assert REVIEW_ID not in scene.tsa.documents
+    elif review_state == "":
+        assert scene.tsa.content_of(REVIEW_ID) == "", "the shell stays, unfilled"
+    else:
+        assert validate_artifact(review_payload(scene)).iteration == 1, "not undone"
+        assert str(error).startswith("The Review write")
+        assert "neither repeated nor undone" in str(error)
+        assert "no model was called" not in str(error)
+
+
+def test_an_architecture_divergence_alone_reports_all_three_fingerprints():
+    scene = applied_scene()
+    divergent = other_architecture(scene, "Replaced while the Reviewer ran.")
+    expected = case_four(scene, divergent)
+    model = reviewer_model(
+        scene,
+        during=lambda: scene.tsa.set_content(ARCHITECTURE_ID, divergent.text),
+    )
+
+    error = refusal(scene, model)
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert error.details == expected
+    assert len(model.calls) == 1
+    assert scene.tsa.mutations == []
+
+
+def test_a_process_vanished_after_the_call_keeps_its_prior_classification():
+    """v0.5 section 3: a missing Process is no replacement; unchanged here."""
+    scene = applied_scene()
+    model = reviewer_model(scene, during=lambda: scene.tsa.documents.pop(PROCESS_ID))
+
+    error = refusal(scene, model)
+
+    assert error.code == "ARCHITECTURE_DIVERGED"
+    assert len(model.calls) == 1
+    assert scene.tsa.mutations == []
