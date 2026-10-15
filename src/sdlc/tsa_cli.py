@@ -450,10 +450,16 @@ def workspace_unavailable(error: Exception) -> ArchitectureCommandResult:
 
 @dataclass(frozen=True)
 class _Project:
-    """The Project the command acts on: its entity id, and its Code if known."""
+    """The Project the command acts on: its entity id, and its Code if known.
+
+    `is_confirmed` is True once the id is known to name a Project: an exact
+    Code matched it, or a domain entry point accepted it. An unmatched
+    `--project` value is only a candidate id, never reported as one.
+    """
 
     entity_id: str
     code: str | None
+    is_confirmed: bool
 
 
 def _resolve_project(session: ArchitectureSession, selector: str) -> _Project:
@@ -471,8 +477,8 @@ def _resolve_project(session: ArchitectureSession, selector: str) -> _Project:
             f"Looking up Project {selector!r} failed: {error}. Nothing was written.",
         ) from error
     if project is None:
-        return _Project(selector, None)
-    return _Project(project.id, project.code)
+        return _Project(selector, None, is_confirmed=False)
+    return _Project(project.id, project.code, is_confirmed=True)
 
 
 def _canonical_cycle(raw_cycle_id: str) -> str | None:
@@ -483,11 +489,18 @@ def _canonical_cycle(raw_cycle_id: str) -> str | None:
         return None
 
 
-def _identity(project: _Project | None, raw_cycle_id: str) -> tuple[Fact, ...]:
-    """Always the same three keys; a value that is not known is None."""
+def _identity(
+    project: _Project | None, raw_cycle_id: str, *, accepted: bool = False
+) -> tuple[Fact, ...]:
+    """Always the same three keys; a value that is not known is None.
+
+    `accepted` says a domain entry point acted on the Project id, which then
+    confirms it even when no Code matched.
+    """
+    is_known = project is not None and (project.is_confirmed or accepted)
     return (
-        ("project_id", None if project is None else project.entity_id),
-        ("project_code", None if project is None else project.code),
+        ("project_id", project.entity_id if is_known else None),
+        ("project_code", project.code if is_known else None),
         ("cycle_id", _canonical_cycle(raw_cycle_id)),
     )
 
@@ -767,7 +780,7 @@ def start_cycle(
     except REFUSALS as error:
         return _refused(error, _identity(resolved, cycle_id))
     facts = _discovered_identity(manifest.context)
-    written = manifest if manifest.is_newly_written else None
+    written = manifest if manifest.is_own_write else None
     try:
         recovery = _recover(session, resolved.entity_id, cycle_id)
     except RecoveryRefused as refused:
@@ -807,12 +820,27 @@ def _resume_bootstrap(
     )
     if completed.outcome is CycleOutcome.E:
         return _bootstrap_refusal(completed, facts)
+    discovered = (
+        f"Architecture Document {context.architecture_document_id!r} was "
+        "discovered as an empty shell. No model was called."
+    )
+    if completed.outcome is CycleOutcome.B:
+        project = context.project_code or context.project_entity_id
+        message = (
+            f"{discovered} The bootstrap gate completed or adopted its carrier, "
+            "and the read-back confirms durable state B. The cycle now needs its "
+            "accepted inputs: run `sdlc project architecture start --project "
+            f"{project} --cycle {context.cycle_id}` with its --requirement, --ux "
+            "and acceptance flags."
+        )
+    else:
+        message = (
+            f"{discovered} After the bootstrap gate and its read-back the cycle "
+            f"is in durable state {completed.outcome}. {RESUME_HINT}"
+        )
     return ArchitectureCommandResult(
         TsaResultCode.ARCHITECTURE_CYCLE_RESUMED,
-        f"Architecture Document {context.architecture_document_id!r} was "
-        "discovered as an empty shell; after the bootstrap gate and its "
-        f"read-back the cycle is in durable state {completed.outcome}. No model "
-        "was called.",
+        message,
         facts=(*facts, ("state", str(completed.outcome))),
     )
 
@@ -888,14 +916,7 @@ def _reworked(
     recovery = result.recovery
     if recovery is None:
         # I11 returns exactly one of the two for a new REWORK.
-        refusal = result.recovery_refusal
-        return ArchitectureCommandResult(
-            TsaResultCode(str(refusal.code)),
-            f"{durable} Continuing to iteration {result.iteration + 1} was "
-            f"refused: {refusal}",
-            tuple(refusal.details),
-            facts,
-        )
+        return _rework_continuation_refused(result, result.recovery_refusal, facts)
     continued = (
         *facts,
         ("continued_iteration", recovery.iteration),
@@ -920,6 +941,35 @@ def _reworked(
         f"{durable} Iteration {recovery.iteration} was opened on the same Input "
         f"Manifest and stopped at its Human Decision boundary. {NEXT_DECISION}",
         facts=continued,
+    )
+
+
+def _rework_continuation_refused(
+    result: DecisionResult, refusal: RecoveryRefused, facts: tuple[Fact, ...]
+) -> ArchitectureCommandResult:
+    """A durable REWORK whose continuation to N+1 was refused (spec v0.6 3).
+
+    The REWORK is this command's own, confirmed by I11's read-back; whatever
+    recovery made durable is I10's to state inside its refusal. The refusal's
+    own code and details stay authoritative.
+    """
+    following = result.iteration + 1
+    recorded = (
+        f"REWORK of iteration {result.iteration} was recorded at Human Decision "
+        f"{result.decision_document_id!r} and read back; it remains and nothing "
+        f"was rolled back. Continuing to iteration {following} was then refused:"
+    )
+    parts = [recorded, message_after_progress(str(refusal))]
+    if not refusal.after_progress:
+        parts.append(
+            f"The Human Decision boundary of iteration {following} was not reached."
+        )
+    parts.append(RESUME_HINT)
+    return ArchitectureCommandResult(
+        TsaResultCode(str(refusal.code)),
+        " ".join(parts),
+        tuple(refusal.details),
+        facts,
     )
 
 
@@ -949,7 +999,7 @@ def rework_cycle(
         )
     except REFUSALS as error:
         return _refused(error, _identity(resolved, cycle_id))
-    return _decided(result, _identity(resolved, cycle_id))
+    return _decided(result, _identity(resolved, cycle_id, accepted=True))
 
 
 def approve_cycle(
@@ -980,7 +1030,7 @@ def approve_cycle(
         )
     except REFUSALS as error:
         return _refused(error, _identity(resolved, cycle_id))
-    return _decided(result, _identity(resolved, cycle_id))
+    return _decided(result, _identity(resolved, cycle_id, accepted=True))
 
 
 # ---------------------------------------------------------------------------

@@ -53,8 +53,14 @@ from sdlc.tsa_recovery import (
     RecoveryBoundary,
     RecoveryCase,
     RecoveryRefused,
+    message_after_progress,
 )
-from sdlc.tsa_reviewer import ArchitectStageRequired, ReviewerStageOutcome
+from sdlc.tsa_reviewer import (
+    ArchitectStageRequired,
+    ReviewerRefused,
+    ReviewerStageOutcome,
+    run_reviewer_stage,
+)
 from test_tsa_admission import (
     APPLICABLE,
     ARCHITECTURE_ID,
@@ -77,6 +83,7 @@ from test_tsa_architect import (
     persisted_but_not_applied,
     reseal,
 )
+from test_tsa_reviewer import is_review_carrier
 
 PROCESS_ID = process_id(1)
 REVIEW_ID = review_id(1)
@@ -1301,3 +1308,171 @@ def test_the_architect_is_never_delegated_after_the_reviewer(monkeypatch):
     assert result.case is RecoveryCase.RECORDED_INPUT
     assert result.architect is None
     nothing_happened(scene, architect)
+
+
+# --------------------------------------------------------------------------
+# Durable progress inside one invocation (spec v0.6 section 3)
+# --------------------------------------------------------------------------
+
+GENERIC_NO_WRITE = ("othing was written", "othing was persisted")
+
+
+def drift_after_the_review(monkeypatch, scene) -> None:
+    """The Reviewer confirms its Review; the Requirement drifts before the gate."""
+    real = tsa_recovery.run_reviewer_stage
+
+    def reviewed_then_drifted(*args, **kwargs):
+        result = real(*args, **kwargs)
+        root_edited_after_review(scene)
+        return result
+
+    monkeypatch.setattr(tsa_recovery, "run_reviewer_stage", reviewed_then_drifted)
+
+
+def test_a_confirmed_review_before_a_later_gate_refusal_is_reported(monkeypatch):
+    scene = applied_scene()
+    drift_after_the_review(monkeypatch, scene)
+
+    error = refusal(scene, no_model(scene), CoveringReviewer(scene))
+
+    assert error.code == "INPUTS_STALE"
+    assert error.after_progress is True
+    message = str(error)
+    assert f"Review Result {REVIEW_ID!r} of iteration 1 was written and confirmed" in (
+        message
+    )
+    assert "Process Result" not in message.split("The Human Decision")[0]
+    assert "nothing was rolled back" in message
+    assert "The Human Decision boundary was not reached." in message
+    for claim in GENERIC_NO_WRITE:
+        assert claim not in message
+    validate_artifact(payload_of(scene, REVIEW_ID))
+
+
+def test_case_1_progress_names_process_architecture_and_review(monkeypatch):
+    scene = accepted_scene()
+    drift_after_the_review(monkeypatch, scene)
+    architect, reviewer = models(scene)
+
+    error = refusal(scene, architect, reviewer)
+
+    message = str(error)
+    assert error.code == "INPUTS_STALE"
+    assert f"Process Result {PROCESS_ID!r} of iteration 1 was persisted" in message
+    assert "was applied to the Architecture Document" in message
+    assert f"Review Result {REVIEW_ID!r} of iteration 1 was written and confirmed" in (
+        message
+    )
+    assert error.details, "the gate's own details are kept"
+    for claim in GENERIC_NO_WRITE:
+        assert claim not in message
+
+
+def test_a_reviewer_failing_before_its_write_is_never_claimed():
+    scene = accepted_scene()
+    reviewer = CoveringReviewer(scene, error=ModelRuntimeError("reviewer exited 1"))
+
+    error = refusal(scene, RecordingModel(scene), reviewer)
+
+    assert error.code == "MODEL_RUNTIME_FAILED"
+    assert error.after_progress is True, "the Architect stage wrote"
+    assert "Review Result" not in str(error).split("could not run")[0]
+    assert REVIEW_ID not in scene.tsa.documents
+    assert error.details == ("reviewer exited 1",)
+
+
+def reviewer_truth_of_an_empty_read_back() -> str:
+    direct = applied_scene()
+    direct.tsa.store_as = lambda md: "" if is_review_carrier(md) else md
+    with pytest.raises(ReviewerRefused) as caught:
+        run_reviewer_stage(
+            direct.tsa, direct.req, CoveringReviewer(direct), PROJECT_ID, CYCLE
+        )
+    return str(caught.value)
+
+
+def test_a_review_written_but_not_confirmed_keeps_the_reviewer_own_text():
+    truth = reviewer_truth_of_an_empty_read_back()
+    alone = applied_scene()
+    alone.tsa.store_as = lambda md: "" if is_review_carrier(md) else md
+    after_architect = accepted_scene()
+    after_architect.tsa.store_as = lambda md: "" if is_review_carrier(md) else md
+
+    unchanged = refusal(alone, no_model(alone), CoveringReviewer(alone))
+    wrapped = refusal(after_architect, *models(after_architect))
+
+    assert str(unchanged) == truth and unchanged.after_progress is False
+    assert message_after_progress(truth) in str(wrapped)
+    assert "was written and confirmed" not in str(wrapped), "no Review claim"
+
+
+#: (a gate or stage refusal, the same refusal once progress was made)
+CLAUSE_CASES = [
+    (
+        "Gate refused. Nothing was written and no model was called.",
+        "Gate refused.",
+    ),
+    (
+        (
+            "X is not admissible: y. The whole selection is refused and "
+            "nothing was written."
+        ),
+        "X is not admissible: y. The whole selection is refused.",
+    ),
+    (
+        "Could not run the Architect. Nothing was persisted or applied.",
+        "Could not run the Architect.",
+    ),
+    (
+        "Could not run the Reviewer. Nothing was persisted.",
+        "Could not run the Reviewer.",
+    ),
+    (
+        (
+            "Iteration 1 carries an APPROVE; the cycle is closed to writes "
+            "and nothing was written."
+        ),
+        "Iteration 1 carries an APPROVE; the cycle is closed to writes.",
+    ),
+    (
+        (
+            "Matches neither input nor output of iteration 1. Nothing was "
+            "overwritten and no model was called; a human decides which is "
+            "authoritative."
+        ),
+        (
+            "Matches neither input nor output of iteration 1. A human decides "
+            "which is authoritative."
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(("before", "after"), CLAUSE_CASES)
+def test_only_generic_no_mutation_clauses_are_removed(before, after):
+    assert message_after_progress(before) == after
+
+
+@pytest.mark.parametrize(
+    "kept",
+    [
+        "Review Result 'r' is not observable after its create; nothing was written.",
+        "The Architecture still holds the recorded input; nothing was retried.",
+        "A note says nothing was written here, mid-sentence, on purpose.",
+    ],
+)
+def test_scoped_and_mid_sentence_statements_are_kept(kept):
+    assert message_after_progress(kept) == kept
+
+
+def test_without_progress_a_refusal_is_raised_byte_identical():
+    scene = applied_scene()
+    root_edited_after_review(scene)
+    reviewer = CoveringReviewer(scene)
+
+    error = refusal(scene, no_model(scene), reviewer)
+
+    assert error.after_progress is False
+    assert str(error).endswith(
+        "The whole selection is refused and nothing was written."
+    )

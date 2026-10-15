@@ -29,6 +29,7 @@ Not owned here: writing a Human Decision, its idempotency and dispositions
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -123,31 +124,36 @@ _REQUIRED = {
 }
 
 
-#: The exact trailing sentences a gate or stage refusal can end with that deny
-#: any write, each with what stays true of it once this invocation already
-#: made durable progress. Only these exact endings are changed.
-NO_PROGRESS_CLAIMS = (
-    (" Nothing was written and no model was called.", ""),
+#: The closed grammar of a generic no-mutation clause: what a gate or stage
+#: pass says it did not do. It is a statement about that pass alone.
+_NO_MUTATION = (
+    r"othing was (?:written|persisted(?: or applied)?|overwritten|created or "
+    r"written)(?: and no model was called)?"
+)
+#: The three places such a clause can sit, each at a sentence boundary only:
+#: a whole sentence; a leading clause before `; `, whose remainder becomes the
+#: sentence; and a final ` and ...` conjunct of a sentence.
+_NO_MUTATION_FORMS = (
+    (re.compile(rf"(?:^|(?<=[.!?]) )N{_NO_MUTATION}\.(?= |$)"), ""),
     (
-        " The whole selection is refused and nothing was written.",
-        " The whole selection is refused.",
+        re.compile(rf"(?:^|(?<=[.!?]) )N{_NO_MUTATION}; (\w)"),
+        lambda match: f" {match.group(1).upper()}",
     ),
-    (" Nothing was persisted or applied.", ""),
-    (" Nothing was persisted.", ""),
-    (" Nothing was written.", ""),
+    (re.compile(rf" and n{_NO_MUTATION}\.(?= |$)"), "."),
 )
 
 
 def message_after_progress(message: str) -> str:
-    """A refusal message without its own trailing no-write claim.
+    """A refusal message without its generic no-mutation clauses.
 
-    That claim describes one stage or gate pass; it is no longer true of an
-    invocation that already made durable progress. The diagnosis is kept.
+    Such a clause describes one gate or stage pass; it is no longer true of an
+    invocation that already made durable progress. Only the closed grammar
+    above is removed, and only at a sentence boundary: the diagnosis, every
+    other sentence and every scoped statement are kept as they are.
     """
-    for claim, remains in NO_PROGRESS_CLAIMS:
-        if message.endswith(claim):
-            return f"{message[: -len(claim)]}{remains}"
-    return message
+    for pattern, replacement in _NO_MUTATION_FORMS:
+        message = pattern.sub(replacement, message)
+    return re.sub(r" {2,}", " ", message).strip()
 
 
 class RecoveryRefused(Exception):
@@ -175,9 +181,21 @@ class RecoveryRefused(Exception):
 
 @dataclass
 class _Progress:
-    """What this invocation itself made durable before a later refusal."""
+    """What this invocation itself made durable before a later refusal.
+
+    Each field holds a stage result only when that stage reported a durable,
+    read-back write: an Architect stage that persisted a Process Result or
+    applied an output, a Reviewer stage whose Review Result it wrote and
+    confirmed. A stage that was not called, wrote nothing, or refused is
+    absent; a stage's own refusal keeps its own mutation-aware text.
+    """
 
     architect: ArchitectStageResult | None = None
+    reviewer: ReviewerStageResult | None = None
+
+    @property
+    def is_made(self) -> bool:
+        return self.architect is not None or self.reviewer is not None
 
 
 def _wrote(result: ArchitectStageResult | None) -> bool:
@@ -186,31 +204,41 @@ def _wrote(result: ArchitectStageResult | None) -> bool:
     )
 
 
-def _after_progress(
-    refused: RecoveryRefused, architect: ArchitectStageResult
-) -> RecoveryRefused:
+def _progress_facts(progress: _Progress) -> list[str]:
+    """Each durable write of this invocation, as its stage result reports it."""
+    facts = []
+    architect = progress.architect
+    if architect is not None and architect.process_written:
+        facts.append(
+            f"Process Result {architect.process_result_document_id!r} of "
+            f"iteration {architect.iteration} was persisted ({architect.outcome})"
+        )
+    if architect is not None and architect.architecture_written:
+        facts.append(
+            f"the output of Process Result {architect.process_result_document_id!r} "
+            f"was applied to the Architecture Document ({architect.outcome})"
+        )
+    reviewer = progress.reviewer
+    if reviewer is not None:
+        facts.append(
+            f"Review Result {reviewer.review_result_document_id!r} of iteration "
+            f"{reviewer.iteration} was written and confirmed ({reviewer.outcome})"
+        )
+    return facts
+
+
+def _after_progress(refused: RecoveryRefused, progress: _Progress) -> RecoveryRefused:
     """A refusal that says what this invocation already made durable.
 
-    Only what the Architect stage result reports — read back by the stage
-    before it returned — is claimed. The code and details are unchanged, and
-    the refusal's own text is kept except a trailing no-write claim.
+    Only what the stage results report — each read back by its stage before
+    it returned — is claimed. The code and details are unchanged, and the
+    refusal's own text is kept except its generic no-mutation clauses.
     """
-    done = []
-    if architect.process_written:
-        done.append(
-            f"Process Result {architect.process_result_document_id!r} of "
-            f"iteration {architect.iteration} was persisted"
-        )
-    if architect.architecture_written:
-        done.append(
-            f"the output of Process Result {architect.process_result_document_id!r} "
-            "was applied to the Architecture Document"
-        )
     return RecoveryRefused(
         refused.code,
-        f"This recovery already made durable progress: {' and '.join(done)} "
-        f"({architect.outcome}). That remains and nothing was rolled back. The "
-        "Human Decision boundary was not reached. "
+        f"This recovery already made durable progress: "
+        f"{'; '.join(_progress_facts(progress))}. That remains and nothing was "
+        "rolled back. The Human Decision boundary was not reached. "
         f"{message_after_progress(str(refused))}",
         refused.details,
         after_progress=True,
@@ -361,9 +389,10 @@ def recover_architecture_cycle(
     may not run again, it stops at `ARCHITECT_REQUIRED` or `REVIEWER_REQUIRED`
     and leaves the decision to a later invocation.
 
-    A refusal after the Architect stage already wrote in this invocation says
-    so, with the same code and details (`_after_progress`): that progress is
-    durable and never rolled back.
+    A refusal after a stage already wrote in this invocation — the Architect
+    stage, or the Reviewer stage whose Review it confirmed — says so, with the
+    same code and details (`_after_progress`): that progress is durable and
+    never rolled back.
     """
     progress = _Progress()
     try:
@@ -378,9 +407,9 @@ def recover_architecture_cycle(
             progress,
         )
     except RecoveryRefused as refused:
-        if progress.architect is None:
+        if not progress.is_made:
             raise
-        raise _after_progress(refused, progress.architect) from refused
+        raise _after_progress(refused, progress) from refused
 
 
 def _carry(
@@ -445,3 +474,5 @@ def _carry(
             )
         except ArchitectStageRequired:
             continue
+        if reviewer is not None and reviewer.review_written:
+            progress.reviewer = reviewer

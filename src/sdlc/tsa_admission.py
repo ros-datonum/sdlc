@@ -221,12 +221,18 @@ class ManifestResult:
     """The cycle's valid accepted Input Manifest, as read back from Fibery.
 
     `is_newly_written` is false when an existing Manifest was reused unchanged
-    for the same caller inputs.
+    for the same caller inputs, and also when this call's own write landed
+    behind an unknown outcome and was adopted.
+
+    `is_own_write` is true exactly when the durable Manifest was confirmed, by
+    read-back, to be the very artifact this call emitted — whether its write
+    returned normally or its outcome was unknown and rediscovery found it.
     """
 
     context: BootstrapContext
     artifact: TsaArtifact
     is_newly_written: bool
+    is_own_write: bool = False
 
 
 @dataclass(frozen=True)
@@ -1106,7 +1112,9 @@ def _confirm_intended_manifest(
             "The Input Manifest read back as a different artifact than the one "
             "written. Nothing was overwritten or retried.",
         )
-    return ManifestResult(context, artifact, is_newly_written=is_newly_written)
+    return ManifestResult(
+        context, artifact, is_newly_written=is_newly_written, is_own_write=True
+    )
 
 
 def _resolve_after_mutation(

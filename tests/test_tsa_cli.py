@@ -78,9 +78,11 @@ from test_tsa_admission import (
     PUBLIC_ID,
     UX_DOCUMENT_ID,
     UX_REASON,
+    accepted_manifest_carrier,
     bootstrap_carrier,
     child_added_after_review,
     fail,
+    landed_with,
     root_edited_after_review,
     world,
 )
@@ -1255,8 +1257,8 @@ def test_a_new_rework_whose_continuation_fails_reports_the_durable_rework(
     run = harness(*rework_argv("--reason", "Split the API."))
 
     assert_result(run, "MODEL_RUNTIME_FAILED")
-    assert "REWORK of iteration 1 is durable" in run.err
-    assert "not rolled back" in run.err
+    assert "REWORK of iteration 1 was recorded" in run.err
+    assert "nothing was rolled back" in run.err
     assert payload_of(scene, DECISION_ID)["body"]["decision"] == "REWORK"
 
 
@@ -2105,5 +2107,191 @@ def test_resume_on_an_empty_shell_states_only_the_read_back_state(make_cli):
 
     assert_result(run, "ARCHITECTURE_CYCLE_RESUMED")
     assert "discovered as an empty shell" in run.out
-    assert "the cycle is in durable state B" in run.out
-    assert "completed in place" not in run.out
+    assert "the read-back confirms durable state B" in run.out
+    assert (
+        f"sdlc project architecture start --project {PROJECT_CODE} --cycle {CYCLE}"
+        in run.out
+    )
+    assert "--requirement, --ux and acceptance flags" in run.out
+
+
+# --------------------------------------------------------------------------
+# O. start: an unknown Manifest outcome (spec v0.6 section 3)
+# --------------------------------------------------------------------------
+
+MANIFEST_CLAIM = "This start wrote the cycle's accepted Input Manifest"
+
+
+def test_an_unknown_manifest_write_that_landed_exact_is_start_progress(make_cli):
+    scene = scene_b()
+    scene.tsa.after(WRITE, 1, fail("response lost"))
+    harness = make_cli(scene, architect=failing(scene, TSA_ARCHITECT_ROLE))
+
+    run = harness(*start_argv())
+
+    assert_result(run, "MODEL_RUNTIME_FAILED")
+    assert MANIFEST_CLAIM in run.err
+    assert_no_false_claim(run.err)
+    assert "The Human Decision boundary was not reached." in run.err
+    assert scene.tsa.count(WRITE) == 1, "confirmed, never written twice"
+    payload_of(scene, MANIFEST_ID)
+
+
+def test_an_unknown_manifest_write_that_did_not_land_is_not_claimed(make_cli):
+    scene = scene_b()
+    scene.tsa.before(WRITE, 1, fail("connection reset"))
+    harness = make_cli(scene, architect=failing(scene, TSA_ARCHITECT_ROLE))
+
+    run = harness(*start_argv())
+
+    assert run.exit_code == 1
+    assert MANIFEST_CLAIM not in run.err
+    assert scene.tsa.content_of(MANIFEST_ID) == ""
+    assert harness.model_calls == (0, 0)
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "A note, not a Manifest.\n",
+        accepted_manifest_carrier(ux=APPLICABLE),
+    ],
+    ids=["malformed", "another-manifest"],
+)
+def test_an_unknown_manifest_write_that_landed_otherwise_is_not_claimed(
+    stored, make_cli
+):
+    scene = scene_b()
+    scene.tsa.after(WRITE, 1, landed_with(scene, stored))
+    harness = make_cli(scene, architect=failing(scene, TSA_ARCHITECT_ROLE))
+
+    run = harness(*start_argv())
+
+    assert run.exit_code == 1
+    assert run.code in ("ARTIFACT_MALFORMED", "FIBERY_WRITE_FAILED")
+    assert MANIFEST_CLAIM not in run.err
+    assert scene.tsa.content_of(MANIFEST_ID) == stored, "never overwritten"
+    assert harness.model_calls == (0, 0)
+
+
+# --------------------------------------------------------------------------
+# P. rework: a durable REWORK whose continuation is refused (v0.6 section 3)
+# --------------------------------------------------------------------------
+
+REWORK_CLAIM = "REWORK of iteration 1 was recorded at Human Decision"
+
+
+def drifting_after_review(monkeypatch, scene) -> None:
+    real = tsa_recovery.run_reviewer_stage
+
+    def reviewed_then_drifted(*args, **kwargs):
+        result = real(*args, **kwargs)
+        root_edited_after_review(scene)
+        return result
+
+    monkeypatch.setattr(tsa_recovery, "run_reviewer_stage", reviewed_then_drifted)
+
+
+def test_rework_then_the_architect_fails_before_any_write(make_cli):
+    scene = reviewed_scene()
+    harness = make_cli(scene, architect=failing(scene, TSA_ARCHITECT_ROLE))
+
+    run = harness(*rework_argv())
+
+    assert_result(run, "MODEL_RUNTIME_FAILED")
+    assert REWORK_CLAIM in run.err
+    assert "This recovery already made durable progress" not in run.err
+    assert "The Human Decision boundary of iteration 2 was not reached." in run.err
+    assert "sdlc project architecture resume" in run.err
+    assert_no_false_claim(run.err)
+    assert process_id(2) not in scene.tsa.documents
+
+
+def test_rework_then_the_reviewer_fails_before_its_write(make_cli):
+    scene = reviewed_scene()
+    harness = make_cli(scene, reviewer=failing(scene, TSA_REVIEWER_ROLE, 2))
+
+    run = harness(*rework_argv())
+
+    assert_result(run, "MODEL_RUNTIME_FAILED")
+    assert REWORK_CLAIM in run.err
+    assert f"Process Result {process_id(2)!r} of iteration 2 was persisted" in run.err
+    assert "was applied to the Architecture Document" in run.err
+    assert "was written and confirmed" not in run.err, "no Review is claimed"
+    assert "sdlc project architecture resume" in run.err
+    assert_no_false_claim(run.err)
+    assert review_id(2) not in scene.tsa.documents
+
+
+def test_rework_then_a_review_then_a_later_gate_refusal(make_cli, monkeypatch):
+    scene = reviewed_scene()
+    drifting_after_review(monkeypatch, scene)
+    harness = make_cli(scene, iteration=2)
+
+    run = harness(*rework_argv())
+
+    assert_result(run, "INPUTS_STALE")
+    assert REWORK_CLAIM in run.err
+    assert f"Process Result {process_id(2)!r} of iteration 2 was persisted" in run.err
+    assert "was applied to the Architecture Document" in run.err
+    assert (
+        f"Review Result {review_id(2)!r} of iteration 2 was written and confirmed"
+        in run.err
+    )
+    assert "othing was written" not in run.err
+    assert run.err.count("The Human Decision boundary") == 1
+    assert harness.model_calls == (1, 1)
+
+
+def test_an_idempotent_rework_retry_runs_no_recovery(make_cli):
+    scene = scene_decided("REWORK")()
+    harness = make_cli(scene)
+
+    run = harness(*rework_argv())
+
+    assert_result(run, "DECISION_ALREADY_RECORDED")
+    nothing_changed(harness)
+    assert harness.roles == []
+
+
+# --------------------------------------------------------------------------
+# Q. An unmatched --project value is never reported as an id
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["inspect", "--project", "Nope", "--cycle", CYCLE],
+        ["resume", "--project", "Nope", "--cycle", CYCLE],
+        [
+            "approve",
+            "--project",
+            "Nope",
+            "--cycle",
+            CYCLE,
+            "--iteration",
+            "1",
+            "--review-result-id",
+            REVIEW_ID,
+            "--confirm",
+        ],
+    ],
+    ids=["inspect", "resume", "approve"],
+)
+def test_an_unmatched_project_value_is_never_shown_as_its_id(argv, make_cli):
+    run = make_cli(reviewed_scene())(*argv)
+
+    assert_result(run, "FIBERY_READ_FAILED")
+    assert "Project: Nope" not in run.err
+    assert f"Cycle: {CYCLE}" in run.err
+
+
+def test_an_unmatched_project_value_is_null_in_inspect_json(make_cli):
+    run = make_cli(reviewed_scene())(
+        "inspect", "--project", "Nope", "--cycle", CYCLE, "--json"
+    )
+
+    record = json_of(run)
+    assert record["code"] == "FIBERY_READ_FAILED"
+    assert record["project_id"] is None and record["project_code"] is None
