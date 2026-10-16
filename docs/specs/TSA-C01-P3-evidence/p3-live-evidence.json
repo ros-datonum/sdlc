@@ -1,0 +1,156 @@
+{
+  "adapter": "FiberyArchitectureWorkspace over FiberyClient",
+  "caps": {
+    "creates": 2,
+    "deletes": 0,
+    "largest_fence_bytes": 4194304,
+    "largest_markdown_bytes": 4198400,
+    "write_retries": 0,
+    "writes": 2
+  },
+  "confirm_live_mutation": true,
+  "counters": {
+    "creates": 2,
+    "writes": 2
+  },
+  "finished_utc": "2026-10-16T11:04:49+00:00",
+  "mode": "live",
+  "owned_documents": [
+    {
+      "document_id": "4a827b68-0734-496c-860d-74671c6b8b7f",
+      "name": "TSA-P3-PROBE SIZE 2097152 20261016T110430Z"
+    },
+    {
+      "document_id": "f165563f-278c-4b45-a1ce-8759e9acdf80",
+      "name": "TSA-P3-PROBE SIZE 4194304 20261016T110430Z"
+    }
+  ],
+  "project": {
+    "code": "TSAP1",
+    "entity_id": "368c0490-bda7-11f1-9f37-3f144160159b",
+    "name": "TSA P-1 SCRATCH \u2014 DO NOT USE",
+    "public_id": "27",
+    "state": "Planned"
+  },
+  "project_unchanged": true,
+  "run_id": "20261016T110430Z",
+  "samples": [
+    {
+      "document_id": "4a827b68-0734-496c-860d-74671c6b8b7f",
+      "durable_state": "COMPLETE",
+      "emitted_fingerprint": "0cabbf78b87f0df4a1423c91251447242201d78aa305671f49e06e6f939a64a5",
+      "emitted_markdown": {
+        "bytes": 2097301,
+        "sha256": "df9afeb9661d0491e6d2011ac5d72fea503b214c70a555f337d3bb2a002dd16a"
+      },
+      "fence": {
+        "bytes": 2097152,
+        "sha256": "f83412138964a666e665f0e4283f3cff12b0113e5718d795feff106dca49c034"
+      },
+      "fence_exact": true,
+      "fence_json_valid": true,
+      "fingerprint_equal": true,
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "placement_after_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "4a827b68-0734-496c-860d-74671c6b8b7f",
+        "name": "TSA-P3-PROBE SIZE 2097152 20261016T110430Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "placement_before_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "4a827b68-0734-496c-860d-74671c6b8b7f",
+        "name": "TSA-P3-PROBE SIZE 2097152 20261016T110430Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fence": {
+        "bytes": 2097152,
+        "sha256": "f83412138964a666e665f0e4283f3cff12b0113e5718d795feff106dca49c034"
+      },
+      "read_fingerprint": "0cabbf78b87f0df4a1423c91251447242201d78aa305671f49e06e6f939a64a5",
+      "read_markdown": {
+        "bytes": 2097300,
+        "sha256": "47b9fbe6a0271af4d2e0b8713e0d3957d31047b5f675c5fb719cdcf26af11103"
+      },
+      "request_body_bytes": 2097333,
+      "result": "SUCCESS",
+      "sample_bytes": 2097152,
+      "write": "RETURNED"
+    },
+    {
+      "document_id": "f165563f-278c-4b45-a1ce-8759e9acdf80",
+      "durable_state": "EMPTY",
+      "emitted_fingerprint": "4a64454d610e74d966b2b522829260153bb9e9a8cd2f30b0924543dde361cbaa",
+      "emitted_markdown": {
+        "bytes": 4194453,
+        "sha256": "ae7d742250aeaec2fa50137fc0ef37ae55337cc4579ebfe874d0967b0244f909"
+      },
+      "failure_kind": "HTTP_REJECTION_UNATTRIBUTED",
+      "fence": {
+        "bytes": 4194304,
+        "sha256": "bd1fce5a04fe843fe9d1d5fa4917692f909c2325951fab444b1b8b352c884faa"
+      },
+      "fence_exact": false,
+      "fence_json_valid": false,
+      "fingerprint_equal": false,
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "placement_after_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "f165563f-278c-4b45-a1ce-8759e9acdf80",
+        "name": "TSA-P3-PROBE SIZE 4194304 20261016T110430Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "placement_before_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "f165563f-278c-4b45-a1ce-8759e9acdf80",
+        "name": "TSA-P3-PROBE SIZE 4194304 20261016T110430Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fence": null,
+      "read_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "read_markdown": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "request_body_bytes": 4194485,
+      "result": "NOT_SUCCESS",
+      "sample_bytes": 4194304,
+      "write": "RAISED",
+      "write_error": "FiberyError: Fibery not replayable PUT documents request failed (HTTP 500) on attempt 1; the server's response is not reported."
+    }
+  ],
+  "started_utc": "2026-10-16T11:04:30+00:00",
+  "summary": {
+    "A_largest_success_bytes": 2097152,
+    "B_smallest_verified_size_refusal_bytes": null,
+    "C_refusal_behaviour": [
+      {
+        "durable_state": "EMPTY",
+        "failure_kind": "HTTP_REJECTION_UNATTRIBUTED",
+        "sample_bytes": 4194304,
+        "write": "RAISED"
+      }
+    ],
+    "D_true_maximum": "unknown"
+  },
+  "timeout_seconds": 30.0,
+  "workspace_identity": "rb-ventures.fibery.io/19c62a00-7a47-11f1-aba7-67039973deac"
+}
