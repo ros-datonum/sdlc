@@ -1,0 +1,296 @@
+{
+  "adapter": "FiberyArchitectureWorkspace over FiberyClient",
+  "blocked": null,
+  "confirmations": {
+    "confirm_live_mutation": true,
+    "confirm_probe_deletion": true
+  },
+  "counters": {
+    "creates": 7,
+    "deletes": 1,
+    "writes": 8
+  },
+  "finished_utc": "2026-10-16T10:47:39+00:00",
+  "i2": {
+    "A_initial": {
+      "document_id": "c49e6690-861d-4ecb-8152-f59425b128f3",
+      "emitted_fingerprint": "f01f6ea4b1e4e1fe4cd05070ddaabbce54e6a6495ffdd56a7f2fe3149ccf240a",
+      "i05_binding": {
+        "content_digest": "f01f6ea4b1e4e1fe4cd05070ddaabbce54e6a6495ffdd56a7f2fe3149ccf240a"
+      },
+      "listed_times": 1,
+      "placement": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "c49e6690-861d-4ecb-8152-f59425b128f3",
+        "name": "TSA-P2-PROBE UX 20261016T104639Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fingerprint": "f01f6ea4b1e4e1fe4cd05070ddaabbce54e6a6495ffdd56a7f2fe3149ccf240a"
+    },
+    "B_same_name": {
+      "a_unchanged": true,
+      "b_read_fingerprint": "453b690f94159d17e223589646f418b163d61028ddc1d62e1446b0e8c4b62b6c",
+      "document_id": "2131861f-6eea-4b24-8f5d-cb0ed160d4be",
+      "i05_binding_a_still": {
+        "content_digest": "f01f6ea4b1e4e1fe4cd05070ddaabbce54e6a6495ffdd56a7f2fe3149ccf240a"
+      },
+      "ids_distinct": true,
+      "listed_times": 1,
+      "placement": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "2131861f-6eea-4b24-8f5d-cb0ed160d4be",
+        "name": "TSA-P2-PROBE UX 20261016T104639Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "same_name_documents_listed": 2
+    },
+    "D_content_replaced": {
+      "fingerprint_changed": true,
+      "i05_binding": {
+        "content_digest": "b7ddee39cb5c66101741bf93987ec144a7d8fa56681672ad4fb5ff12f1973ec5"
+      },
+      "identity_unchanged": true,
+      "listed_times": 1,
+      "original_binding_no_longer_current": true,
+      "placement": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "c49e6690-861d-4ecb-8152-f59425b128f3",
+        "name": "TSA-P2-PROBE UX 20261016T104639Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fingerprint": "b7ddee39cb5c66101741bf93987ec144a7d8fa56681672ad4fb5ff12f1973ec5"
+    },
+    "F_deleted": {
+      "b_listed_times_after": 1,
+      "b_unchanged": true,
+      "deleted_id": "c49e6690-861d-4ecb-8152-f59425b128f3",
+      "i05_binding_deleted_id": {
+        "message": "UX Document 'c49e6690-861d-4ecb-8152-f59425b128f3' is not admissible evidence: no Document exists at that id.",
+        "refused": "UX_EVIDENCE_INVALID"
+      },
+      "listed_times_after": 0,
+      "rediscovered_by_id": false,
+      "same_name_documents_listed_after": 1
+    },
+    "classification": {
+      "content_modification": "VERIFIED",
+      "deletion": "VERIFIED",
+      "direct_id_rediscovery": "VERIFIED",
+      "fingerprint_currentness": "VERIFIED",
+      "original_binding_invalidation_by_deletion": "VERIFIED",
+      "original_binding_invalidation_by_modification": "VERIFIED",
+      "project_listing": "VERIFIED",
+      "replacement_by_other_identity_original_present": "VERIFIED"
+    }
+  },
+  "i3": [
+    {
+      "classification": "SUCCESS",
+      "document_id": "bbd5f6c7-c555-497e-8406-4ab6477e15f8",
+      "durable_state": "COMPLETE_NEW",
+      "emitted_fingerprint": "e453a0806eb9f7a14d029bd5bbd81aaee2a64cc3d443bb707ead456fce213657",
+      "emitted_markdown_bytes": 8338,
+      "emitted_markdown_sha256": "99512ae796722484e2fa61a8d4d1a4f4565fa835bbedc71e3f70183577d920af",
+      "fence_bytes": 8192,
+      "fence_code_points": 8192,
+      "fence_exact": true,
+      "fence_json_valid": true,
+      "fence_sha256": "aa32ff5dc89d1aa78e5e35a227099f92c6cca5e3a1c74d5bbae926d7caa18920",
+      "fingerprint_equal": true,
+      "placement_before_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "bbd5f6c7-c555-497e-8406-4ab6477e15f8",
+        "name": "TSA-P2-PROBE SIZE 8192 20261016T104639Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fence_bytes": 8192,
+      "read_fingerprint": "e453a0806eb9f7a14d029bd5bbd81aaee2a64cc3d443bb707ead456fce213657",
+      "read_markdown_bytes": 8337,
+      "read_markdown_sha256": "46cfd3a6b0d08d832b0a22244cf33cd17230e2681c6e16bc04a83f5902faea43",
+      "sample_bytes": 8192,
+      "whole_markdown_equal": false,
+      "write": "RETURNED"
+    },
+    {
+      "classification": "SUCCESS",
+      "document_id": "538f1f40-cbc5-44e9-be5e-3ab5827006d7",
+      "durable_state": "COMPLETE_NEW",
+      "emitted_fingerprint": "1e7e155556d653b4c38943ead1a3f4bbf92578cd89bab85fc3e23f16f672b826",
+      "emitted_markdown_bytes": 65683,
+      "emitted_markdown_sha256": "91b7562e1e76e81c33de0b834289cafe2b94bab624c70377787667f9cdf8c530",
+      "fence_bytes": 65536,
+      "fence_code_points": 65536,
+      "fence_exact": true,
+      "fence_json_valid": true,
+      "fence_sha256": "bb039a5f381749026ab71fd3a556cca47e2155995c5a4636a8b6fa4e2b1355ec",
+      "fingerprint_equal": true,
+      "placement_before_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "538f1f40-cbc5-44e9-be5e-3ab5827006d7",
+        "name": "TSA-P2-PROBE SIZE 65536 20261016T104639Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fence_bytes": 65536,
+      "read_fingerprint": "1e7e155556d653b4c38943ead1a3f4bbf92578cd89bab85fc3e23f16f672b826",
+      "read_markdown_bytes": 65682,
+      "read_markdown_sha256": "1197e0751c764a5cecdca73b7b9d532f2451003fb21d6380a21d80559911ed26",
+      "sample_bytes": 65536,
+      "whole_markdown_equal": false,
+      "write": "RETURNED"
+    },
+    {
+      "classification": "SUCCESS",
+      "document_id": "90063c88-1503-48b3-98ba-ff3551a1b9ae",
+      "durable_state": "COMPLETE_NEW",
+      "emitted_fingerprint": "d7fef4a195d5bda6eaa519612a8b9f455426d810b14485eecb89386e03bd640d",
+      "emitted_markdown_bytes": 262292,
+      "emitted_markdown_sha256": "5124f81c99fa960bd9917640965a20736a07f3a6b5a63bfaf876c86aae36f92a",
+      "fence_bytes": 262144,
+      "fence_code_points": 262144,
+      "fence_exact": true,
+      "fence_json_valid": true,
+      "fence_sha256": "7a25f60296342582cfc29f128274d645a9d9c8c5a8135e91021fa2ae0aa185ff",
+      "fingerprint_equal": true,
+      "placement_before_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "90063c88-1503-48b3-98ba-ff3551a1b9ae",
+        "name": "TSA-P2-PROBE SIZE 262144 20261016T104639Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fence_bytes": 262144,
+      "read_fingerprint": "d7fef4a195d5bda6eaa519612a8b9f455426d810b14485eecb89386e03bd640d",
+      "read_markdown_bytes": 262291,
+      "read_markdown_sha256": "d80992abe8d99360a86fc05145a3f4b4df65b1fb0b05851178e68d4cdb23fc26",
+      "sample_bytes": 262144,
+      "whole_markdown_equal": false,
+      "write": "RETURNED"
+    },
+    {
+      "classification": "SUCCESS",
+      "document_id": "441cabc0-778b-4664-9424-aa02bb19def1",
+      "durable_state": "COMPLETE_NEW",
+      "emitted_fingerprint": "09b9698359d907bc2d6576ea484322739e136f3055eed8a544f5661b93e0ffcc",
+      "emitted_markdown_bytes": 524436,
+      "emitted_markdown_sha256": "a4096e3732d30cc354ad3acee5f23f6f19e3e5f6d040aa4b071659e334cf55bf",
+      "fence_bytes": 524288,
+      "fence_code_points": 524288,
+      "fence_exact": true,
+      "fence_json_valid": true,
+      "fence_sha256": "d63b120baee001c42fb4c78832b35c12a970b640f7537fc6b364b6a9c86d1205",
+      "fingerprint_equal": true,
+      "placement_before_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "441cabc0-778b-4664-9424-aa02bb19def1",
+        "name": "TSA-P2-PROBE SIZE 524288 20261016T104639Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fence_bytes": 524288,
+      "read_fingerprint": "09b9698359d907bc2d6576ea484322739e136f3055eed8a544f5661b93e0ffcc",
+      "read_markdown_bytes": 524435,
+      "read_markdown_sha256": "bf8e951cf09b0e121b8d21413b46871d28b2e154f9cc151322895097482bd895",
+      "sample_bytes": 524288,
+      "whole_markdown_equal": false,
+      "write": "RETURNED"
+    },
+    {
+      "classification": "SUCCESS",
+      "document_id": "c04b85ed-bccf-4e21-8bba-bb446e2e3235",
+      "durable_state": "COMPLETE_NEW",
+      "emitted_fingerprint": "f8dff1857ee40b0294dc674b4dafeccb67c182b9114e6f7e9c6d8952b272b96a",
+      "emitted_markdown_bytes": 1048725,
+      "emitted_markdown_sha256": "d6ce9b8f376ecb1306d8720129e5e038b9f258dd88a2079c39bc40dbae67b67b",
+      "fence_bytes": 1048576,
+      "fence_code_points": 1048576,
+      "fence_exact": true,
+      "fence_json_valid": true,
+      "fence_sha256": "cfd0c8c9ac18526fefe4fc4cca095c0c9776f239b36581622239fa6282c00950",
+      "fingerprint_equal": true,
+      "placement_before_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "c04b85ed-bccf-4e21-8bba-bb446e2e3235",
+        "name": "TSA-P2-PROBE SIZE 1048576 20261016T104639Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fence_bytes": 1048576,
+      "read_fingerprint": "f8dff1857ee40b0294dc674b4dafeccb67c182b9114e6f7e9c6d8952b272b96a",
+      "read_markdown_bytes": 1048724,
+      "read_markdown_sha256": "7675133d9dcbcab5f15d8e0fb423fe61037739044852a28c8b8325097b1d3005",
+      "sample_bytes": 1048576,
+      "whole_markdown_equal": false,
+      "write": "RETURNED"
+    }
+  ],
+  "mode": "live",
+  "owned_documents": [
+    {
+      "deleted": true,
+      "document_id": "c49e6690-861d-4ecb-8152-f59425b128f3",
+      "name": "TSA-P2-PROBE UX 20261016T104639Z"
+    },
+    {
+      "deleted": false,
+      "document_id": "2131861f-6eea-4b24-8f5d-cb0ed160d4be",
+      "name": "TSA-P2-PROBE UX 20261016T104639Z"
+    },
+    {
+      "deleted": false,
+      "document_id": "bbd5f6c7-c555-497e-8406-4ab6477e15f8",
+      "name": "TSA-P2-PROBE SIZE 8192 20261016T104639Z"
+    },
+    {
+      "deleted": false,
+      "document_id": "538f1f40-cbc5-44e9-be5e-3ab5827006d7",
+      "name": "TSA-P2-PROBE SIZE 65536 20261016T104639Z"
+    },
+    {
+      "deleted": false,
+      "document_id": "90063c88-1503-48b3-98ba-ff3551a1b9ae",
+      "name": "TSA-P2-PROBE SIZE 262144 20261016T104639Z"
+    },
+    {
+      "deleted": false,
+      "document_id": "441cabc0-778b-4664-9424-aa02bb19def1",
+      "name": "TSA-P2-PROBE SIZE 524288 20261016T104639Z"
+    },
+    {
+      "deleted": false,
+      "document_id": "c04b85ed-bccf-4e21-8bba-bb446e2e3235",
+      "name": "TSA-P2-PROBE SIZE 1048576 20261016T104639Z"
+    }
+  ],
+  "project": {
+    "code": "TSAP1",
+    "entity_id": "368c0490-bda7-11f1-9f37-3f144160159b",
+    "name": "TSA P-1 SCRATCH \u2014 DO NOT USE",
+    "public_id": "27",
+    "state": "Planned"
+  },
+  "project_unchanged": true,
+  "run_id": "20261016T104639Z",
+  "started_utc": "2026-10-16T10:46:39+00:00",
+  "workspace_identity": "rb-ventures.fibery.io/19c62a00-7a47-11f1-aba7-67039973deac"
+}
