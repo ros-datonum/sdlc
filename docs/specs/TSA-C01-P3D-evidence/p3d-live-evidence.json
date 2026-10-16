@@ -1,0 +1,111 @@
+{
+  "adapter": "FiberyArchitectureWorkspace over FiberyClient",
+  "caps": {
+    "creates": 2,
+    "deletes": 0,
+    "largest_fence_bytes": 4194304,
+    "largest_markdown_bytes": 4198400,
+    "samples_bytes": [
+      3145728,
+      4194304
+    ],
+    "write_retries": 0,
+    "writes": 2
+  },
+  "confirm_live_mutation": true,
+  "counters": {
+    "creates": 1,
+    "writes": 1
+  },
+  "finished_utc": "2026-10-16T11:35:22+00:00",
+  "mode": "live",
+  "owned_documents": [
+    {
+      "document_id": "3df5b2ed-a7a6-49d9-8a7e-2546da70e6c5",
+      "name": "TSA-P3-PROBE DIAG SIZE 3145728 20261016T113513Z"
+    }
+  ],
+  "project": {
+    "code": "TSAP1",
+    "entity_id": "368c0490-bda7-11f1-9f37-3f144160159b",
+    "name": "TSA P-1 SCRATCH \u2014 DO NOT USE",
+    "public_id": "27",
+    "state": "Planned"
+  },
+  "project_unchanged": true,
+  "run_id": "20261016T113513Z",
+  "samples": [
+    {
+      "document_id": "3df5b2ed-a7a6-49d9-8a7e-2546da70e6c5",
+      "durable_equals_original": true,
+      "durable_state": "EMPTY",
+      "emitted_fingerprint": "fa6127a94f82238414d56c72566e6d0568e0660075ba919d0119f7bbf5be4133",
+      "emitted_markdown": {
+        "bytes": 3145882,
+        "sha256": "587dfdb14ae3bd068dac5fe8e960a7d07548fabf0ac737e48f8ccd002c0e8eb2"
+      },
+      "fence": {
+        "bytes": 3145728,
+        "sha256": "8f3d4036fb47af4c3908dda6014a492380a6e7227399126e3cde3bbb9f8ac10c"
+      },
+      "fence_exact": false,
+      "fence_json_valid": false,
+      "fingerprint_equal": false,
+      "http_status": 500,
+      "name": "TSA-P3-PROBE DIAG SIZE 3145728 20261016T113513Z",
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "outcome": "HTTP_500_UNATTRIBUTED",
+      "placement_after_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "3df5b2ed-a7a6-49d9-8a7e-2546da70e6c5",
+        "name": "TSA-P3-PROBE DIAG SIZE 3145728 20261016T113513Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "placement_before_write": {
+        "container_entity_id": "27",
+        "container_entity_type": "2d4bba0c-5eb7-4dc2-b406-0f10404ef31f",
+        "document_id": "3df5b2ed-a7a6-49d9-8a7e-2546da70e6c5",
+        "name": "TSA-P3-PROBE DIAG SIZE 3145728 20261016T113513Z",
+        "parent_document_id": null,
+        "present": true,
+        "secret_present": true
+      },
+      "read_fence": null,
+      "read_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "read_markdown": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "request_body_bytes_estimate": 3145914,
+      "sample_bytes": 3145728,
+      "write": "RAISED",
+      "write_error": "FiberyError: Fibery not replayable PUT documents request failed (HTTP 500) on attempt 1; the server's response is not reported."
+    },
+    {
+      "outcome": "NOT_EXECUTED",
+      "sample_bytes": 4194304
+    }
+  ],
+  "started_utc": "2026-10-16T11:35:13+00:00",
+  "summary": {
+    "largest_observed_success_bytes": null,
+    "observed_failures": [
+      {
+        "durable_state": "EMPTY",
+        "http_status": 500,
+        "outcome": "HTTP_500_UNATTRIBUTED",
+        "sample_bytes": 3145728
+      }
+    ],
+    "partial_or_malformed_observed": false,
+    "smallest_confirmed_size_refusal_bytes": null
+  },
+  "timeout_seconds": 30.0,
+  "workspace_identity": "rb-ventures.fibery.io/19c62a00-7a47-11f1-aba7-67039973deac"
+}
