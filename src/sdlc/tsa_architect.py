@@ -837,6 +837,9 @@ def _read_architecture(
     pass the I06 Document validator against this Manifest. Its fingerprint is
     `document_fingerprint` of the Markdown before the envelope (4.6.1) — for a
     bootstrap carrier that is computed from its real content, never assumed.
+    Post-apply it is the canonical `content_fingerprint` the validator has
+    just recomputed and matched (spec v0.7), so a Fibery-stored traceability
+    table fingerprints as the Markdown that was emitted.
     """
     placement = _resolve_root(workspace, context)
     subject = f"Architecture Document {placement.document_id!r}"
@@ -852,17 +855,13 @@ def _read_architecture(
     if set(artifact.body) == set(ARCHITECTURE_BOOTSTRAP_KEYS):
         _require_bootstrap_carrier(context, content, artifact, payload)
         form = _Form.BOOTSTRAP
+        fingerprint = document_fingerprint(_normative_markdown(content))
     else:
         with _validating(subject):
-            validate_architecture_document(content, manifest_body)
+            validated = validate_architecture_document(content, manifest_body)
         form = _Form.APPLIED
-    return _Architecture(
-        form,
-        content,
-        artifact,
-        payload,
-        document_fingerprint(_normative_markdown(content)),
-    )
+        fingerprint = validated.body["content_fingerprint"]
+    return _Architecture(form, content, artifact, payload, fingerprint)
 
 
 def _require_process_lineage(

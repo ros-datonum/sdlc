@@ -38,6 +38,7 @@ from architect_fake import (
     secret_of,
     with_section,
 )
+from architecture_fake import fibery_stored
 from sdlc import tsa_architect, tsa_markdown
 from sdlc.fibery_workspace import FiberyError
 from sdlc.model_runtime import (
@@ -48,8 +49,10 @@ from sdlc.model_runtime import (
 from sdlc.model_runtime_config import TSA_ARCHITECT_ROLE, load_model_runtime_config
 from sdlc.normative_tree import document_fingerprint
 from sdlc.tsa_architect import (
+    ArchitectCase,
     ArchitectRefused,
     ArchitectStageOutcome,
+    read_review_target,
     run_architect_stage,
     select_architect_runtime,
     validate_architect_output,
@@ -58,6 +61,7 @@ from sdlc.tsa_architecture import (
     ArchitectureBinding,
     build_architecture_carrier,
     escape_markdown,
+    render_architecture,
 )
 from sdlc.tsa_artifacts import (
     ARCHITECT_ROLE,
@@ -1778,3 +1782,97 @@ def test_a_divergent_read_back_reports_all_three_fingerprints():
         f"current {divergent.content_fingerprint}",
     )
     assert architecture_writes(scene) == 1, "nothing overwritten or retried"
+
+
+# --------------------------------------------------------------------------
+# Spec v0.7 — the stage reads back the Architecture live Fibery stores
+#
+# `fibery_stored` is the observed live re-serialization (pilot 2026-10-17).
+# Every array cell is non-empty: how Fibery stores an empty cell was not
+# observed, so no test relies on it.
+# --------------------------------------------------------------------------
+
+
+def stored_table_response() -> str:
+    return json.dumps(
+        architect_response(
+            traceability=[
+                {
+                    "requirement_id": REQUIREMENT_ID,
+                    "anchors": ["tsa-s03", "tsa-s08"],
+                    "how_satisfied": "The gate refuses an unauthenticated call.",
+                    "constraints": ["no API key", "subscription login only"],
+                    "gaps": ["The logged-out prompt is a product question."],
+                }
+            ]
+        )
+    )
+
+
+def fibery_scene():
+    """State D with every content write stored as live Fibery stores it."""
+    scene = accepted_scene()
+    scene.tsa.store_as = fibery_stored
+    return scene
+
+
+def test_the_stage_confirms_an_architecture_fibery_stored_on_write():
+    scene = fibery_scene()
+    model = RecordingModel(scene, responses=[stored_table_response()])
+
+    result = run(scene, model)
+
+    stored = scene.tsa.content_of(ARCHITECTURE_ID)
+    intended = process_payload(scene)["body"]["intended_output"]
+    emitted = render_architecture(intended, manifest_body(scene))
+    assert result.outcome is ArchitectStageOutcome.OUTPUT_APPLIED
+    assert (len(model.calls), architecture_writes(scene)) == (1, 1)
+    assert "| --- | --- |" in stored and "tsa-s03 tsa-s08" in stored
+    assert result.output_fingerprint == emitted.content_fingerprint
+    assert architecture_envelope(scene)["body"]["content_fingerprint"] == (
+        emitted.content_fingerprint
+    )
+
+
+def test_the_stored_output_is_case_3_with_its_emitted_fingerprint():
+    scene = fibery_scene()
+    run(scene, RecordingModel(scene, responses=[stored_table_response()]))
+    reset_trace(scene)
+    output = architecture_envelope(scene)["body"]["content_fingerprint"]
+
+    target = read_review_target(scene.tsa, scene.req, PROJECT_ID, CYCLE)
+    result = run(scene, no_model(scene))
+
+    assert target.case is ArchitectCase.OUTPUT_APPLIED
+    assert target.architecture_fingerprint == target.output_fingerprint == output
+    assert result.outcome is ArchitectStageOutcome.ALREADY_APPLIED
+    assert scene.tsa.mutations == [], "no re-apply and no Process create"
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "code"),
+    [
+        (
+            "no API key subscription",
+            "no key subscription",
+            "ARCHITECTURE_RENDER_INVALID",
+        ),
+        ("The gate checks the login first.", "The gate checks.", "ARTIFACT_MALFORMED"),
+    ],
+)
+def test_a_genuine_edit_of_a_stored_architecture_is_still_refused(old, new, code):
+    """A table cell disagrees with the envelope; prose breaks the fingerprint."""
+    scene = fibery_scene()
+    run(scene, RecordingModel(scene, responses=[stored_table_response()]))
+    reset_trace(scene)
+    stored = scene.tsa.content_of(ARCHITECTURE_ID)
+    normative, fence, envelope = stored.partition("```json")
+    assert normative.count(old) == 1
+    scene.tsa.set_content(
+        ARCHITECTURE_ID, normative.replace(old, new) + fence + envelope
+    )
+
+    error = refusal(scene, no_model(scene))
+
+    assert error.code == code
+    assert scene.tsa.mutations == []

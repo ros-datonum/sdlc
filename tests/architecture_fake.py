@@ -30,6 +30,49 @@ from sdlc.fibery_workspace import (
     ProjectRecord,
 )
 
+#: The canonical traceability separator, and how Fibery stored it in the first
+#: live TSA pilot (2026-10-17, spec v0.7).
+EMITTED_TABLE_SEPARATOR = "|---|---|---|---|---|---|"
+STORED_TABLE_SEPARATOR = "| --- | --- | --- | --- | --- | --- |"
+TABLE_ROW_PREFIX = "| "
+LINE_BREAK = "<br>"
+FENCE = "```"
+
+
+def fibery_stored(markdown: str) -> str:
+    """Emitted Markdown as live Fibery stored it, and nothing more.
+
+    Each rule was observed on the first live TSA Architecture Document
+    (2026-10-17); applying this to that emitted Document reproduces the stored
+    one byte for byte. Opt-in through `ScriptedWorkspace.store_as` only:
+
+    - the canonical table separator gains spaces;
+    - inside a table row, every literal `<br>` becomes one space;
+    - a `- ` bullet becomes `* `;
+    - a blank line is inserted before a fence opener that follows text, and
+      the Document's final newline is dropped.
+
+    Fenced lines are kept verbatim, as Fibery keeps them.
+    """
+    stored: list[str] = []
+    is_fenced = False
+    for line in markdown.split("\n"):
+        if line.startswith(FENCE):
+            if not is_fenced and stored and stored[-1]:
+                stored.append("")
+            is_fenced = not is_fenced
+        elif is_fenced:
+            pass
+        elif line == EMITTED_TABLE_SEPARATOR:
+            line = STORED_TABLE_SEPARATOR
+        elif line.startswith(TABLE_ROW_PREFIX):
+            line = " ".join(line.split(LINE_BREAK))
+        elif line.startswith("- "):
+            line = "* " + line[2:]
+        stored.append(line)
+    return "\n".join(stored).removesuffix("\n")
+
+
 PROJECT_TYPE_ID = "7c9f1b5e-2a44-4c8d-9f31-0b6e5d2a4c10"
 OTHER_DATABASE_TYPE_ID = "11111111-2222-4333-8444-555555555555"
 WORKSPACE_IDENTITY = "example.fibery.io/0f0e0d0c-0b0a-4908-8706-050403020100"

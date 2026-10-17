@@ -22,6 +22,7 @@ from architect_fake import (
     resealed_carrier,
     reset_trace,
 )
+from architecture_fake import fibery_stored
 from recovery_fake import (
     CoveringReviewer,
     carrier,
@@ -46,6 +47,7 @@ from sdlc.tsa_architect import (
     ArchitectCase,
     ArchitectRefused,
     ArchitectStageOutcome,
+    read_cycle_state,
     run_architect_stage,
 )
 from sdlc.tsa_artifacts import sealed_artifact, validate_artifact
@@ -53,6 +55,7 @@ from sdlc.tsa_recovery import (
     RecoveryBoundary,
     RecoveryCase,
     RecoveryRefused,
+    classify_recovery_case,
     message_after_progress,
 )
 from sdlc.tsa_reviewer import (
@@ -82,7 +85,9 @@ from test_tsa_architect import (
     other_process_carrier,
     persisted_but_not_applied,
     reseal,
+    stored_table_response,
 )
+from test_tsa_cycle import fixed_clock
 from test_tsa_reviewer import is_review_carrier
 
 PROCESS_ID = process_id(1)
@@ -1536,3 +1541,110 @@ def test_only_the_clause_and_its_adjacent_spacing_change(case):
 )
 def test_a_message_without_a_generic_clause_is_byte_identical(unchanged):
     assert message_after_progress(unchanged) == unchanged
+
+
+# --------------------------------------------------------------------------
+# Spec v0.7 — a cycle whose Architecture live Fibery re-serialized
+# --------------------------------------------------------------------------
+
+
+def incident_scene():
+    """The first live pilot's durable state (2026-10-17).
+
+    A valid Manifest, a persisted Process Result 0001, the Architecture holding
+    that output in the form Fibery stored it, and no Review Result.
+    """
+    scene = accepted_scene()
+    run_architect_stage(
+        scene.tsa,
+        scene.req,
+        RecordingModel(scene, responses=[stored_table_response()]),
+        PROJECT_ID,
+        CYCLE,
+        clock=fixed_clock,
+    )
+    emitted = scene.tsa.content_of(ARCHITECTURE_ID)
+    scene.tsa.set_content(ARCHITECTURE_ID, fibery_stored(emitted))
+    reset_trace(scene)
+    scene.tsa.store_as = fibery_stored
+    return scene
+
+
+def test_a_fibery_stored_cycle_reaches_the_boundary_with_one_call_each():
+    scene = accepted_scene()
+    scene.tsa.store_as = fibery_stored
+    architect = RecordingModel(scene, responses=[stored_table_response()])
+    reviewer = CoveringReviewer(scene)
+
+    result = recover(scene, architect, reviewer)
+
+    output = architecture_envelope(scene)["body"]["content_fingerprint"]
+    assert result.boundary is RecoveryBoundary.HUMAN_DECISION
+    assert (len(architect.calls), len(reviewer.calls)) == (1, 1)
+    assert "| --- | --- |" in scene.tsa.content_of(ARCHITECTURE_ID)
+    assert payload_of(scene, REVIEW_ID)["body"]["architecture_fingerprint"] == output
+    assert result.architecture_fingerprint == output
+
+
+def test_the_incident_state_is_case_3_and_continues_at_the_reviewer():
+    scene = incident_scene()
+    architecture = scene.tsa.content_of(ARCHITECTURE_ID)
+    process = scene.tsa.content_of(PROCESS_ID)
+    reviewer = CoveringReviewer(scene)
+
+    state = read_cycle_state(scene.tsa, scene.req, PROJECT_ID, CYCLE)
+    assert classify_recovery_case(state) is RecoveryCase.OUTPUT_APPLIED
+    result = recover(scene, no_model(scene), reviewer)
+
+    assert result.architect is None, "no Architect call, no re-apply"
+    assert len(reviewer.calls) == 1
+    assert writes_other_than_review(scene) == []
+    assert scene.tsa.content_of(ARCHITECTURE_ID) == architecture
+    assert scene.tsa.content_of(PROCESS_ID) == process
+    assert result.boundary is RecoveryBoundary.HUMAN_DECISION
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "code"),
+    [
+        (
+            "no API key subscription",
+            "no key subscription",
+            "ARCHITECTURE_RENDER_INVALID",
+        ),
+        (
+            "| --- | --- | --- | --- | --- | --- |",
+            "|---|---|---|---|---|---|",
+            "ARCHITECTURE_RENDER_INVALID",
+        ),
+        ("The gate checks the login first.", "The gate checks.", "ARTIFACT_MALFORMED"),
+    ],
+)
+def test_an_edited_incident_architecture_is_refused_before_any_model(old, new, code):
+    scene = incident_scene()
+    normative, fence, envelope = scene.tsa.content_of(ARCHITECTURE_ID).partition(
+        "```json"
+    )
+    assert normative.count(old) == 1
+    scene.tsa.set_content(
+        ARCHITECTURE_ID, normative.replace(old, new) + fence + envelope
+    )
+    reset_trace(scene)
+    reviewer = CoveringReviewer(scene)
+
+    error = refusal(scene, no_model(scene), reviewer)
+
+    assert error.code == code
+    nothing_happened(scene, reviewer)
+
+
+def test_an_incident_process_bound_to_another_manifest_is_refused():
+    scene = incident_scene()
+    reseal(scene, PROCESS_ID, lambda p: p["body"].update(manifest_digest="0" * 64))
+    reset_trace(scene)
+    reviewer = CoveringReviewer(scene)
+
+    error = refusal(scene, no_model(scene), reviewer)
+
+    assert error.code == "ARTIFACT_MALFORMED"
+    nothing_happened(scene, reviewer)

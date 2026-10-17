@@ -11,9 +11,11 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+from pathlib import Path
 
 import pytest
 
+from architecture_fake import fibery_stored
 from sdlc import tsa_architecture, tsa_cycle
 from sdlc.normative_tree import TreeEntry, TreeManifest, document_fingerprint
 from sdlc.tsa_architecture import (
@@ -1971,3 +1973,279 @@ P1_VECTORS = [
 def test_the_four_pipe_vectors_hold(source, expected):
     escaped = escape_markdown("".join(map(chr, source)))
     assert [ord(character) for character in escaped] == expected
+
+
+# --------------------------------------------------------------------------
+# Spec v0.7 — the traceability table as live Fibery stores it
+#
+# The intended_output is the first live TSA pilot's (2026-10-17), with its
+# workspace ids replaced. `fibery_stored` reproduces that pilot's stored
+# Architecture byte for byte from the emitted one; it changes nothing else.
+# --------------------------------------------------------------------------
+
+PILOT_ID = "TSAP1-FR-0123"
+PILOT_OUTPUT = json.loads(
+    (
+        Path(__file__).parents[1]
+        / "docs/specs/TSA-C01-v0.7-evidence/pilot-intended-output.json"
+    ).read_text()
+)
+STORED_SEPARATOR = "| --- | --- | --- | --- | --- | --- |"
+
+
+def pilot_manifest() -> dict[str, object]:
+    return manifest(PILOT_ID)
+
+
+def pilot_carrier():
+    return build_architecture_carrier(PILOT_OUTPUT, pilot_manifest(), BINDING)
+
+
+def pilot_stored() -> str:
+    return fibery_stored(pilot_carrier().text)
+
+
+def pilot_row(text: str) -> str:
+    (line,) = [line for line in text.split("\n") if line.startswith(f"| {PILOT_ID}")]
+    return line
+
+
+def with_cells(text: str, change) -> str:
+    """The stored Document with the pilot row's cells changed by `change`."""
+    row = pilot_row(text)
+    cells = row[2:-2].split(" | ")
+    assert len(cells) == 6 and "\\|" not in row
+    change(cells)
+    return text.replace(row, f"| {' | '.join(cells)} |")
+
+
+def normative_part(text: str) -> str:
+    return text.partition("```json")[0]
+
+
+def test_the_canonical_pilot_document_still_validates():
+    carrier = pilot_carrier()
+    assert TABLE_SEPARATOR in carrier.text and "<br>" in pilot_row(carrier.text)
+    assert validate_architecture_document(carrier.text, pilot_manifest()) == (
+        carrier.artifact
+    )
+
+
+def test_the_stored_pilot_differs_only_by_the_observed_fibery_rules():
+    emitted, stored = pilot_carrier().text, pilot_stored()
+    assert stored != emitted
+    assert STORED_SEPARATOR in stored and TABLE_SEPARATOR not in stored
+    assert "<br>" not in pilot_row(stored)
+    assert pilot_row(stored) == " ".join(pilot_row(emitted).split("<br>"))
+    assert "\n* " in stored and "\n- " not in normative_part(stored)
+    assert "\n\n```json" in stored and not stored.endswith("\n")
+    assert extract_architecture_envelope(stored) == extract_architecture_envelope(
+        emitted
+    )
+
+
+def test_the_stored_pilot_validates_to_the_emitted_artifact_and_fingerprint():
+    carrier, stored = pilot_carrier(), pilot_stored()
+    assert document_fingerprint(normative_part(stored)) != carrier.content_fingerprint
+
+    artifact = validate_architecture_document(stored, pilot_manifest())
+
+    assert artifact == carrier.artifact
+    assert artifact.body["content_fingerprint"] == carrier.content_fingerprint
+
+
+def test_reading_the_same_stored_document_twice_gives_the_same_result():
+    stored = pilot_stored()
+    first = validate_architecture_document(stored, pilot_manifest())
+    assert validate_architecture_document(stored, pilot_manifest()) == first
+
+
+def test_canonical_emission_keeps_the_frozen_table_form():
+    rendered = render_architecture(PILOT_OUTPUT, pilot_manifest())
+    body = section_bodies(rendered.markdown)[2]
+    assert body[1] == TABLE_SEPARATOR
+    assert body[2].count("<br>") == 8
+    assert rendered.content_fingerprint == document_fingerprint(rendered.markdown)
+
+
+def set_cell(column: int, value: str):
+    return lambda cells: cells.__setitem__(column, value)
+
+
+def edit_cell(column: int, old: str, new: str):
+    def change(cells: list[str]) -> None:
+        assert cells[column].count(old) == 1, old
+        cells[column] = cells[column].replace(old, new)
+
+    return change
+
+
+STORED_TABLE_DEFECTS = {
+    "another requirement id": lambda t: with_cells(t, set_cell(0, "TSAP1-FR-0124")),
+    "another source": lambda t: with_cells(t, edit_cell(1, "@ ", "@ 0")),
+    "another anchor": lambda t: with_cells(t, edit_cell(2, "tsa-s13", "tsa-s12")),
+    "anchor dropped": lambda t: with_cells(t, edit_cell(2, " tsa-s13", "")),
+    "how satisfied": lambda t: with_cells(t, edit_cell(3, "only GET", "GET")),
+    "constraint": lambda t: with_cells(t, edit_cell(4, "1 to 32", "1 to 33")),
+    "gap": lambda t: with_cells(t, edit_cell(5, "not defined", "defined")),
+    "extra column": lambda t: with_cells(t, lambda cells: cells.append("x")),
+    "missing column": lambda t: with_cells(t, lambda cells: cells.pop()),
+    "unescaped pipe": lambda t: with_cells(t, edit_cell(3, "only GET", "only | GET")),
+    "row repeated": lambda t: t.replace(
+        pilot_row(t), f"{pilot_row(t)}\n{pilot_row(t)}"
+    ),
+    "row missing": lambda t: t.replace(f"{pilot_row(t)}\n", ""),
+    "header renamed": lambda t: edit_markdown(t, "| Gaps |", "| Gap |"),
+    "canonical separator": lambda t: edit_markdown(
+        t, STORED_SEPARATOR, TABLE_SEPARATOR
+    ),
+    "aligned separator": lambda t: edit_markdown(
+        t, STORED_SEPARATOR, "| :--- | --- | --- | --- | --- | --- |"
+    ),
+    "half-spaced separator": lambda t: edit_markdown(
+        t, STORED_SEPARATOR, "|--- | --- | --- | --- | --- | --- |"
+    ),
+    "longer separator": lambda t: edit_markdown(
+        t, STORED_SEPARATOR, "| ---- | --- | --- | --- | --- | --- |"
+    ),
+    "five-column separator": lambda t: edit_markdown(
+        t, STORED_SEPARATOR, "| --- | --- | --- | --- | --- |"
+    ),
+    "line break kept": lambda t: t.replace(
+        pilot_row(t), pilot_row(pilot_carrier().text)
+    ),
+    "line break as two spaces": lambda t: with_cells(
+        t, edit_cell(2, "tsa-s03 tsa-s04", "tsa-s03  tsa-s04")
+    ),
+    "line break as self-closing tag": lambda t: with_cells(
+        t, edit_cell(2, "tsa-s03 tsa-s04", "tsa-s03<br/>tsa-s04")
+    ),
+    "line break dropped": lambda t: with_cells(
+        t, edit_cell(2, "tsa-s03 tsa-s04", "tsa-s03tsa-s04")
+    ),
+    "line break as comma": lambda t: with_cells(
+        t, edit_cell(2, "tsa-s03 tsa-s04", "tsa-s03, tsa-s04")
+    ),
+    "line break as a new line": lambda t: with_cells(
+        t, edit_cell(2, "tsa-s03 tsa-s04", "tsa-s03\ntsa-s04")
+    ),
+    "padded cell": lambda t: with_cells(t, set_cell(0, f" {PILOT_ID}")),
+}
+
+
+@pytest.mark.parametrize("label", sorted(STORED_TABLE_DEFECTS))
+def test_a_stored_table_that_is_not_exactly_the_fibery_form_is_refused(label):
+    text = STORED_TABLE_DEFECTS[label](pilot_stored())
+    assert text != pilot_stored()
+    assert validate_artifact(extract_architecture_envelope(text))
+    assert document_refusal(text, pilot_manifest()) is CODE.ARCHITECTURE_RENDER_INVALID
+
+
+def test_edited_prose_beside_a_stored_table_is_caught_by_the_fingerprint():
+    text = edit_markdown(
+        pilot_stored(), "A single stateless service process", "A stateful process"
+    )
+    with pytest.raises(InvalidTsaArtifact, match="content_fingerprint"):
+        validate_architecture_document(text, pilot_manifest())
+
+
+def test_an_edited_generated_list_beside_a_stored_table_is_render_invalid():
+    text = edit_markdown(
+        pilot_stored(), "* Request headers and any", "* Request headers and no"
+    )
+    assert document_refusal(text, pilot_manifest()) is CODE.ARCHITECTURE_RENDER_INVALID
+
+
+def test_a_stored_document_whose_envelope_was_edited_without_resealing_is_refused():
+    text = pilot_stored().replace('"tsa-s13"', '"tsa-s12"', 1)
+    with pytest.raises(InvalidTsaArtifact):
+        validate_architecture_document(text, pilot_manifest())
+
+
+def test_a_resealed_wrong_fingerprint_is_refused_for_a_stored_table():
+    text = reseal(
+        pilot_stored(), lambda body: body.__setitem__("content_fingerprint", "0" * 64)
+    )
+    assert validate_artifact(extract_architecture_envelope(text))
+    with pytest.raises(InvalidTsaArtifact, match="content_fingerprint"):
+        validate_architecture_document(text, pilot_manifest())
+
+
+def test_regrouped_array_elements_that_display_the_same_are_still_refused():
+    """A valid digest and an equal display never prove the canonical content."""
+
+    def merge_constraints(body: dict) -> None:
+        row = body["traceability"][0]
+        row["constraints"] = [" ".join(row["constraints"])]
+
+    text = reseal(pilot_stored(), merge_constraints)
+    assert pilot_row(text) == pilot_row(pilot_stored()), "the display is unchanged"
+    with pytest.raises(InvalidTsaArtifact, match="content_fingerprint"):
+        validate_architecture_document(text, pilot_manifest())
+
+
+def test_an_envelope_row_the_stored_table_does_not_show_is_render_invalid():
+    def other_text(body: dict) -> None:
+        body["traceability"][0]["how_satisfied"] = "Something else."
+
+    text = reseal(pilot_stored(), other_text)
+    assert document_refusal(text, pilot_manifest()) is CODE.ARCHITECTURE_RENDER_INVALID
+
+
+def test_a_stored_table_bound_to_another_manifest_is_refused():
+    other = manifest(PILOT_ID, fingerprints={PILOT_ID: "f" * 64})
+    with pytest.raises(InvalidTsaArtifact, match="another Input Manifest"):
+        validate_architecture_document(pilot_stored(), other)
+
+
+def test_stored_envelope_rows_out_of_order_are_render_invalid():
+    def reverse(body: dict) -> None:
+        body["traceability"].reverse()
+
+    text = reseal(fibery_stored(golden_carrier().text), reverse)
+    assert document_refusal(text) is CODE.ARCHITECTURE_RENDER_INVALID
+
+
+@pytest.mark.parametrize("label", sorted(ENVELOPE_COVERAGE_DEFECTS))
+def test_stored_envelope_traceability_keeps_the_coverage_rules(label):
+    mutate, code = ENVELOPE_COVERAGE_DEFECTS[label]
+    text = reseal(fibery_stored(golden_carrier().text), mutate)
+    assert document_refusal(text) is code
+
+
+EVIDENCE = Path(__file__).parents[1] / "docs/specs/TSA-C01-v0.7-evidence"
+
+
+def test_the_fake_reproduces_the_live_stored_pilot_byte_for_byte():
+    """Fake versus live: both pilot Documents, sanitized identically."""
+    emitted = (EVIDENCE / "pilot-architecture-emitted.md").read_text()
+    stored = (EVIDENCE / "pilot-architecture-stored.md").read_text()
+    assert stored != emitted
+    assert fibery_stored(emitted) == stored
+
+
+def test_cells_fibery_keeps_verbatim_are_accepted_only_as_the_canonical_text():
+    """Empty and escaped cells take no v0.7 transformation; they stay exact."""
+    stored = fibery_stored(golden_carrier().text)
+    assert "|  |" in stored and "Cost \\| unknown" in stored
+    assert validate_architecture_document(stored, manifest()) == (
+        golden_carrier().artifact
+    )
+    unescaped = edit_markdown(stored, "Cost \\| unknown |", "Cost | unknown |")
+    assert document_refusal(unescaped) is CODE.ARCHITECTURE_RENDER_INVALID
+
+
+def test_trailing_whitespace_on_a_stored_table_line_is_not_content():
+    text = pilot_stored()
+    padded = text.replace(STORED_SEPARATOR, STORED_SEPARATOR + "  ", 1)
+    assert validate_architecture_document(padded, pilot_manifest()) == (
+        pilot_carrier().artifact
+    )
+
+
+def test_an_extra_line_inside_a_stored_traceability_section_is_render_invalid():
+    text = pilot_stored()
+    extra = text.replace(
+        f"{pilot_row(text)}\n", f"{pilot_row(text)}\nAn added sentence.\n", 1
+    )
+    assert document_refusal(extra, pilot_manifest()) is CODE.ARCHITECTURE_RENDER_INVALID

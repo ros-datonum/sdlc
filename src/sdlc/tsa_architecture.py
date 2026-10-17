@@ -172,6 +172,11 @@ TABLE_HEADER = (
     "| Constraints honoured | Gaps |"
 )
 TABLE_SEPARATOR = "|---|---|---|---|---|---|"
+#: Spec v0.7: the canonical separator exactly as Fibery stores it (live
+#: TSA pilot, 2026-10-17). The only other separator a read-back may carry.
+FIBERY_TABLE_SEPARATOR = "| --- | --- | --- | --- | --- | --- |"
+#: Spec v0.7: Fibery stores each literal `<br>` of a table row as one space.
+FIBERY_TABLE_LINE_BREAK = " "
 TABLE_COLUMN_COUNT = 6
 CELL_DELIMITER = "|"
 ESCAPE_CHARACTER = "\\"
@@ -598,17 +603,60 @@ def _split_cells(row: str) -> list[str]:
     return cells
 
 
+def _fibery_table_lines(canonical: list[str]) -> list[str]:
+    """The canonical table exactly as Fibery stores it (spec v0.7 section 3).
+
+    The header is unchanged, the separator is spaced, and within each row
+    every literal `<br>` becomes one space. A row's `<br>` can only be the
+    renderer's own (8.3.1 escapes the `<` and `>` of model text), so this
+    touches the array joins and escaped line breaks of the cells and nothing
+    else. Nothing is collapsed, unescaped or trimmed.
+    """
+    header, _separator, *rows = canonical
+    return [
+        header,
+        FIBERY_TABLE_SEPARATOR,
+        *(FIBERY_TABLE_LINE_BREAK.join(row.split(LINE_BREAK)) for row in rows),
+    ]
+
+
+def _require_fibery_table(body: list[str], canonical: list[str]) -> None:
+    """The stored table is the canonical one as Fibery stores it, line for line.
+
+    Every expected line comes from the envelope and the Manifest; the stored
+    text is only compared with it, never read for values.
+    """
+    expected = _fibery_table_lines(canonical)
+    if body[0] != expected[0] or len(body) != len(expected):
+        raise _render_invalid(
+            "The Fibery-stored Requirement Traceability table does not have the "
+            "frozen header and one row per envelope traceability row."
+        )
+    for position, (actual, wanted) in enumerate(zip(body, expected, strict=True)):
+        if actual != wanted:
+            raise _render_invalid(
+                f"Line {position + 1} of the Fibery-stored Requirement "
+                f"Traceability table is {actual!r}, which is not the stored form "
+                f"{wanted!r} of the envelope's table (spec v0.7)."
+            )
+
+
 def _require_table_agreement(
     body: list[str],
     rows: Sequence[dict[str, object]],
     manifest_body: dict[str, object],
-) -> None:
+) -> bool:
     """Every cell is the rendering of its envelope row (spec 8.2, 8.3.1).
 
     `Source` is generated from the Manifest. This is equality of two
     representations of the same data, not a judgement of satisfaction.
+    Returns whether the table is in the Fibery-stored form of spec v0.7,
+    which is accepted only as a whole and only exactly.
     """
     expected = _traceability_lines(rows, manifest_body)
+    if len(body) > 1 and body[1] == FIBERY_TABLE_SEPARATOR:
+        _require_fibery_table(body, expected)
+        return True
     if body[:2] != expected[:2] or len(body) != len(expected):
         raise _render_invalid(
             "The Requirement Traceability table does not have the frozen "
@@ -628,6 +676,7 @@ def _require_table_agreement(
                     f"envelope: expected {wanted[column]!r} in column "
                     f"{column + 1}."
                 )
+    return False
 
 
 def _canonical_bullet(line: str) -> str:
@@ -650,13 +699,17 @@ def _require_prose_body(heading: ArchitectureHeading, body: list[str]) -> None:
 
 def _require_rendered_sections(
     bodies: list[list[str]], artifact: TsaArtifact, manifest_body: dict[str, object]
-) -> None:
-    """Every section body agrees with its class and with the envelope."""
+) -> bool:
+    """Every section body agrees with its class and with the envelope.
+
+    Returns whether the traceability table is in its Fibery-stored form.
+    """
+    is_fibery_table = False
     for heading, body in zip(HEADINGS, bodies, strict=True):
         if heading.section_key is not None:
             _require_prose_body(heading, body)
         elif heading.generated_from == TRACEABILITY_SOURCE:
-            _require_table_agreement(
+            is_fibery_table = _require_table_agreement(
                 body, artifact.body[TRACEABILITY_SOURCE], manifest_body
             )
         else:
@@ -666,6 +719,7 @@ def _require_rendered_sections(
                     f"Section {heading.number} ({heading.title}) does not "
                     f"render the envelope's {heading.generated_from}."
                 )
+    return is_fibery_table
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +763,26 @@ def _normative_markdown(document: str) -> str:
     return "\n".join(lines[:opener])
 
 
+def _heading_position(lines: list[str], heading: ArchitectureHeading) -> int:
+    """The one line holding this frozen heading; `_section_bodies` proved it."""
+    return next(
+        index for index, line in enumerate(lines) if line.rstrip() == heading.line
+    )
+
+
+def _with_canonical_table(normative: str, table: list[str]) -> str:
+    """The normative Markdown with section 2 rebuilt as the canonical table.
+
+    Spec v0.7: only after the stored table was proved to be the Fibery-stored
+    form of `table`. Every other line is kept exactly as read, so an edit
+    anywhere else still changes the fingerprint. In memory only.
+    """
+    lines = normative.split("\n")
+    start = _heading_position(lines, HEADINGS[1])
+    end = _heading_position(lines, HEADINGS[2])
+    return "\n".join([*lines[: start + 1], "", *table, "", *lines[end:]])
+
+
 def _require_post_apply(artifact: TsaArtifact) -> None:
     if artifact.artifact_type != ARCHITECTURE:
         raise InvalidTsaArtifact(
@@ -735,6 +809,11 @@ def validate_architecture_document(
     the envelope excluded; and last, that the normative Markdown carries no
     code block and no fence-marker line (rules S and X, spec v0.3 8.3, v0.4).
 
+    Spec v0.7: a traceability table in the exact Fibery-stored form of the
+    envelope's canonical table is accepted, and the fingerprint is then taken
+    over the normative Markdown with that one table rebuilt canonically from
+    the envelope and the Manifest. The Document itself is never changed.
+
     Raises `EmptyTsaCarrier` or `InvalidTsaArtifact` (I01's taxonomy) and
     `ArchitectureRefused`. Returns the validated artifact.
     """
@@ -752,8 +831,13 @@ def validate_architecture_document(
     bodies = _section_bodies(normative)
     _require_exact_coverage(artifact.body[TRACEABILITY_SOURCE], manifest_body)
     _require_ascending_rows(artifact.body[TRACEABILITY_SOURCE])
-    _require_rendered_sections(bodies, artifact, manifest_body)
-    if artifact.body["content_fingerprint"] != document_fingerprint(normative):
+    canonical = normative
+    if _require_rendered_sections(bodies, artifact, manifest_body):
+        canonical = _with_canonical_table(
+            normative,
+            _traceability_lines(artifact.body[TRACEABILITY_SOURCE], manifest_body),
+        )
+    if artifact.body["content_fingerprint"] != document_fingerprint(canonical):
         raise InvalidTsaArtifact(
             "The envelope's content_fingerprint is not the fingerprint of the "
             "sixteen sections it accompanies."
