@@ -48,6 +48,7 @@ from sdlc.tsa_artifacts import (
 )
 from sdlc.tsa_markdown import (
     BlockClassification,
+    block_token_types,
     classify_code_blocks,
     has_fence_marker_line,
 )
@@ -208,6 +209,13 @@ ESCAPE_REPLACEMENTS = {
     ">": "&gt;",
 }
 ESCAPED_SOURCE = re.compile(r"\r\n|[\\|\r\n<>]")
+#: Spec v0.8: in a prose section Fibery stores the `&lt;` and `&gt;` of 8.3.1
+#: as the characters themselves (live TSA pilot, 2026-10-18) and keeps a
+#: literal `<br>`. Each decoded character maps back to exactly its 8.3.1
+#: entity; no other entity is ever decoded or re-encoded.
+FIBERY_DECODED_ENTITIES = {"<": "&lt;", ">": "&gt;"}
+FIBERY_DECODED_CHARACTER = re.compile(r"[<>]")
+CANONICAL_ENTITY = re.compile(r"&lt;|&gt;")
 
 HEADING_LIKE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
 #: A tilde fence: its opener may carry any text after the run, its closer none.
@@ -783,6 +791,89 @@ def _with_canonical_table(normative: str, table: list[str]) -> str:
     return "\n".join([*lines[: start + 1], "", *table, "", *lines[end:]])
 
 
+def _canonical_prose_line(line: str) -> str:
+    """The canonical prose line a Fibery-stored one stands for (spec v0.8).
+
+    A literal `<br>` is the renderer's own and is kept, as Fibery keeps it;
+    every other `<` and `>` is mapped back to the entity 8.3.1 emitted for
+    it, because a canonical prose line holds no other `<` or `>`. Nothing else
+    is changed. A canonical line maps onto itself.
+    """
+    return LINE_BREAK.join(
+        FIBERY_DECODED_CHARACTER.sub(
+            lambda found: FIBERY_DECODED_ENTITIES[found.group()], segment
+        )
+        for segment in line.split(LINE_BREAK)
+    )
+
+
+def _prose_line_positions(lines: list[str]) -> list[int]:
+    """The content lines of the prose sections; `_section_bodies` proved them."""
+    positions: list[int] = []
+    heading: ArchitectureHeading | None = None
+    by_line = {item.line: item for item in HEADINGS}
+    for index, raw in enumerate(lines):
+        line = raw.rstrip()
+        if line in by_line:
+            heading = by_line[line]
+        elif line and heading is not None and heading.section_key is not None:
+            positions.append(index)
+    return positions
+
+
+def _require_same_block_structure(stored: str, canonical: str) -> None:
+    """A decoded character may not change how CommonMark reads the line.
+
+    The stored line and its canonical line must yield the same block tokens
+    under the pinned parser, so a decoded `<` or `>` that would open an HTML
+    block, a block quote or any other block is refused. Inline raw HTML is
+    not judged here; spec v0.8 section 4 states that limit.
+    """
+    stored_types = block_token_types(stored)
+    if stored_types is None or stored_types != block_token_types(canonical):
+        raise _render_invalid(
+            "A prose line holds a '<' or '>' that changes its CommonMark block "
+            "structure, which is not the Fibery-stored form of an escaped "
+            "character (spec v0.8)."
+        )
+
+
+def _with_canonical_prose(normative: str, is_fibery_table: bool) -> str:
+    """The normative Markdown with each Fibery-decoded prose line re-escaped.
+
+    Spec v0.8: only in a Document whose table is in its v0.7 Fibery-stored
+    form; a Document with the canonical table is read exactly as before. In
+    the stored form every `<` or `>` of a prose line outside a `<br>` is a
+    decoded entity, so it is accepted only when no prose line still holds
+    `&lt;` or `&gt;` (one form for the whole Document) and only where the
+    line's block structure is unchanged. Every other line is kept exactly as
+    read; the fingerprint check that follows decides whether the result is
+    the emitted Markdown. In memory only.
+    """
+    if not is_fibery_table:
+        return normative
+    lines = normative.split("\n")
+    prose = _prose_line_positions(lines)
+    decoded = [
+        index
+        for index in prose
+        if _canonical_prose_line(lines[index].rstrip()) != lines[index].rstrip()
+    ]
+    if not decoded:
+        return normative
+    if any(CANONICAL_ENTITY.search(lines[index]) for index in prose):
+        raise _render_invalid(
+            "The prose sections hold both a decoded '<' or '>' and an escaped "
+            "'&lt;' or '&gt;'; Fibery was observed to decode every one (spec v0.8)."
+        )
+    for index in decoded:
+        stored = lines[index].rstrip()
+        canonical = _canonical_prose_line(stored)
+        _require_same_block_structure(stored, canonical)
+        lines[index] = canonical
+    return "\n".join(lines)
+
+
 def _require_post_apply(artifact: TsaArtifact) -> None:
     if artifact.artifact_type != ARCHITECTURE:
         raise InvalidTsaArtifact(
@@ -812,7 +903,9 @@ def validate_architecture_document(
     Spec v0.7: a traceability table in the exact Fibery-stored form of the
     envelope's canonical table is accepted, and the fingerprint is then taken
     over the normative Markdown with that one table rebuilt canonically from
-    the envelope and the Manifest. The Document itself is never changed.
+    the envelope and the Manifest. Spec v0.8: in such a Document a prose line
+    whose `&lt;` and `&gt;` Fibery stored as `<` and `>` is re-escaped before
+    the fingerprint is taken. The Document itself is never changed.
 
     Raises `EmptyTsaCarrier` or `InvalidTsaArtifact` (I01's taxonomy) and
     `ArchitectureRefused`. Returns the validated artifact.
@@ -831,10 +924,11 @@ def validate_architecture_document(
     bodies = _section_bodies(normative)
     _require_exact_coverage(artifact.body[TRACEABILITY_SOURCE], manifest_body)
     _require_ascending_rows(artifact.body[TRACEABILITY_SOURCE])
-    canonical = normative
-    if _require_rendered_sections(bodies, artifact, manifest_body):
+    is_fibery_table = _require_rendered_sections(bodies, artifact, manifest_body)
+    canonical = _with_canonical_prose(normative, is_fibery_table)
+    if is_fibery_table:
         canonical = _with_canonical_table(
-            normative,
+            canonical,
             _traceability_lines(artifact.body[TRACEABILITY_SOURCE], manifest_body),
         )
     if artifact.body["content_fingerprint"] != document_fingerprint(canonical):

@@ -37,18 +37,31 @@ STORED_TABLE_SEPARATOR = "| --- | --- | --- | --- | --- | --- |"
 TABLE_ROW_PREFIX = "| "
 LINE_BREAK = "<br>"
 FENCE = "```"
+#: How Fibery stored the escaped `<` and `>` of a prose paragraph in the
+#: second live TSA pilot (2026-10-18, spec v0.8).
+DECODED_ENTITIES = (("&lt;", "<"), ("&gt;", ">"))
+
+
+def _decoded(line: str) -> str:
+    for entity, character in DECODED_ENTITIES:
+        line = line.replace(entity, character)
+    return line
 
 
 def fibery_stored(markdown: str) -> str:
     """Emitted Markdown as live Fibery stored it, and nothing more.
 
-    Each rule was observed on the first live TSA Architecture Document
-    (2026-10-17); applying this to that emitted Document reproduces the stored
-    one byte for byte. Opt-in through `ScriptedWorkspace.store_as` only:
+    Each rule was observed on a live TSA Architecture Document (2026-10-17
+    and 2026-10-18); applying this to either emitted Document reproduces the
+    stored one byte for byte. Opt-in through `ScriptedWorkspace.store_as`
+    only:
 
     - the canonical table separator gains spaces;
     - inside a table row, every literal `<br>` becomes one space;
     - a `- ` bullet becomes `* `;
+    - in any other line outside a fence, `&lt;` and `&gt;` become `<` and `>`
+      (seen in a prose paragraph only; a table cell or list item holding an
+      entity was not observed and is left unchanged here);
     - a blank line is inserted before a fence opener that follows text, and
       the Document's final newline is dropped.
 
@@ -69,6 +82,8 @@ def fibery_stored(markdown: str) -> str:
             line = " ".join(line.split(LINE_BREAK))
         elif line.startswith("- "):
             line = "* " + line[2:]
+        else:
+            line = _decoded(line)
         stored.append(line)
     return "\n".join(stored).removesuffix("\n")
 

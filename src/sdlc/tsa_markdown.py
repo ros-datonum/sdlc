@@ -27,6 +27,7 @@ __all__ = [
     "BlockClassification",
     "CodeBlockClassification",
     "UnclassifiableReason",
+    "block_token_types",
     "classify_code_blocks",
     "has_fence_marker_line",
 ]
@@ -112,6 +113,25 @@ def classify_code_blocks(markdown: str) -> CodeBlockClassification:
             line = token.map[0] + 1 if token.map else None
             return CodeBlockClassification(BlockClassification.CODE_BLOCK, line=line)
     return CodeBlockClassification(BlockClassification.NO_CODE_BLOCK)
+
+
+def block_token_types(markdown: str) -> tuple[str, ...] | None:
+    """The flat block-token types of `markdown`, read as one CommonMark document.
+
+    Spec v0.8: compares the block structure of two texts with the same parser
+    and preset rule S uses. `None` when the stream may be incomplete or the
+    parser failed, exactly where rule S is `UNCLASSIFIABLE`, so a caller can
+    only refuse then. Inline tokens are reported by type only. Linear cost.
+    """
+    # Any ordinary parser failure must refuse, never pass (spec v0.4 section 4).
+    try:
+        parser = MarkdownIt(PRESET)
+        tokens = parser.parse(markdown)
+    except Exception:  # noqa: BLE001
+        return None
+    if _may_be_incomplete(tokens, parser.options[NESTING_LIMIT_OPTION]):
+        return None
+    return tuple(token.type for token in tokens)
 
 
 def has_fence_marker_line(text: str) -> bool:

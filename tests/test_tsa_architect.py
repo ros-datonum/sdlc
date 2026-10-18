@@ -1876,3 +1876,49 @@ def test_a_genuine_edit_of_a_stored_architecture_is_still_refused(old, new, code
 
     assert error.code == code
     assert scene.tsa.mutations == []
+
+
+# --------------------------------------------------------------------------
+# Spec v0.8 — the stage reads back escaped `<` and `>` as live Fibery stores
+# them (second pilot, 2026-10-18): `&lt;result&gt;` in prose comes back as
+# `<result>`.
+# --------------------------------------------------------------------------
+
+ENTITY_PROSE = 'The builder serialises {"uppercase": <result>}.'
+
+
+def stored_entity_response() -> str:
+    response = json.loads(stored_table_response())
+    response["architecture"]["solution_structure"] = ENTITY_PROSE
+    return json.dumps(response)
+
+
+def test_the_stage_confirms_an_architecture_whose_entity_fibery_decoded():
+    scene = fibery_scene()
+    model = RecordingModel(scene, responses=[stored_entity_response()])
+
+    result = run(scene, model)
+
+    stored = scene.tsa.content_of(ARCHITECTURE_ID)
+    intended = process_payload(scene)["body"]["intended_output"]
+    emitted = render_architecture(intended, manifest_body(scene))
+    assert "&lt;result&gt;" in emitted.markdown
+    assert "<result>" in stored and "&lt;result&gt;" not in stored
+    assert result.outcome is ArchitectStageOutcome.OUTPUT_APPLIED
+    assert (len(model.calls), architecture_writes(scene)) == (1, 1)
+    assert result.output_fingerprint == emitted.content_fingerprint
+
+
+def test_a_decoded_entity_output_is_case_3_and_is_never_re_applied():
+    scene = fibery_scene()
+    run(scene, RecordingModel(scene, responses=[stored_entity_response()]))
+    reset_trace(scene)
+    output = architecture_envelope(scene)["body"]["content_fingerprint"]
+
+    target = read_review_target(scene.tsa, scene.req, PROJECT_ID, CYCLE)
+    result = run(scene, no_model(scene))
+
+    assert target.case is ArchitectCase.OUTPUT_APPLIED
+    assert target.architecture_fingerprint == target.output_fingerprint == output
+    assert result.outcome is ArchitectStageOutcome.ALREADY_APPLIED
+    assert scene.tsa.mutations == []

@@ -2249,3 +2249,296 @@ def test_an_extra_line_inside_a_stored_traceability_section_is_render_invalid():
         f"{pilot_row(text)}\n", f"{pilot_row(text)}\nAn added sentence.\n", 1
     )
     assert document_refusal(extra, pilot_manifest()) is CODE.ARCHITECTURE_RENDER_INVALID
+
+
+# --------------------------------------------------------------------------
+# Spec v0.8 — escaped `<` and `>` of a prose section as live Fibery stores them
+#
+# The intended_output is the second live TSA pilot's (2026-10-18), with its
+# workspace ids and tree fingerprints replaced. Its section 3 holds the model
+# text `<result>`, which 8.3.1 emits as `&lt;result&gt;` and Fibery stored as
+# `<result>`.
+# --------------------------------------------------------------------------
+
+PILOT2_EVIDENCE = Path(__file__).parents[1] / "docs/specs/TSA-C01-v0.8-evidence"
+PILOT2_IDS = ("TSAP1-FR-0123", "TSAP1-FR-0124")
+PILOT2_FINGERPRINTS = {"TSAP1-FR-0123": "0" * 64, "TSAP1-FR-0124": "1" * 64}
+PILOT2_OUTPUT = json.loads(
+    (PILOT2_EVIDENCE / "pilot2-intended-output.json").read_text()
+)
+EMITTED_ENTITY = '{"uppercase": &lt;result&gt;}'
+STORED_ENTITY = '{"uppercase": <result>}'
+
+
+def pilot2_manifest() -> dict[str, object]:
+    return manifest(*PILOT2_IDS, fingerprints=PILOT2_FINGERPRINTS)
+
+
+def pilot2_carrier():
+    return build_architecture_carrier(PILOT2_OUTPUT, pilot2_manifest(), BINDING)
+
+
+def pilot2_stored() -> str:
+    return fibery_stored(pilot2_carrier().text)
+
+
+def pilot2_refusal(text: str) -> ArchitectureResultCode:
+    return document_refusal(text, pilot2_manifest())
+
+
+def entity_carrier(**section_text: str):
+    """A carrier whose prose sections carry the given model text."""
+    return assembled(output(sections=sections(**section_text)))
+
+
+def test_the_second_pilot_is_emitted_byte_identically_with_its_entity():
+    rendered = render_architecture(PILOT2_OUTPUT, pilot2_manifest())
+    emitted = (PILOT2_EVIDENCE / "pilot2-architecture-emitted.md").read_text()
+    assert "<result>" in PILOT2_OUTPUT["sections"]["solution_structure"]
+    assert rendered.markdown == normative_part(emitted)
+    assert EMITTED_ENTITY in rendered.markdown and "<result>" not in rendered.markdown
+    assert rendered.content_fingerprint == document_fingerprint(rendered.markdown)
+    assert render_architecture(PILOT2_OUTPUT, pilot2_manifest()) == rendered
+
+
+def test_the_fake_reproduces_the_second_live_stored_pilot_byte_for_byte():
+    """Fake versus live: both second-pilot Documents, sanitized identically."""
+    emitted = (PILOT2_EVIDENCE / "pilot2-architecture-emitted.md").read_text()
+    stored = (PILOT2_EVIDENCE / "pilot2-architecture-stored.md").read_text()
+    differing = [
+        (old, new)
+        for old, new in zip(emitted.split("\n"), stored.split("\n"), strict=False)
+        if old != new and EMITTED_ENTITY in old
+    ]
+    assert [new for _, new in differing] == [
+        differing[0][0].replace(EMITTED_ENTITY, STORED_ENTITY)
+    ]
+    assert fibery_stored(emitted) == stored
+
+
+def test_the_stored_second_pilot_validates_to_the_emitted_artifact_and_fingerprint():
+    carrier, stored = pilot2_carrier(), pilot2_stored()
+    assert STORED_ENTITY in stored and "&lt;" not in normative_part(stored)
+    assert document_fingerprint(normative_part(stored)) != carrier.content_fingerprint
+
+    artifact = validate_architecture_document(stored, pilot2_manifest())
+
+    assert artifact == carrier.artifact
+    assert artifact.body["content_fingerprint"] == carrier.content_fingerprint
+
+
+def test_without_the_v08_rule_the_second_pilot_is_the_live_refusal(monkeypatch):
+    monkeypatch.setattr(
+        tsa_architecture, "_with_canonical_prose", lambda normative, _: normative
+    )
+    with pytest.raises(InvalidTsaArtifact) as caught:
+        validate_architecture_document(pilot2_stored(), pilot2_manifest())
+    assert str(caught.value) == (
+        "The envelope's content_fingerprint is not the fingerprint of the "
+        "sixteen sections it accompanies."
+    )
+
+
+def test_the_first_pilot_and_canonical_documents_are_read_as_before():
+    for carrier, selected in (
+        (pilot_carrier(), pilot_manifest()),
+        (pilot2_carrier(), pilot2_manifest()),
+        (golden_carrier(), manifest()),
+    ):
+        assert validate_architecture_document(carrier.text, selected) == (
+            carrier.artifact
+        )
+    assert validate_architecture_document(pilot_stored(), pilot_manifest()) == (
+        pilot_carrier().artifact
+    )
+
+
+def test_every_decoded_character_of_a_line_is_re_escaped_and_br_is_kept():
+    carrier = entity_carrier(solution_structure="a <b> c > d\n\ne < f")
+    stored = fibery_stored(carrier.text)
+    assert "a <b> c > d<br><br>e < f" in stored
+    assert validate_architecture_document(stored, manifest()) == carrier.artifact
+
+
+def with_table_of(text: str, source: str) -> str:
+    """`text` with every table line replaced by the same line of `source`."""
+    table = [line for line in source.split("\n") if line.startswith("|")]
+    lines = text.split("\n")
+    positions = [index for index, line in enumerate(lines) if line.startswith("|")]
+    assert len(positions) == len(table)
+    for index, line in zip(positions, table, strict=True):
+        lines[index] = line
+    return "\n".join(lines)
+
+
+PILOT2_DEFECTS = {
+    "altered literal tag content": (
+        lambda t: edit_markdown(t, STORED_ENTITY, '{"uppercase": <value>}'),
+        "ARTIFACT_MALFORMED",
+    ),
+    "tag removed": (
+        lambda t: edit_markdown(t, STORED_ENTITY, '{"uppercase": }'),
+        "ARTIFACT_MALFORMED",
+    ),
+    "injected HTML tag": (
+        lambda t: edit_markdown(
+            t, "one small, stateless", "one <b>small</b>, stateless"
+        ),
+        "ARTIFACT_MALFORMED",
+    ),
+    "injected script": (
+        lambda t: edit_markdown(t, STORED_ENTITY, STORED_ENTITY + "<script>x</script>"),
+        "ARTIFACT_MALFORMED",
+    ),
+    "altered prose": (
+        lambda t: edit_markdown(t, "one small, stateless", "one large, stateful"),
+        "ARTIFACT_MALFORMED",
+    ),
+    "entity kept beside a decoded one": (
+        lambda t: edit_markdown(
+            t, "one small, stateless", "one &lt;small&gt;, stateless"
+        ),
+        "ARCHITECTURE_RENDER_INVALID",
+    ),
+    "angle bracket backslash-escaped": (
+        lambda t: edit_markdown(t, STORED_ENTITY, '{"uppercase": \\<result\\>}'),
+        "ARTIFACT_MALFORMED",
+    ),
+    "angle bracket double-escaped": (
+        lambda t: edit_markdown(
+            t, STORED_ENTITY, '{"uppercase": &amp;lt;result&amp;gt;}'
+        ),
+        "ARTIFACT_MALFORMED",
+    ),
+    "canonical table beside decoded prose": (
+        lambda t: with_table_of(t, pilot2_carrier().text),
+        "ARTIFACT_MALFORMED",
+    ),
+    "canonical separator beside decoded prose": (
+        lambda t: edit_markdown(t, STORED_SEPARATOR, TABLE_SEPARATOR),
+        "ARCHITECTURE_RENDER_INVALID",
+    ),
+    "altered table cell": (
+        lambda t: edit_markdown(t, "@ 000000000000", "@ 000000000001"),
+        "ARCHITECTURE_RENDER_INVALID",
+    ),
+    "altered generated list": (
+        lambda t: edit_markdown(
+            t, "* This is a greenfield", "* This is not a greenfield"
+        ),
+        "ARCHITECTURE_RENDER_INVALID",
+    ),
+}
+
+
+def refusal_code(text: str, selected) -> str:
+    try:
+        validate_architecture_document(text, selected)
+    except ArchitectureRefused as error:
+        return str(error.code)
+    except InvalidTsaArtifact as error:
+        return str(error.code)
+    raise AssertionError("accepted")
+
+
+@pytest.mark.parametrize("label", sorted(PILOT2_DEFECTS))
+def test_a_changed_second_pilot_document_is_refused(label):
+    change, code = PILOT2_DEFECTS[label]
+    text = change(pilot2_stored())
+    assert text != pilot2_stored()
+    assert validate_artifact(extract_architecture_envelope(text))
+    assert refusal_code(text, pilot2_manifest()) == code
+
+
+def test_a_resealed_wrong_fingerprint_is_refused_for_decoded_prose():
+    text = reseal(
+        pilot2_stored(), lambda body: body.__setitem__("content_fingerprint", "0" * 64)
+    )
+    with pytest.raises(InvalidTsaArtifact, match="content_fingerprint"):
+        validate_architecture_document(text, pilot2_manifest())
+
+
+def test_a_resealed_traceability_change_is_refused_for_decoded_prose():
+    def other(body: dict) -> None:
+        body["traceability"][1]["gaps"] = []
+
+    assert pilot2_refusal(reseal(pilot2_stored(), other)) is (
+        CODE.ARCHITECTURE_RENDER_INVALID
+    )
+
+
+def test_an_unsealed_envelope_edit_is_refused_for_decoded_prose():
+    text = pilot2_stored().replace('"tsa-s13"', '"tsa-s12"', 1)
+    with pytest.raises(InvalidTsaArtifact):
+        validate_architecture_document(text, pilot2_manifest())
+
+
+def test_decoded_prose_bound_to_another_manifest_is_refused():
+    other = manifest(
+        *PILOT2_IDS, fingerprints={**PILOT2_FINGERPRINTS, PILOT2_IDS[0]: "f" * 64}
+    )
+    with pytest.raises(InvalidTsaArtifact, match="another Input Manifest"):
+        validate_architecture_document(pilot2_stored(), other)
+
+
+def test_another_decoded_entity_is_never_accepted():
+    """Only `&lt;` and `&gt;`: an `&amp;` Fibery decoded too is a change."""
+    carrier = entity_carrier(solution_structure="a &amp; b <c>")
+    stored = fibery_stored(carrier.text)
+    assert validate_architecture_document(stored, manifest()) == carrier.artifact
+    decoded = edit_markdown(stored, "a &amp; b", "a & b")
+    with pytest.raises(InvalidTsaArtifact, match="content_fingerprint"):
+        validate_architecture_document(decoded, manifest())
+
+
+def test_model_text_holding_a_br_tag_is_refused_once_decoded():
+    """A decoded `<br>` cannot be told from the renderer's; it is not guessed."""
+    carrier = entity_carrier(solution_structure="a <br> b")
+    stored = fibery_stored(carrier.text)
+    assert "a <br> b" in stored
+    with pytest.raises(InvalidTsaArtifact, match="content_fingerprint"):
+        validate_architecture_document(stored, manifest())
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["<div>block</div>", "> quoted text", "<!-- hidden -->", "<script>x()</script>"],
+    ids=["html block", "block quote", "comment block", "script block"],
+)
+def test_a_decoded_character_that_opens_a_block_is_refused(value):
+    carrier = entity_carrier(failure_recovery=value)
+    stored = fibery_stored(carrier.text)
+    assert value in stored
+    assert document_refusal(stored) is CODE.ARCHITECTURE_RENDER_INVALID
+
+
+@pytest.mark.parametrize("where", ["assumptions", "traceability"])
+def test_a_decoded_entity_outside_prose_stays_unaccepted(where):
+    """Seen in a prose paragraph only; a list item or cell keeps v0.7's rule."""
+    intended = output(sections=sections(solution_structure="see <x>"))
+    if where == "assumptions":
+        intended["assumptions"] = ["an <item>"]
+    else:
+        intended["traceability"] = [
+            row(FIRST_ID, how_satisfied="a <cell>"),
+            row(SECOND_ID),
+        ]
+    stored = fibery_stored(assembled(intended).text)
+    entity = "an &lt;item&gt;" if where == "assumptions" else "a &lt;cell&gt;"
+    decoded = edit_markdown(
+        stored, entity, entity.replace("&lt;", "<").replace("&gt;", ">")
+    )
+    assert document_refusal(decoded) is CODE.ARCHITECTURE_RENDER_INVALID
+
+
+def test_a_code_block_is_refused_beside_decoded_prose_with_a_true_fingerprint():
+    """Rule S still runs: a matching fingerprint never admits a code block."""
+    text = rebound(
+        entity_carrier(solution_structure="see <x>").text,
+        edit=lambda prefix: prefix.replace(
+            "see &lt;x&gt;", "see &lt;x&gt;\n\n    indented code", 1
+        ),
+    )
+    stored = fibery_stored(text)
+    assert "see <x>" in stored and "\n    indented code" in stored
+    assert document_refusal(stored) is CODE.ARCHITECTURE_RENDER_INVALID

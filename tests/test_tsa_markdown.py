@@ -398,3 +398,20 @@ def test_the_reasons_are_the_two_approved_names():
         "NESTING_LIMIT",
         "PARSER_ERROR",
     }
+
+
+# --------------------------------------------------------------------------
+# Spec v0.8 — block structure, for comparing a stored line with its canonical
+# --------------------------------------------------------------------------
+
+
+def test_block_token_types_tell_an_inline_tag_from_a_block():
+    paragraph = ("paragraph_open", "inline", "paragraph_close")
+    assert tsa_markdown.block_token_types('{"a": &lt;b&gt;}') == paragraph
+    assert tsa_markdown.block_token_types('{"a": <b>}') == paragraph
+    assert tsa_markdown.block_token_types("<div>x</div>") == ("html_block",)
+    assert tsa_markdown.block_token_types("> x")[0] == "blockquote_open"
+
+
+def test_block_token_types_refuse_a_stream_that_may_be_incomplete():
+    assert tsa_markdown.block_token_types(">" * 100 + " deep") is None
