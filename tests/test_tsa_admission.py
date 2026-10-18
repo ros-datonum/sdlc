@@ -240,6 +240,7 @@ def add_applied_requirement(
         process.output_fingerprint,
         ReviewOutput((), (), (), {"clarity": "adequate"}),
         reviewed,
+        reviewed_product_questions=process.product_questions,
     )
     _add_child(ws, root, review_result_name(requirement_id, 1), public_id, "review")
     ws.content[f"review-secret-{public_id}"] = render_review_result(review)

@@ -21,6 +21,7 @@ from sdlc.standard_analysis import (
     NormalizedRequirement,
     ProposedRelation,
     RelationKind,
+    render_open_questions,
 )
 from standard_fake import REQUIREMENT_ID, build_standard_workspace, normalized
 
@@ -65,6 +66,7 @@ def build_review_workspace(
     process_iterations=1,
     normalized_changes=None,
     legacy_folders=True,
+    questions=(),
 ):
     """A Standard Requirement in Review with its Process history in place.
 
@@ -96,6 +98,8 @@ def build_review_workspace(
         state=state, type_name=type_name, others=others, legacy_folders=legacy_folders
     )
     content = normalized(**(normalized_changes or {}))
+    if questions:
+        content["open_questions"] = render_open_questions(tuple(questions))
     document = NormalizedRequirement(**content).document(REQUIREMENT_ID)
     ws.content[root.secret] = document
 
@@ -110,6 +114,7 @@ def build_review_workspace(
                 analysis={"clarity": "adequate"},
                 findings=tuple(findings),
                 proposed_relations=tuple(relations),
+                product_questions=tuple(questions),
             ),
         )
         secret = f"{PROCESS_SECRET}-{iteration}"
@@ -202,9 +207,15 @@ def review_output(
     relation_verifications=(),
     new_findings=(),
     assessment=None,
+    question_verifications=(),
+    material_unresolved_what=(),
 ):
     """A reviewer response. There is deliberately no verdict field."""
     body = {}
+    if question_verifications:
+        body["question_verifications"] = list(question_verifications)
+    # Always stated: an absent list is refused (Material-WHAT Gate v0.1 §4).
+    body["material_unresolved_what"] = list(material_unresolved_what)
     if finding_verifications:
         body["finding_verifications"] = list(finding_verifications)
     if relation_verifications:

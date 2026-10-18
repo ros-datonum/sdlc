@@ -1,7 +1,9 @@
 """Structured contract for Standard Requirement normalization and analysis.
 
 The model returns data only: a normalized requirement in the approved document
-sections, analysis findings, and proposed relations. It never writes to Fibery,
+sections, analysis findings, proposed relations and the open product questions
+(Requirement-Material-WHAT-Gate-v0.1). Code renders the Open Questions section
+from those structured questions, so the gate never reads Markdown prose. It never writes to Fibery,
 never names a Fibery identifier, and is never asked for reasoning traces.
 
 Anything the contract does not define is a validation error, which is what keeps
@@ -90,13 +92,23 @@ class InvalidAnalysisOutput(ValueError):
 ANALYSIS_KEYS = frozenset(
     {"completeness", "clarity", "atomicity", "testability", "internal_consistency"}
 )
-NORMALIZED_KEYS = frozenset({"title", *SECTION_KEYS})
+#: Open Questions is rendered from `product_questions` (Material-WHAT Gate
+#: v0.1 section 3); the model never writes that section itself.
+NORMALIZED_KEYS = frozenset({"title", *SECTION_KEYS} - {OPEN_QUESTIONS_KEY})
 REQUIRED_NORMALIZED_KEYS = frozenset({"title", "requirement"})
 FINDING_KEYS = frozenset({"kind", "requirement_id", "detail"})
 RELATION_KEYS = frozenset({"kind", "requirement_id", "rationale"})
+PRODUCT_QUESTION_KEYS = frozenset({"detail", "material"})
 RESULT_KEYS = frozenset(
-    {"normalized_requirement", "analysis", "findings", "proposed_relations"}
+    {
+        "normalized_requirement",
+        "analysis",
+        "findings",
+        "proposed_relations",
+        "product_questions",
+    }
 )
+OPEN_QUESTION_TEMPLATE = "- {detail}"
 
 
 @dataclass(frozen=True)
@@ -115,6 +127,29 @@ class ProposedRelation:
     kind: RelationKind
     requirement_id: str
     rationale: str
+
+
+@dataclass(frozen=True)
+class ProductQuestion:
+    """One unresolved product decision about WHAT, never answered here.
+
+    `material` is the Process claim that two plausible answers would require a
+    different observable outcome for some input or situation in this
+    Requirement's scope (Material-WHAT Gate v0.1 section 2). Review verifies
+    the claim; it is never the deciding evidence on its own.
+    """
+
+    detail: str
+    material: bool
+
+
+def render_open_questions(questions: tuple[ProductQuestion, ...]) -> str:
+    """The Open Questions section, derived from the structured questions only."""
+    if not questions:
+        return NO_OPEN_QUESTIONS
+    return "\n".join(
+        OPEN_QUESTION_TEMPLATE.format(detail=question.detail) for question in questions
+    )
 
 
 @dataclass(frozen=True)
@@ -146,6 +181,7 @@ class AnalysisResult:
     analysis: dict[str, str]
     findings: tuple[Finding, ...]
     proposed_relations: tuple[ProposedRelation, ...]
+    product_questions: tuple[ProductQuestion, ...] = ()
 
 
 def parse_analysis_output(text: str) -> AnalysisResult:
@@ -157,8 +193,14 @@ def parse_analysis_output(text: str) -> AnalysisResult:
     if not isinstance(normalized, dict):
         raise InvalidAnalysisOutput("'normalized_requirement' must be an object.")
 
+    questions = tuple(
+        _read_product_question(entry, index)
+        for index, entry in enumerate(
+            _as_list(payload.get("product_questions"), "product_questions")
+        )
+    )
     return AnalysisResult(
-        normalized=_read_normalized(normalized),
+        normalized=_read_normalized(normalized, questions),
         analysis=_read_analysis(payload.get("analysis")),
         findings=tuple(
             _read_finding(entry, index)
@@ -170,6 +212,7 @@ def parse_analysis_output(text: str) -> AnalysisResult:
                 _as_list(payload.get("proposed_relations"), "proposed_relations")
             )
         ),
+        product_questions=questions,
     )
 
 
@@ -208,7 +251,14 @@ def _reject_unknown(
         )
 
 
-def _read_normalized(entry: dict[str, object]) -> NormalizedRequirement:
+def _read_normalized(
+    entry: dict[str, object], questions: tuple[ProductQuestion, ...]
+) -> NormalizedRequirement:
+    if OPEN_QUESTIONS_KEY in entry:
+        raise InvalidAnalysisOutput(
+            "normalized_requirement must not contain open_questions: the Open "
+            "Questions section is rendered from product_questions."
+        )
     _reject_unknown(entry, NORMALIZED_KEYS, "normalized_requirement")
     missing = sorted(REQUIRED_NORMALIZED_KEYS - set(entry))
     if missing:
@@ -218,7 +268,9 @@ def _read_normalized(entry: dict[str, object]) -> NormalizedRequirement:
     sections = {
         key: _section_text(entry.get(key), key, f"normalized_requirement {key}")
         for key in SECTION_KEYS
+        if key != OPEN_QUESTIONS_KEY
     }
+    sections[OPEN_QUESTIONS_KEY] = render_open_questions(questions)
     return NormalizedRequirement(
         title=_read_title(entry["title"], "normalized_requirement title"), **sections
     )
@@ -291,6 +343,22 @@ def _read_finding(entry: object, index: int) -> Finding:
         detail=_read_text(entry["detail"], f"{where} detail"),
         requirement_id=requirement_id,
     )
+
+
+def _read_product_question(entry: object, index: int) -> ProductQuestion:
+    where = f"product question {index}"
+    if not isinstance(entry, dict):
+        raise InvalidAnalysisOutput(f"{where} must be an object.")
+    _reject_unknown(entry, PRODUCT_QUESTION_KEYS, where)
+    missing = sorted(PRODUCT_QUESTION_KEYS - set(entry))
+    if missing:
+        raise InvalidAnalysisOutput(f"{where} is missing: " + ", ".join(missing))
+    if not isinstance(entry["material"], bool):
+        raise InvalidAnalysisOutput(f"{where} material must be true or false.")
+    detail = _read_text(entry["detail"], f"{where} detail")
+    if not is_single_line(detail):
+        raise InvalidAnalysisOutput(f"{where} detail must be a single line.")
+    return ProductQuestion(detail=detail, material=entry["material"])
 
 
 def _read_relation(entry: object, index: int) -> ProposedRelation:

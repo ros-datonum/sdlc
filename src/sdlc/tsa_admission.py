@@ -54,9 +54,12 @@ from sdlc.process_result import (
 from sdlc.review_result import (
     InvalidReviewResult,
     ReviewResult,
+    open_material_questions,
     parse_review_result,
     parse_review_result_name,
+    what_clearance,
 )
+from sdlc.standard_review import WhatStatus
 from sdlc.tsa_artifacts import (
     FENCE_MARKER,
     INPUT_MANIFEST,
@@ -626,12 +629,47 @@ def _require_exact_bindings(
         )
 
 
+def _require_what_clearance(
+    requirement_id: str, process: ProcessResult, review: ReviewResult
+) -> None:
+    """Check 9 (Material-WHAT Gate v0.1 section 9): current WHAT clearance.
+
+    Only a 0.4 Review Result that verified exactly the bound Process Result's
+    product questions and derives CLEAR admits. Older evidence establishes no
+    WHAT status and is never read as CLEAR.
+    """
+    try:
+        status = what_clearance(review, process)
+    except InvalidReviewResult as error:
+        raise _not_admissible(
+            requirement_id, f"its WHAT evidence cannot be trusted: {error}"
+        ) from error
+    if status is None:
+        raise _not_admissible(
+            requirement_id,
+            f"Review Result {review.iteration} (version {review.version}) predates "
+            "the material-WHAT gate and establishes no WHAT clearance; the "
+            "Requirement needs a new Process and Review.",
+        )
+    if status is WhatStatus.BLOCKED_ON_WHAT:
+        raise _not_admissible(
+            requirement_id,
+            f"Review Result {review.iteration} derives BLOCKED_ON_WHAT: a material "
+            "product question about WHAT is unresolved.",
+            open_material_questions(review),
+        )
+
+
 def _admit_requirement(
     evidence: RequirementEvidenceWorkspace,
     context: BootstrapContext,
     requirement_id: str,
 ) -> dict[str, object]:
-    """All eight checks for one Requirement; returns its Manifest row (7.2)."""
+    """All nine checks for one Requirement; returns its Manifest row (7.2).
+
+    Checks 1-8 are TSA-C01 contract 2.1; check 9 is the WHAT clearance of the
+    Material-WHAT Gate v0.1.
+    """
     record = _resolve_exact_identity(evidence, requirement_id)
     _require_admissible_record(record, requirement_id, context)
     tree = _read_current_tree(evidence, record, requirement_id)
@@ -642,6 +680,7 @@ def _admit_requirement(
         evidence, tree, requirement_id
     )
     _require_exact_bindings(requirement_id, tree.manifest, process, review)
+    _require_what_clearance(requirement_id, process, review)
     return {
         "requirement_id": requirement_id,
         "entity_id": record.id,

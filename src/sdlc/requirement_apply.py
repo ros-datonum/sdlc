@@ -61,12 +61,14 @@ from sdlc.results import ApplyResult, ApplyResultCode
 from sdlc.review_result import (
     InvalidReviewResult,
     ReviewResult,
+    open_material_questions,
     parse_review_result,
     parse_review_result_name,
     read_confirmed_relation_mirror,
+    what_clearance,
 )
 from sdlc.standard_analysis import RelationKind
-from sdlc.standard_review import VerificationOutcome
+from sdlc.standard_review import VerificationOutcome, WhatStatus
 
 STANDARD_TYPE = "Standard"
 APPLY_STATE = "Apply"
@@ -189,6 +191,7 @@ def apply_standard_requirement(
         message=(
             f"{requirement.requirement_id} applied from Review Result "
             f"{evidence.latest_review.iteration}; State is now {APPLIED_STATE}."
+            + _legacy_what_note(evidence)
         ),
         requirement_id=requirement.requirement_id,
         state=APPLIED_STATE,
@@ -547,7 +550,12 @@ def _read_process_result(
 
 
 def _check_bindings(requirement: RequirementRecord, evidence: _Evidence) -> None:
-    """The application must apply to exactly what the latest review certified."""
+    """The application must apply to exactly what the latest review certified.
+
+    Run at the start, immediately before the first write and immediately
+    before Applied, so the material-WHAT gate is checked each time against the
+    Process Result read then.
+    """
     if evidence.current != evidence.reviewed:
         raise _StageFailed(
             ApplyResultCode.REVIEW_RESULT_STALE,
@@ -564,6 +572,46 @@ def _check_bindings(requirement: RequirementRecord, evidence: _Evidence) -> None
             f"not review the intended output tree of Process Result "
             f"{process.iteration}; the evidence is incoherent. Nothing was written.",
         )
+    _check_what(requirement, evidence)
+
+
+def _check_what(requirement: RequirementRecord, evidence: _Evidence) -> None:
+    """Material-WHAT Gate v0.1 section 8: Apply refuses BLOCKED_ON_WHAT itself.
+
+    Independently of how State became Apply, including a direct Fibery move.
+    Legacy (pre-0.4) evidence establishes no status and is applied as before.
+    """
+    review = evidence.latest_review
+    try:
+        status = what_clearance(review, evidence.latest_process)
+    except InvalidReviewResult as error:
+        raise _StageFailed(
+            ApplyResultCode.INVALID_REVIEW_RESULT,
+            f"Review Result {review.iteration} of {requirement.requirement_id} "
+            "cannot be applied, and an older one is not used in its place.",
+            (str(error),),
+        ) from error
+    if status is WhatStatus.BLOCKED_ON_WHAT:
+        raise _StageFailed(
+            ApplyResultCode.MATERIAL_WHAT_UNRESOLVED,
+            f"Review Result {review.iteration} of {requirement.requirement_id} "
+            "derives BLOCKED_ON_WHAT: a material product question about WHAT is "
+            "unresolved, so it must not become Applied, however State reached "
+            "Apply. Answer it in the Requirement's normative content and move it "
+            "to Process for a new Process and Review. Nothing was written.",
+            open_material_questions(review),
+        )
+
+
+def _legacy_what_note(evidence: _Evidence) -> str:
+    """Say so when the applied evidence establishes no WHAT status."""
+    review = evidence.latest_review
+    if review.what_status is not None:
+        return ""
+    return (
+        f" Review Result {review.iteration} predates the material-WHAT gate, so "
+        "it does not establish that no material WHAT question is open."
+    )
 
 
 def _recheck_bindings(

@@ -13,7 +13,11 @@ trusted:
   response cannot claim PASS while listing a blocking finding;
 - **every Process claim is accounted for exactly once.** Silently dropping an
   inconvenient finding would let review appear complete while verifying less
-  than it was given.
+  than it was given;
+- **the model cannot state a WHAT status either.** `derive_what_status` is the
+  only thing that says CLEAR or BLOCKED_ON_WHAT
+  (Requirement-Material-WHAT-Gate-v0.1), and it is a separate axis from the
+  quality verdict.
 
 Anything the contract does not define is a validation error, which is what
 keeps chain-of-thought and invented mutation instructions out: no key outside
@@ -32,6 +36,7 @@ from sdlc.standard_analysis import (
     REQUIREMENT_ID_PATTERN,
     Finding,
     FindingKind,
+    ProductQuestion,
     ProposedRelation,
     RelationKind,
 )
@@ -65,6 +70,31 @@ class ReviewVerdict(StrEnum):
     BLOCKING = "BLOCKING"
 
 
+class WhatStatus(StrEnum):
+    """Whether a material product question about WHAT is still open.
+
+    Derived by code from the verified questions, never authored, and
+    independent of `ReviewVerdict`: a NEEDS_WORK Requirement may be CLEAR,
+    and a PASS one may be BLOCKED_ON_WHAT.
+    """
+
+    CLEAR = "CLEAR"
+    BLOCKED_ON_WHAT = "BLOCKED_ON_WHAT"
+
+
+class RejectionBasis(StrEnum):
+    """Why the reviewer holds that a Process product question is not open.
+
+    ANSWERED_BY_OTHER_REQUIREMENT is recorded but never clears a material
+    question: until dependency evidence is bound (a later work item), a peer's
+    text is not proof that this Requirement's WHAT is settled.
+    """
+
+    ANSWERED_IN_THIS_REQUIREMENT = "ANSWERED_IN_THIS_REQUIREMENT"
+    TECHNICAL_HOW = "TECHNICAL_HOW"
+    ANSWERED_BY_OTHER_REQUIREMENT = "ANSWERED_BY_OTHER_REQUIREMENT"
+
+
 class InvalidReviewOutput(ValueError):
     """The reviewer's response does not satisfy the contract."""
 
@@ -84,12 +114,18 @@ FINDING_VERIFICATION_KEYS = frozenset(
 )
 RELATION_VERIFICATION_KEYS = frozenset({"kind", "requirement_id", "outcome", "reason"})
 NEW_FINDING_KEYS = frozenset({"kind", "severity", "requirement_id", "detail"})
+QUESTION_VERIFICATION_KEYS = frozenset(
+    {"question_index", "outcome", "material", "basis", "requirement_id", "reason"}
+)
+MATERIAL_WHAT_KEYS = frozenset({"detail"})
 REVIEW_KEYS = frozenset(
     {
         "finding_verifications",
         "relation_verifications",
         "new_findings",
         "assessment",
+        "question_verifications",
+        "material_unresolved_what",
     }
 )
 
@@ -134,6 +170,30 @@ class NewFinding:
 
 
 @dataclass(frozen=True)
+class QuestionVerification:
+    """The reviewer's conclusion about one Process product question.
+
+    CONFIRMED carries the reviewer's own `material` judgement and no basis.
+    REJECTED carries a `basis`, and a `requirement_id` exactly when the basis
+    is ANSWERED_BY_OTHER_REQUIREMENT. UNRESOLVED carries neither.
+    """
+
+    question_index: int
+    outcome: VerificationOutcome
+    reason: str
+    material: bool | None = None
+    basis: RejectionBasis | None = None
+    requirement_id: str | None = None
+
+
+@dataclass(frozen=True)
+class MaterialWhat:
+    """A material unresolved WHAT question the reviewer found itself."""
+
+    detail: str
+
+
+@dataclass(frozen=True)
 class ReviewOutput:
     """One validated review response."""
 
@@ -141,6 +201,8 @@ class ReviewOutput:
     relation_verifications: tuple[RelationVerification, ...]
     new_findings: tuple[NewFinding, ...]
     assessment: dict[str, str]
+    question_verifications: tuple[QuestionVerification, ...] = ()
+    material_unresolved_what: tuple[MaterialWhat, ...] = ()
 
     @property
     def confirmed_relations(self) -> tuple[RelationVerification, ...]:
@@ -180,10 +242,57 @@ def derive_verdict(
     return ReviewVerdict.PASS
 
 
+def question_blocks(
+    question: ProductQuestion, verification: QuestionVerification
+) -> bool:
+    """Whether one verified Process question leaves a material WHAT open.
+
+    CONFIRMED follows the reviewer's own materiality judgement. A rejection as
+    answered in this Requirement or as technical HOW clears it. A rejection
+    that rests on another Requirement leaves the Process materiality claim
+    standing. UNRESOLVED always blocks: the reviewer could not settle the
+    question, and a Process claim alone never clears one.
+    """
+    if verification.outcome is VerificationOutcome.CONFIRMED:
+        return bool(verification.material)
+    if verification.outcome is VerificationOutcome.UNRESOLVED:
+        return True
+    if verification.basis is RejectionBasis.ANSWERED_BY_OTHER_REQUIREMENT:
+        return question.material
+    return False
+
+
+def derive_what_status(
+    product_questions: tuple[ProductQuestion, ...],
+    question_verifications: tuple[QuestionVerification, ...],
+    material_unresolved_what: tuple[MaterialWhat, ...],
+) -> WhatStatus:
+    """CLEAR only when no material product question is left open.
+
+    Requires exactly one verification per question; anything else is a
+    contract violation the caller has already refused.
+    """
+    by_index = {item.question_index: item for item in question_verifications}
+    if sorted(by_index) != list(range(len(product_questions))) or len(by_index) != len(
+        question_verifications
+    ):
+        raise InvalidReviewOutput(
+            "Every product question must be verified exactly once before a WHAT "
+            "status can be derived."
+        )
+    if material_unresolved_what or any(
+        question_blocks(question, by_index[index])
+        for index, question in enumerate(product_questions)
+    ):
+        return WhatStatus.BLOCKED_ON_WHAT
+    return WhatStatus.CLEAR
+
+
 def parse_review_output(
     text: str,
     process_findings: tuple[Finding, ...],
     proposed_relations: tuple[ProposedRelation, ...],
+    product_questions: tuple[ProductQuestion, ...],
 ) -> ReviewOutput:
     """Validate the reviewer's JSON response against the Process claims.
 
@@ -225,7 +334,33 @@ def parse_review_output(
         describe=lambda key: f"proposed relation {key[0].value} {key[1]}",
     )
 
+    if "material_unresolved_what" not in payload:
+        raise InvalidReviewOutput(
+            "The review must state material_unresolved_what, even as an empty "
+            "list: its absence is not an assertion that none were found."
+        )
+    questions = tuple(
+        _read_question_verification(entry, index, len(product_questions))
+        for index, entry in enumerate(
+            _as_list(payload.get("question_verifications"), "question_verifications")
+        )
+    )
+    _require_exact_coverage(
+        addressed=[item.question_index for item in questions],
+        expected=list(range(len(product_questions))),
+        describe=lambda index: f"Process product question {index}",
+    )
+
     return ReviewOutput(
+        question_verifications=questions,
+        material_unresolved_what=tuple(
+            _read_material_what(entry, index)
+            for index, entry in enumerate(
+                _as_list(
+                    payload.get("material_unresolved_what"), "material_unresolved_what"
+                )
+            )
+        ),
         finding_verifications=verifications,
         relation_verifications=relations,
         new_findings=tuple(
@@ -319,6 +454,84 @@ def _read_relation_verification(entry: object, index: int) -> RelationVerificati
         outcome=_read_enum(VerificationOutcome, entry["outcome"], where),
         reason=_read_text(entry["reason"], f"{where} reason"),
     )
+
+
+def _read_question_verification(
+    entry: object, index: int, question_count: int
+) -> QuestionVerification:
+    where = f"question verification {index}"
+    if not isinstance(entry, dict):
+        raise InvalidReviewOutput(f"{where} must be an object.")
+    _reject_unknown(entry, QUESTION_VERIFICATION_KEYS, where)
+    missing = sorted({"question_index", "outcome", "reason"} - set(entry))
+    if missing:
+        raise InvalidReviewOutput(f"{where} is missing: " + ", ".join(missing))
+    target = entry["question_index"]
+    if not isinstance(target, int) or isinstance(target, bool):
+        raise InvalidReviewOutput(
+            f"{where} has question_index {target!r}, which is not an integer."
+        )
+    if not 0 <= target < question_count:
+        raise InvalidReviewOutput(
+            f"{where} addresses product question {target}, but the Process Result "
+            f"has {question_count}."
+        )
+    outcome = _read_enum(VerificationOutcome, entry["outcome"], where)
+    material = entry.get("material")
+    basis = entry.get("basis")
+    requirement_id = entry.get("requirement_id")
+    if outcome is VerificationOutcome.CONFIRMED:
+        if not isinstance(material, bool):
+            raise InvalidReviewOutput(
+                f"{where} confirms a question and must judge material as true or false."
+            )
+        if basis is not None or requirement_id is not None:
+            raise InvalidReviewOutput(
+                f"{where} confirms a question and must carry no basis or "
+                "requirement_id."
+            )
+    elif material is not None:
+        raise InvalidReviewOutput(
+            f"{where} is {outcome.value}; only a CONFIRMED question carries material."
+        )
+    if outcome is VerificationOutcome.REJECTED:
+        if basis is None:
+            raise InvalidReviewOutput(f"{where} rejects a question and needs a basis.")
+        basis = _read_enum(RejectionBasis, basis, where)
+        if basis is RejectionBasis.ANSWERED_BY_OTHER_REQUIREMENT:
+            if requirement_id is None:
+                raise InvalidReviewOutput(
+                    f"{where} rests on another Requirement and must name it."
+                )
+            requirement_id = _read_requirement_id(requirement_id, where)
+        elif requirement_id is not None:
+            raise InvalidReviewOutput(
+                f"{where} with basis {basis.value} must not name a Requirement."
+            )
+    elif outcome is VerificationOutcome.UNRESOLVED and (
+        basis is not None or requirement_id is not None
+    ):
+        raise InvalidReviewOutput(
+            f"{where} is UNRESOLVED and must carry no basis or requirement_id."
+        )
+    return QuestionVerification(
+        question_index=target,
+        outcome=outcome,
+        reason=_read_text(entry["reason"], f"{where} reason"),
+        material=material,
+        basis=basis,
+        requirement_id=requirement_id,
+    )
+
+
+def _read_material_what(entry: object, index: int) -> MaterialWhat:
+    where = f"material unresolved WHAT {index}"
+    if not isinstance(entry, dict):
+        raise InvalidReviewOutput(f"{where} must be an object.")
+    _reject_unknown(entry, MATERIAL_WHAT_KEYS, where)
+    if "detail" not in entry:
+        raise InvalidReviewOutput(f"{where} is missing: detail")
+    return MaterialWhat(detail=_read_text(entry["detail"], f"{where} detail"))
 
 
 def _read_new_finding(entry: object, index: int) -> NewFinding:

@@ -26,11 +26,12 @@ from sdlc.standard_review import ReviewVerdict, parse_review_output
 REQUIREMENT_ID = "SDLC-FR-0031"
 
 
-def build(text=None, findings=(), relations=(), iteration=1, **bindings):
+def build(text=None, findings=(), relations=(), iteration=1, questions=(), **bindings):
     review = parse_review_output(
         text if text is not None else review_output(),
         tuple(findings),
         tuple(relations),
+        tuple(questions),
     )
     return build_review_result(
         requirement_id=REQUIREMENT_ID,
@@ -40,6 +41,7 @@ def build(text=None, findings=(), relations=(), iteration=1, **bindings):
         reviewed_process_output_fingerprint=bindings.get("process_output", "out-fp"),
         review=review,
         reviewed_tree=root_only_manifest(bindings.get("document", "doc-fp")),
+        reviewed_product_questions=tuple(questions),
     )
 
 
@@ -223,6 +225,10 @@ def test_no_chain_of_thought_field_exists_in_the_payload():
         "confirmed_relation_proposals",
         "new_findings",
         "assessment",
+        "reviewed_product_questions",
+        "product_question_verifications",
+        "material_unresolved_what",
+        "derived_what_status",
     }
 
 
@@ -241,7 +247,7 @@ def test_invalid_json_is_rejected():
 
 def test_an_unsupported_version_is_rejected():
     result = build()
-    tampered = render_review_result(result).replace('"0.3"', '"9.9"', 1)
+    tampered = render_review_result(result).replace('"0.4"', '"9.9"', 1)
     with pytest.raises(InvalidReviewResult, match="is not supported"):
         parse_review_result(tampered)
 

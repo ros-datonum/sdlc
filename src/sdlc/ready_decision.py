@@ -55,10 +55,12 @@ from sdlc.results import ReadyDecisionResult, ReadyDecisionResultCode
 from sdlc.review_result import (
     InvalidReviewResult,
     ReviewResult,
+    open_material_questions,
     parse_review_result,
     parse_review_result_name,
+    what_clearance,
 )
-from sdlc.standard_review import ReviewSeverity, ReviewVerdict
+from sdlc.standard_review import ReviewSeverity, ReviewVerdict, WhatStatus
 
 STANDARD_TYPE = "Standard"
 READY_STATE = "Ready"
@@ -150,6 +152,7 @@ def approve_standard_requirement(
         history = _read_history(workspace, requirement)
         review = history.latest_review
         _check_bindings(requirement, history)
+        what_status = _check_what(requirement, history)
         _check_acknowledgement(review.verdict, acknowledged_verdict)
         _transition(workspace, requirement, APPLY_STATE)
     except _Refused as refusal:
@@ -161,6 +164,11 @@ def approve_standard_requirement(
             f"{requirement.requirement_id} approved at Review Result "
             f"{review.iteration} with verdict {review.verdict.value}; "
             f"State is now {APPLY_STATE}."
+            + (
+                ""
+                if what_status is WhatStatus.CLEAR
+                else f" {LEGACY_WHAT_NOTE.format(iteration=review.iteration)}"
+            )
         ),
         decision=APPROVE_DECISION,
         requirement_id=requirement.requirement_id,
@@ -528,6 +536,41 @@ def _check_bindings(requirement: RequirementRecord, history: _History) -> None:
             f"not review the intended output tree of Process Result "
             f"{process.iteration}; the evidence is incoherent. Nothing was written.",
         )
+
+
+LEGACY_WHAT_NOTE = (
+    "Review Result {iteration} predates the material-WHAT gate, so it does not "
+    "establish that no material WHAT question is open."
+)
+
+
+def _check_what(requirement: RequirementRecord, history: _History) -> WhatStatus | None:
+    """Refuse BLOCKED_ON_WHAT outright: no acknowledgement can override it.
+
+    Material-WHAT Gate v0.1 section 7. None is legacy evidence, which
+    establishes no status and is reported as such, never as CLEAR.
+    """
+    review = history.latest_review
+    try:
+        status = what_clearance(review, history.latest_process)
+    except InvalidReviewResult as error:
+        raise _Refused(
+            ReadyDecisionResultCode.INVALID_REVIEW_RESULT,
+            f"Review Result {review.iteration} of {requirement.requirement_id} "
+            "cannot be trusted for approval. Nothing was written.",
+            (str(error),),
+        ) from error
+    if status is WhatStatus.BLOCKED_ON_WHAT:
+        raise _Refused(
+            ReadyDecisionResultCode.MATERIAL_WHAT_UNRESOLVED,
+            f"Review Result {review.iteration} of {requirement.requirement_id} "
+            "derives BLOCKED_ON_WHAT: a material product question about WHAT is "
+            "unresolved, and no acknowledgement overrides that. Answer it in the "
+            "Requirement's normative content, send it for rework (Ready -> "
+            "Process) and have it reviewed again. Nothing was written.",
+            open_material_questions(review),
+        )
+    return status
 
 
 def _describe_drift(reviewed: _Bindings, current: _Bindings) -> tuple[str, ...]:

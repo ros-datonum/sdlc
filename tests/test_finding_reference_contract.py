@@ -206,6 +206,7 @@ def test_every_self_kind_rejects_a_requirement_id(kind):
             ),
             (),
             (),
+            (),
         )
 
 
@@ -218,6 +219,7 @@ def test_every_cross_kind_requires_a_requirement_id(kind):
             review_output(
                 new_findings=[{"kind": kind, "severity": "INFO", "detail": "x"}]
             ),
+            (),
             (),
             (),
         )
@@ -304,7 +306,9 @@ def test_the_examples_in_the_prompts_parse_under_the_strict_contracts():
             REVIEW_INSTRUCTIONS,
         )
     ]
-    parsed = parse_review_output(review_output(new_findings=review_examples), (), ())
+    parsed = parse_review_output(
+        review_output(new_findings=review_examples), (), (), ()
+    )
     assert [(f.kind.value, f.requirement_id) for f in parsed.new_findings] == [
         ("MISSING_CONSTRAINT", None),
         ("POSSIBLE_CONFLICT", PEER_ID),

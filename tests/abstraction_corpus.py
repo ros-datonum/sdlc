@@ -811,9 +811,9 @@ the previous outcome is not shown as the new cycle's result.
                 "normalized_requirement": {
                     "title": OVERRIDE_TITLE,
                     "requirement": OVERRIDE_REQUIREMENT,
-                    "open_questions": OVERRIDE_QUESTION,
                 },
                 "findings": [],
+                "product_questions": [{"detail": OVERRIDE_QUESTION, "material": True}],
             },
         ),
         review=ReviewScenario(

@@ -37,8 +37,10 @@ ONE_FINDING = (finding(),)
 ONE_RELATION = (relation(),)
 
 
-def parse(text, findings=(), relations=()):
-    return parse_review_output(text, tuple(findings), tuple(relations))
+def parse(text, findings=(), relations=(), questions=()):
+    return parse_review_output(
+        text, tuple(findings), tuple(relations), tuple(questions)
+    )
 
 
 # -- the model cannot author a verdict --------------------------------------

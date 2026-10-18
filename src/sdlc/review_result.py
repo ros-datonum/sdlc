@@ -12,7 +12,10 @@ applied.
 
 The persisted verdict is never trusted on read-back: it is recomputed from the
 findings the artifact carries, so an artifact whose verdict disagrees with its
-own contents is rejected rather than acted on.
+own contents is rejected rather than acted on. The same holds for the WHAT
+status of version 0.4 (Requirement-Material-WHAT-Gate-v0.1): it is recomputed
+from the product questions the review saw and their verifications, and
+`what_clearance` checks that those questions are the bound Process Result's.
 """
 
 from __future__ import annotations
@@ -27,16 +30,24 @@ from sdlc.normative_tree import (
     InvalidTreeManifest,
     TreeManifest,
 )
-from sdlc.standard_analysis import FindingKind, RelationKind
+from sdlc.process_result import ProcessResult
+from sdlc.standard_analysis import FindingKind, ProductQuestion, RelationKind
 from sdlc.standard_review import (
     FindingVerification,
+    InvalidReviewOutput,
+    MaterialWhat,
     NewFinding,
+    QuestionVerification,
+    RejectionBasis,
     RelationVerification,
     ReviewOutput,
     ReviewSeverity,
     ReviewVerdict,
     VerificationOutcome,
+    WhatStatus,
     derive_verdict,
+    derive_what_status,
+    question_blocks,
 )
 
 # 0.2 binds the normative tree (Requirement-Normative-Tree-Binding-v0.1); 0.1
@@ -44,18 +55,27 @@ from sdlc.standard_review import (
 # 0.3 binds manifest v2 (exact canonical-byte fingerprints, audit A8); 0.2
 # bound manifest v1 under the older algorithm; 0.1 is Root-only. Older
 # versions are history: readable, never written, never reinterpreted.
-REVIEW_RESULT_VERSION = "0.3"
+# 0.4 is 0.3 plus the verified product questions and the derived WHAT status
+# of the Material-WHAT Gate v0.1. A 0.3 Review Result stays current tree
+# evidence but establishes no WHAT status: it is never read as CLEAR.
+REVIEW_RESULT_VERSION = "0.4"
+PRE_WHAT_REVIEW_RESULT_VERSION = "0.3"
 TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION = "0.2"
 LEGACY_REVIEW_RESULT_VERSION = "0.1"
 SUPPORTED_REVIEW_RESULT_VERSIONS = frozenset(
     {
         REVIEW_RESULT_VERSION,
+        PRE_WHAT_REVIEW_RESULT_VERSION,
         TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION,
         LEGACY_REVIEW_RESULT_VERSION,
     }
 )
+CURRENT_TREE_REVIEW_RESULT_VERSIONS = frozenset(
+    {REVIEW_RESULT_VERSION, PRE_WHAT_REVIEW_RESULT_VERSION}
+)
 MANIFEST_VERSION_BY_RESULT_VERSION = {
     TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION: LEGACY_NORMATIVE_TREE_VERSION,
+    PRE_WHAT_REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
     REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
 }
 REVIEW_RESULT_SUFFIX = "Review Result"
@@ -81,6 +101,16 @@ RELATION_VERIFICATIONS_KEY = "relation_proposal_verifications"
 CONFIRMED_RELATIONS_KEY = "confirmed_relation_proposals"
 NEW_FINDINGS_KEY = "new_findings"
 ASSESSMENT_KEY = "assessment"
+REVIEWED_QUESTIONS_KEY = "reviewed_product_questions"
+QUESTION_VERIFICATIONS_KEY = "product_question_verifications"
+MATERIAL_WHAT_KEY = "material_unresolved_what"
+WHAT_STATUS_KEY = "derived_what_status"
+WHAT_KEYS = (
+    REVIEWED_QUESTIONS_KEY,
+    QUESTION_VERIFICATIONS_KEY,
+    MATERIAL_WHAT_KEY,
+    WHAT_STATUS_KEY,
+)
 
 
 class InvalidReviewResult(ValueError):
@@ -117,6 +147,11 @@ class ReviewResult:
     version: str = REVIEW_RESULT_VERSION
     # The normative tree this review actually saw. None on a legacy 0.1 result.
     reviewed_tree: TreeManifest | None = None
+    # 0.4 only; None on every older version, which establishes no WHAT status.
+    reviewed_product_questions: tuple[ProductQuestion, ...] | None = None
+    question_verifications: tuple[QuestionVerification, ...] = ()
+    material_unresolved_what: tuple[MaterialWhat, ...] = ()
+    what_status: WhatStatus | None = None
 
     @property
     def name(self) -> str:
@@ -128,9 +163,12 @@ class ReviewResult:
 
     @property
     def is_current(self) -> bool:
-        """0.3 with a manifest v2 tree: the evidence Ready and Apply certify."""
+        """0.3 or 0.4 with a manifest v2 tree: current tree evidence.
+
+        Whether it also establishes a WHAT status is `what_status`.
+        """
         return (
-            self.version == REVIEW_RESULT_VERSION
+            self.version in CURRENT_TREE_REVIEW_RESULT_VERSIONS
             and self.reviewed_tree is not None
             and self.reviewed_tree.is_current
         )
@@ -171,8 +209,14 @@ def build_review_result(
     reviewed_process_output_fingerprint: str,
     review: ReviewOutput,
     reviewed_tree: TreeManifest,
+    *,
+    reviewed_product_questions: tuple[ProductQuestion, ...],
 ) -> ReviewResult:
-    """Assemble the artifact, deriving the verdict rather than accepting one."""
+    """Assemble the artifact, deriving verdict and WHAT status, never accepting.
+
+    `reviewed_product_questions` are the bound Process Result's questions, the
+    ones the review verified.
+    """
     if not reviewed_tree.is_current:
         raise InvalidReviewResult(
             f"A Review Result {REVIEW_RESULT_VERSION} binds manifest version "
@@ -195,7 +239,26 @@ def build_review_result(
         new_findings=review.new_findings,
         assessment=dict(review.assessment),
         reviewed_tree=reviewed_tree,
+        reviewed_product_questions=tuple(reviewed_product_questions),
+        question_verifications=review.question_verifications,
+        material_unresolved_what=review.material_unresolved_what,
+        what_status=_derive_what_status(
+            tuple(reviewed_product_questions),
+            review.question_verifications,
+            review.material_unresolved_what,
+        ),
     )
+
+
+def _derive_what_status(
+    questions: tuple[ProductQuestion, ...],
+    verifications: tuple[QuestionVerification, ...],
+    material: tuple[MaterialWhat, ...],
+) -> WhatStatus:
+    try:
+        return derive_what_status(questions, verifications, material)
+    except InvalidReviewOutput as error:
+        raise InvalidReviewResult(str(error)) from error
 
 
 def render_review_result(result: ReviewResult) -> str:
@@ -243,6 +306,7 @@ def render_review_result(result: ReviewResult) -> str:
             for finding in result.new_findings
         ],
         ASSESSMENT_KEY: result.assessment,
+        **(_what_payload(result) if result.version == REVIEW_RESULT_VERSION else {}),
     }
     body = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False)
     return (
@@ -256,6 +320,34 @@ def render_review_result(result: ReviewResult) -> str:
         "\n"
         f"```json\n{body}\n```\n"
     )
+
+
+def _what_payload(result: ReviewResult) -> dict[str, object]:
+    if result.what_status is None or result.reviewed_product_questions is None:
+        raise InvalidReviewResult(
+            f"A Review Result {REVIEW_RESULT_VERSION} must carry its WHAT evidence."
+        )
+    return {
+        REVIEWED_QUESTIONS_KEY: [
+            {"detail": question.detail, "material": question.material}
+            for question in result.reviewed_product_questions
+        ],
+        QUESTION_VERIFICATIONS_KEY: [
+            {
+                "question_index": item.question_index,
+                "outcome": item.outcome.value,
+                "material": item.material,
+                "basis": item.basis.value if item.basis else None,
+                "requirement_id": item.requirement_id,
+                "reason": item.reason,
+            }
+            for item in result.question_verifications
+        ],
+        MATERIAL_WHAT_KEY: [
+            {"detail": item.detail} for item in result.material_unresolved_what
+        ],
+        WHAT_STATUS_KEY: result.what_status.value,
+    }
 
 
 def _relation_payload(verification: RelationVerification) -> dict[str, str]:
@@ -302,6 +394,7 @@ def parse_review_result(text: str) -> ReviewResult:
     reviewed_tree = _read_reviewed_tree(
         payload, version, requirement_id, reviewed_document
     )
+    what = _read_what_evidence(payload, version)
     return ReviewResult(
         requirement_id=requirement_id,
         iteration=iteration,
@@ -322,7 +415,169 @@ def parse_review_result(text: str) -> ReviewResult:
         assessment=dict(payload.get(ASSESSMENT_KEY) or {}),
         version=version,
         reviewed_tree=reviewed_tree,
+        **what,
     )
+
+
+def _read_what_evidence(payload: dict[str, object], version: str) -> dict:
+    """The 0.4 WHAT evidence, its status recomputed; none for older versions."""
+    if version != REVIEW_RESULT_VERSION:
+        present = [key for key in WHAT_KEYS if key in payload]
+        if present:
+            raise InvalidReviewResult(
+                f"A {version} Review Result cannot carry WHAT evidence: "
+                + ", ".join(present)
+            )
+        return {}
+    missing = [key for key in WHAT_KEYS if key not in payload]
+    if missing:
+        raise InvalidReviewResult(
+            f"A {REVIEW_RESULT_VERSION} Review Result is missing its WHAT evidence: "
+            + ", ".join(missing)
+        )
+    for key in (REVIEWED_QUESTIONS_KEY, QUESTION_VERIFICATIONS_KEY, MATERIAL_WHAT_KEY):
+        if not isinstance(payload[key], list):
+            raise InvalidReviewResult(f"{key} must be a list.")
+    questions = tuple(
+        _read_product_question(entry)
+        for entry in _as_list(payload.get(REVIEWED_QUESTIONS_KEY))
+    )
+    verifications = tuple(
+        _read_question_verification(entry)
+        for entry in _as_list(payload.get(QUESTION_VERIFICATIONS_KEY))
+    )
+    material = tuple(
+        _read_material_what(entry) for entry in _as_list(payload.get(MATERIAL_WHAT_KEY))
+    )
+    try:
+        stored = WhatStatus(payload.get(WHAT_STATUS_KEY))
+    except ValueError as error:
+        raise InvalidReviewResult(
+            f"Unknown persisted WHAT status {payload.get(WHAT_STATUS_KEY)!r}."
+        ) from error
+    recalculated = _derive_what_status(questions, verifications, material)
+    if stored is not recalculated:
+        raise InvalidReviewResult(
+            f"The persisted WHAT status {stored.value} contradicts the verified "
+            f"questions, which derive {recalculated.value}."
+        )
+    return {
+        "reviewed_product_questions": questions,
+        "question_verifications": verifications,
+        "material_unresolved_what": material,
+        "what_status": stored,
+    }
+
+
+def what_clearance(review: ReviewResult, process: ProcessResult) -> WhatStatus | None:
+    """The WHAT status a Review Result establishes for the Process it binds.
+
+    None means the evidence establishes no status at all (a Review Result
+    older than 0.4): never CLEAR. A 0.4 review whose verified questions are not
+    exactly the bound Process Result's questions is incoherent and refused, and
+    so is an older review of a Process Result that recorded questions: the
+    reviewer of such a Process always writes 0.4. The caller has already
+    checked that `review` binds `process`.
+    """
+    if review.what_status is None:
+        if process.has_question_evidence:
+            raise InvalidReviewResult(
+                f"Review Result {review.iteration} (version {review.version}) "
+                f"carries no WHAT evidence for Process Result {process.iteration}, "
+                "which recorded product questions."
+            )
+        return None
+    if not process.has_question_evidence or (
+        review.reviewed_product_questions != process.product_questions
+    ):
+        raise InvalidReviewResult(
+            f"Review Result {review.iteration} verified product questions that are "
+            f"not the questions of Process Result {process.iteration}."
+        )
+    return review.what_status
+
+
+def open_material_questions(review: ReviewResult) -> tuple[str, ...]:
+    """The material WHAT questions a 0.4 Review Result leaves open, for humans."""
+    questions = review.reviewed_product_questions or ()
+    by_index = {item.question_index: item for item in review.question_verifications}
+    open_questions = [
+        question.detail
+        for index, question in enumerate(questions)
+        if index in by_index and question_blocks(question, by_index[index])
+    ]
+    return (
+        *open_questions,
+        *(item.detail for item in review.material_unresolved_what),
+    )
+
+
+def _read_product_question(entry: object) -> ProductQuestion:
+    if (
+        not isinstance(entry, dict)
+        or set(entry) != {"detail", "material"}
+        or not isinstance(entry["detail"], str)
+        or not entry["detail"].strip()
+        or not isinstance(entry["material"], bool)
+    ):
+        raise InvalidReviewResult(f"Malformed reviewed product question: {entry!r}")
+    return ProductQuestion(detail=entry["detail"], material=entry["material"])
+
+
+def _read_question_verification(entry: object) -> QuestionVerification:
+    if not isinstance(entry, dict) or not set(entry) <= {
+        "question_index",
+        "outcome",
+        "material",
+        "basis",
+        "requirement_id",
+        "reason",
+    }:
+        raise InvalidReviewResult(
+            "Each question verification must be an object of the defined keys."
+        )
+    try:
+        outcome = VerificationOutcome(entry["outcome"])
+        basis = entry.get("basis")
+        verification = QuestionVerification(
+            question_index=entry["question_index"],
+            outcome=outcome,
+            reason=entry["reason"],
+            material=entry.get("material"),
+            basis=RejectionBasis(basis) if basis is not None else None,
+            requirement_id=entry.get("requirement_id"),
+        )
+    except (KeyError, ValueError) as error:
+        raise InvalidReviewResult(
+            f"Malformed persisted question verification: {error}"
+        ) from error
+    is_confirmed = outcome is VerificationOutcome.CONFIRMED
+    is_rejected = outcome is VerificationOutcome.REJECTED
+    names_peer = verification.basis is RejectionBasis.ANSWERED_BY_OTHER_REQUIREMENT
+    if (
+        not isinstance(verification.question_index, int)
+        or isinstance(verification.question_index, bool)
+        or not isinstance(verification.reason, str)
+        or not verification.reason.strip()
+        or is_confirmed != isinstance(verification.material, bool)
+        or (not is_confirmed and verification.material is not None)
+        or is_rejected != (verification.basis is not None)
+        or names_peer != (verification.requirement_id is not None)
+    ):
+        raise InvalidReviewResult(
+            "A persisted question verification does not have the shape its "
+            "outcome requires."
+        )
+    return verification
+
+
+def _read_material_what(entry: object) -> MaterialWhat:
+    if not isinstance(entry, dict) or set(entry) != {"detail"}:
+        raise InvalidReviewResult("Each material unresolved WHAT must be an object.")
+    detail = entry["detail"]
+    if not isinstance(detail, str) or not detail.strip():
+        raise InvalidReviewResult("A material unresolved WHAT has no detail.")
+    return MaterialWhat(detail=detail)
 
 
 def _read_reviewed_tree(

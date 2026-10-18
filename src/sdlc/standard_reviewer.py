@@ -193,6 +193,9 @@ def _already_reviewed(context: _Context, bindings: _Bindings) -> bool:
     return (
         latest is not None
         and latest.is_current
+        # A pre-0.4 review establishes no WHAT status, so it never makes a
+        # new review redundant (Material-WHAT Gate v0.1 section 10).
+        and latest.what_status is not None
         and latest.reviews(
             bindings.document_fingerprint,
             bindings.process_iteration,
@@ -454,6 +457,14 @@ def _require_tree_evidence(
             f"is history in an older format (version {process.version}); run "
             "Process to produce current-format evidence before reviewing. "
             "Nothing was written.",
+        )
+    if not process.has_question_evidence:
+        raise _StageFailed(
+            StandardReviewResultCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED,
+            f"Process Result {process.iteration} of {requirement.requirement_id} "
+            f"(version {process.version}) records no structured product "
+            "questions, so no review can establish its WHAT status; run Process "
+            "again before reviewing. Nothing was written.",
         )
     if process.output_tree.fingerprint != current.fingerprint:
         raise _StageFailed(
@@ -819,6 +830,7 @@ def _verify(
             response.text,
             context.process_result.findings,
             context.process_result.proposed_relations,
+            context.process_result.product_questions or (),
         )
     except InvalidReviewOutput as error:
         raise _StageFailed(
@@ -839,6 +851,7 @@ def _build_result(
         reviewed_process_output_fingerprint=bindings.process_output_fingerprint,
         review=review,
         reviewed_tree=context.tree.manifest,
+        reviewed_product_questions=context.process_result.product_questions or (),
     )
 
 

@@ -30,28 +30,38 @@ from sdlc.standard_analysis import (
     FindingKind,
     InvalidAnalysisOutput,
     NormalizedRequirement,
+    ProductQuestion,
     ProposedRelation,
     RelationKind,
 )
 
-# 0.3 binds the normative tree with manifest v2 (exact canonical-byte document
-# fingerprints, audit A8). 0.2 bound manifest v1 under the older fingerprint
-# algorithm; 0.1 is the Root-only binding. Both older versions stay readable
-# as history under their own semantics and are never written or rewritten.
-PROCESS_RESULT_VERSION = "0.3"
+# 0.4 is 0.3 plus the structured product questions of the Material-WHAT Gate
+# v0.1. 0.3 binds the normative tree with manifest v2 (exact canonical-byte
+# document fingerprints, audit A8); it stays current tree evidence but carries
+# no question evidence. 0.2 bound manifest v1 under the older fingerprint
+# algorithm; 0.1 is the Root-only binding. Older versions stay readable as
+# history under their own semantics and are never written or rewritten.
+PROCESS_RESULT_VERSION = "0.4"
+PRE_QUESTION_PROCESS_RESULT_VERSION = "0.3"
 TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION = "0.2"
 LEGACY_PROCESS_RESULT_VERSION = "0.1"
 SUPPORTED_PROCESS_RESULT_VERSIONS = frozenset(
     {
         PROCESS_RESULT_VERSION,
+        PRE_QUESTION_PROCESS_RESULT_VERSION,
         TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION,
         LEGACY_PROCESS_RESULT_VERSION,
     }
+)
+#: Versions whose tree binding is manifest v2: the current tree evidence.
+CURRENT_TREE_PROCESS_RESULT_VERSIONS = frozenset(
+    {PROCESS_RESULT_VERSION, PRE_QUESTION_PROCESS_RESULT_VERSION}
 )
 # The manifest version each tree-bound Result version must carry; a payload
 # that mixes them is a contradiction, never a best-effort read.
 MANIFEST_VERSION_BY_RESULT_VERSION = {
     TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION: LEGACY_NORMATIVE_TREE_VERSION,
+    PRE_QUESTION_PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
     PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
 }
 PROCESS_RESULT_SUFFIX = "Process Result"
@@ -74,6 +84,7 @@ NORMALIZED_KEY = "normalized_requirement"
 ANALYSIS_KEY = "analysis"
 FINDINGS_KEY = "findings"
 RELATIONS_KEY = "proposed_relations"
+PRODUCT_QUESTIONS_KEY = "product_questions"
 
 
 class InvalidProcessResult(ValueError):
@@ -111,10 +122,20 @@ class ProcessResult:
     # fingerprint replaced. None on a legacy 0.1 result.
     input_tree: TreeManifest | None = None
     output_tree: TreeManifest | None = None
+    # The structured open product questions (0.4). None on every older
+    # version: their absence is "not recorded", never "there were none".
+    product_questions: tuple[ProductQuestion, ...] | None = None
 
     @property
     def name(self) -> str:
         return process_result_name(self.requirement_id, self.iteration)
+
+    @property
+    def has_question_evidence(self) -> bool:
+        """Whether this iteration recorded its product questions (0.4)."""
+        return self.version == PROCESS_RESULT_VERSION and (
+            self.product_questions is not None
+        )
 
     @property
     def is_tree_bound(self) -> bool:
@@ -122,13 +143,14 @@ class ProcessResult:
 
     @property
     def is_current(self) -> bool:
-        """0.3 with manifest v2 on both trees: evidence the current stages use.
+        """0.3 or 0.4 with manifest v2 on both trees: current tree evidence.
 
         0.1 and 0.2 are history under their own algorithms; they are read,
-        never replayed, certified or applied.
+        never replayed, certified or applied. Whether a current Result also
+        carries question evidence is `has_question_evidence`.
         """
         return (
-            self.version == PROCESS_RESULT_VERSION
+            self.version in CURRENT_TREE_PROCESS_RESULT_VERSIONS
             and self.input_tree is not None
             and self.output_tree is not None
             and self.input_tree.is_current
@@ -170,11 +192,18 @@ def build_process_result(
         proposed_relations=tuple(analysis.proposed_relations),
         input_tree=input_tree,
         output_tree=input_tree.with_root_fingerprint(output_fingerprint),
+        product_questions=tuple(analysis.product_questions),
     )
 
 
 def render_process_result(result: ProcessResult) -> str:
     """Render the artifact: a short human header plus the machine payload."""
+    is_question_bound = result.version == PROCESS_RESULT_VERSION
+    if is_question_bound and result.product_questions is None:
+        raise InvalidProcessResult(
+            f"A Process Result {PROCESS_RESULT_VERSION} must carry its product "
+            "questions."
+        )
     payload = {
         VERSION_KEY: result.version,
         ITERATION_KEY: result.iteration,
@@ -212,6 +241,16 @@ def render_process_result(result: ProcessResult) -> str:
             }
             for relation in result.proposed_relations
         ],
+        **(
+            {
+                PRODUCT_QUESTIONS_KEY: [
+                    {"detail": question.detail, "material": question.material}
+                    for question in result.product_questions
+                ]
+            }
+            if is_question_bound
+            else {}
+        ),
     }
     body = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False)
     return (
@@ -292,7 +331,39 @@ def parse_process_result(text: str) -> ProcessResult:
         version=version,
         input_tree=input_tree,
         output_tree=output_tree,
+        product_questions=_read_product_questions(payload, version),
     )
+
+
+def _read_product_questions(
+    payload: dict[str, object], version: str
+) -> tuple[ProductQuestion, ...] | None:
+    """0.4 must carry the list, even empty; no older version may carry it."""
+    if version != PROCESS_RESULT_VERSION:
+        if PRODUCT_QUESTIONS_KEY in payload:
+            raise InvalidProcessResult(
+                f"A {version} Process Result cannot carry product questions."
+            )
+        return None
+    entries = payload.get(PRODUCT_QUESTIONS_KEY)
+    if not isinstance(entries, list):
+        raise InvalidProcessResult(
+            f"A {PROCESS_RESULT_VERSION} Process Result must carry its "
+            f"{PRODUCT_QUESTIONS_KEY} list."
+        )
+    return tuple(_read_product_question(entry) for entry in entries)
+
+
+def _read_product_question(entry: object) -> ProductQuestion:
+    if (
+        not isinstance(entry, dict)
+        or set(entry) != {"detail", "material"}
+        or not isinstance(entry["detail"], str)
+        or not entry["detail"].strip()
+        or not isinstance(entry["material"], bool)
+    ):
+        raise InvalidProcessResult(f"Malformed persisted product question: {entry!r}")
+    return ProductQuestion(detail=entry["detail"], material=entry["material"])
 
 
 def _read_trees(

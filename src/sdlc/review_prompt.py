@@ -35,7 +35,11 @@ from sdlc.comparison_context import (
 from sdlc.fibery_workspace import RequirementRecord, RequirementRelations
 from sdlc.process_result import ProcessResult
 from sdlc.standard_analysis import FindingKind
-from sdlc.standard_review import ReviewSeverity, VerificationOutcome
+from sdlc.standard_review import (
+    RejectionBasis,
+    ReviewSeverity,
+    VerificationOutcome,
+)
 
 INSTRUCTIONS = """\
 You are independently reviewing one Standard Requirement in an SDLC system.
@@ -68,6 +72,18 @@ Shape:
       "severity": "INFO" | "WARNING" | "BLOCKING",
       "detail": "what you observed",
       "requirement_id": "see the new-finding rule below" }
+  ],
+  "question_verifications": [
+    { "question_index": 0,
+      "outcome": "CONFIRMED" | "REJECTED" | "UNRESOLVED",
+      "material": true | false,
+      "basis": "ANSWERED_IN_THIS_REQUIREMENT" | "TECHNICAL_HOW"
+               | "ANSWERED_BY_OTHER_REQUIREMENT",
+      "requirement_id": "see the question rules below",
+      "reason": "concise justification" }
+  ],
+  "material_unresolved_what": [
+    { "detail": "a material product question nobody listed, on one line" }
   ],
   "assessment": {
     "clarity": "...", "completeness": "...", "atomicity": "...",
@@ -200,8 +216,29 @@ Rules:
     { "kind": "POSSIBLE_CONFLICT", "severity": "WARNING",
       "requirement_id": "SDLC-FR-0002",
       "detail": "SDLC-FR-0002 enumerates a status set that omits INVALID_REQUEST." }
-- Do not state an overall verdict, score or recommendation. There is no field
-  for one: it is derived from the severities you assign.
+- Verify every listed product question exactly once, by its index:
+  * CONFIRMED: it is a genuine product question about WHAT that this
+    Requirement's normative content leaves unanswered. Give "material": true
+    exactly when two plausible answers would require a different externally
+    observable outcome for at least one input or situation in this
+    Requirement's scope, and false when every plausible answer leads to the
+    same observable outcome. Carry no basis and no requirement_id.
+  * REJECTED: it is not an open product question here. Give a "basis":
+    ANSWERED_IN_THIS_REQUIREMENT when this Requirement's own normative content
+    answers it; TECHNICAL_HOW when its plausible answers differ only in
+    mechanism, technology, structure or how the outcome is produced;
+    ANSWERED_BY_OTHER_REQUIREMENT when only another Requirement's text answers
+    it, naming that Requirement in requirement_id. A question answered only by
+    another Requirement still counts as open for this one. Carry no material.
+  * UNRESOLVED: the available context cannot settle it. Carry no material,
+    basis or requirement_id.
+- Report in material_unresolved_what every material product question about
+  WHAT for this Requirement that the listed questions do not already cover,
+  including one you see in the document, in its Open Questions section or in
+  the earlier analysis. Never answer such a question and never list a HOW
+  question there. An empty list asserts that you found none.
+- Do not state an overall verdict, WHAT status, score or recommendation. There
+  is no field for one: code derives them from what you report.
 - Do not propose changes, rewrites, updates, retirement or supersession of any
   Requirement, do not describe an action to take, and do not recommend an
   implementation, a design or replacement wording. You are reporting, not
@@ -247,6 +284,8 @@ def build_review_prompt(
             "",
             _analysis_section(process_result),
             "",
+            _questions_section(process_result),
+            "",
             _existing_relations_section(relations),
             "",
             render_comparison_section(comparison),
@@ -254,6 +293,7 @@ def build_review_prompt(
             f"# Allowed finding kinds\n{', '.join(k.value for k in FindingKind)}",
             f"# Allowed severities\n{', '.join(s.value for s in ReviewSeverity)}",
             f"# Allowed outcomes\n{', '.join(o.value for o in VerificationOutcome)}",
+            f"# Allowed rejection bases\n{', '.join(b.value for b in RejectionBasis)}",
         ]
     )
     return INSTRUCTIONS, context
@@ -286,6 +326,20 @@ def _relations_section(result: ProcessResult) -> str:
     lines = [
         f"- {relation.kind.value} {relation.requirement_id}: {relation.rationale}"
         for relation in result.proposed_relations
+    ]
+    return "\n".join([header, *lines]) if lines else f"{header}\n(none)"
+
+
+def _questions_section(result: ProcessResult) -> str:
+    """The Process product questions, indexed, as claims to check."""
+    header = (
+        "# Product questions claimed by the earlier analysis\n"
+        "Verify each by its index. Its materiality is a claim, not a conclusion."
+    )
+    lines = [
+        f"[{index}] material={'true' if question.material else 'false'}: "
+        f"{question.detail}"
+        for index, question in enumerate(result.product_questions or ())
     ]
     return "\n".join([header, *lines]) if lines else f"{header}\n(none)"
 

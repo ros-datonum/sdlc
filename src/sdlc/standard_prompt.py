@@ -41,8 +41,7 @@ Shape:
     "rationale": "why it exists, from the source only, or omit",
     "acceptance_verification": "observable evidence of satisfaction, or omit",
     "constraints_edge_cases": "boundaries or source-mandated constraints, or omit",
-    "non_goals": "explicitly excluded behavior or scope, or omit",
-    "open_questions": "unresolved product questions affecting WHAT, or omit"
+    "non_goals": "explicitly excluded behavior or scope, or omit"
   },
   "analysis": {
     "completeness": "...", "clarity": "...", "atomicity": "...",
@@ -56,6 +55,10 @@ Shape:
     { "kind": "DEPENDS_ON" | "AFFECTS",
       "requirement_id": "an existing Requirement ID",
       "rationale": "why" }
+  ],
+  "product_questions": [
+    { "detail": "one unanswered product question, on a single line",
+      "material": true | false }
   ]
 }
 
@@ -142,22 +145,26 @@ Sections:
   implementation, plus explicitly source-mandated technical constraints.
 - non_goals: explicit scope exclusions, not implementation alternatives that
   were not chosen.
-- open_questions: unresolved product decisions that affect WHAT must be true.
-  Preserve each as a question and never answer it. A missing architecture
+- There is no open_questions field: code renders the Requirement's Open
+  Questions section from product_questions, one line per question.
+- product_questions: unresolved product decisions that affect WHAT must be
+  true. Preserve each as a question and never answer it. Every question the
+  current document's Open Questions section still holds belongs here unless
+  the Requirement's own normative content now answers it. A missing architecture
   decision is not a product gap unless the source makes that decision part of
   WHAT: leave architecture-only questions out.
   They need not come from the source. A product decision your own analysis
   leaves unresolved — you could not tell which outcome the WHAT requires and
   the source does not settle it — belongs here too, in the same unanswered
   form. Do not acknowledge such a question in the analysis or in a finding
-  while this section says there is none: that contradicts your own output.
+  while product_questions holds none: that contradicts your own output.
   For a genuine unresolved product question, resolve that inconsistency by
   recording the question here, not by deleting or suppressing a valid
   analytical observation or finding. Preserve the question unanswered. An
   observation you found to be wrong, or that your own analysis settled, is
   not a question: drop it because it is mistaken, never to keep this section
   empty.
-  Do not copy every finding into Open Questions. A defect you already
+  Do not copy every finding into product_questions. A defect you already
   repaired, an undecided HOW, and a weak acceptance example do not by
   themselves establish an open product decision, and neither does a
   duplicate or conflict finding. But when a conflict exposes a
@@ -168,9 +175,18 @@ Sections:
   authority. The question must arise from the product scope you are
   analyzing; it never introduces a new capability or an invented
   requirement.
-- Omit a section, or leave it empty, when the source does not establish it;
-  open_questions follows its own rule above. Deterministic code fills those
-  in; inventing content is worse than omitting it.
+- material: true exactly when two plausible answers to the question would
+  require a different externally observable outcome for at least one input or
+  situation within this Requirement's scope, so the Requirement's acceptance
+  could not be judged without the answer. A question whose plausible answers
+  all lead to the same observable outcome is material: false. A question that
+  differs only in mechanism, technology, structure or how an outcome is
+  produced is not a product question: leave it out entirely. Another
+  Requirement that seems to answer the question does not make it non-material
+  or answered here: keep the question and name that Requirement in its detail.
+- Omit a section, or leave it empty, when the source does not establish it.
+  Deterministic code fills those in; inventing content is worse than omitting
+  it.
 - Code owns the document structure. The title is a single line, and section
   content must not contain a level-1 or level-2 Markdown heading (a # or ##
   line, or text directly underlined with = or -) outside a fenced code block.

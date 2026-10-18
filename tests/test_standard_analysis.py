@@ -207,7 +207,9 @@ def test_a_product_level_requirement_may_omit_unestablished_sections():
     }
 
 
-@pytest.mark.parametrize("key", SECTION_KEYS)
+@pytest.mark.parametrize(
+    "key", [key for key in SECTION_KEYS if key != "open_questions"]
+)
 def test_normalization_cannot_add_an_architecture_section(key):
     leaking = "Text.\n\n## Architecture\n\nA watchdog thread kills the process."
 

@@ -544,13 +544,13 @@ def test_a_process_result_binds_its_input_and_intended_output_trees():
     add_child(ws, root, "A", "a\n", document_id="a")
     current = tree_manifest(ws, root)
     result = _tree_bound(ws, root)
-    assert result.version == "0.3" and result.is_tree_bound and result.is_current
+    assert result.version == "0.4" and result.is_tree_bound and result.is_current
     assert result.input_tree == current.with_root_fingerprint("input-1")
     assert result.output_tree == current.with_root_fingerprint(
         result.output_fingerprint
     )
     payload = _process_payload(render_process_result(result))
-    assert payload["process_result_version"] == "0.3"
+    assert payload["process_result_version"] == "0.4"
     assert payload["normative_input_tree"]["normative_tree_version"] == 2
     assert payload["normative_input_tree"]["documents"][0]["document_id"] == "a"
     assert parse_process_result(render_process_result(result)) == result
@@ -694,7 +694,7 @@ def test_a_review_result_binds_the_reviewed_tree():
 
     review_standard_requirement(ws, FakeModelRuntime([review_output()]), requirement.id)
     review = stored_review(ws)
-    assert review.version == "0.3" and review.is_tree_bound and review.is_current
+    assert review.version == "0.4" and review.is_tree_bound and review.is_current
     assert review.reviewed_tree == tree_manifest(ws, root)
     assert review.reviews_tree(tree_manifest(ws, root).fingerprint)
     payload = _process_payload(render_review_result(review))
@@ -712,8 +712,9 @@ def test_a_review_result_cannot_bind_a_tree_whose_root_disagrees():
             reviewed_document_fingerprint="doc-fp",
             reviewed_process_iteration=1,
             reviewed_process_output_fingerprint="out-fp",
-            review=parse_review_output(review_output(), (), ()),
+            review=parse_review_output(review_output(), (), (), ()),
             reviewed_tree=root_only_manifest("other-fp"),
+            reviewed_product_questions=(),
         )
 
 

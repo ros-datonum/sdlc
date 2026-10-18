@@ -50,7 +50,9 @@ def document(title, **sections):
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def process(current, source, normalized, findings=(), relations=(), others=()):
+def process(
+    current, source, normalized, findings=(), relations=(), others=(), questions=()
+):
     """Run Standard Process on `current`, answered by one bounded normalization."""
     ws, std, _ = build_standard_workspace(others=others)
     ws.content["std-secret"] = current
@@ -61,6 +63,7 @@ def process(current, source, normalized, findings=(), relations=(), others=()):
         "analysis": ANALYSIS,
         "findings": list(findings),
         "proposed_relations": list(relations),
+        "product_questions": list(questions),
     }
     model = FakeModelRuntime([json.dumps(body)])
 
@@ -363,14 +366,12 @@ def test_an_open_product_decision_stays_open_and_unanswered():
             open_questions="Can an operator override a failed Review?",
         ),
         OVERRIDE_SOURCE,
-        {
-            "title": OVERRIDE_TITLE,
-            "requirement": OVERRIDE_REQUIREMENT,
-            "open_questions": OVERRIDE_QUESTION,
-        },
+        {"title": OVERRIDE_TITLE, "requirement": OVERRIDE_REQUIREMENT},
+        questions=[{"detail": OVERRIDE_QUESTION, "material": True}],
     )
 
-    assert section(run.root, "Open Questions") == OVERRIDE_QUESTION
+    # Rendered by code from the structured question (Material-WHAT Gate v0.1).
+    assert section(run.root, "Open Questions") == f"- {OVERRIDE_QUESTION}"
     answered = run.root.split("## Open Questions", 1)[0]
     assert "override" not in answered, "no answer elsewhere in the document"
     assert "Preserve each as a question and never answer it." in run.prompt
@@ -621,7 +622,7 @@ def test_the_prompt_places_a_self_identified_product_question_in_open_questions(
     )
     assert (
         "Do not acknowledge such a question in the analysis or in a finding "
-        "while this section says there is none" in prompt
+        "while product_questions holds none" in prompt
     )
     # Still never answered, which is what made the section trustworthy.
     assert "Preserve each as a question and never answer it." in prompt
@@ -649,7 +650,7 @@ def test_the_prompt_resolves_the_contradiction_by_recording_the_question():
 def test_the_prompt_does_not_make_every_finding_an_open_question():
     prompt = " ".join(INSTRUCTIONS.split())
 
-    assert "Do not copy every finding into Open Questions." in prompt
+    assert "Do not copy every finding into product_questions." in prompt
     assert (
         "A defect you already repaired, an undecided HOW, and a weak acceptance "
         "example do not by themselves establish an open product decision, and "

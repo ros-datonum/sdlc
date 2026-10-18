@@ -37,8 +37,17 @@ def normalized(**changes) -> dict:
     return {**base, **changes}
 
 
-def analysis_output(normalized_changes=None, findings=(), relations=(), analysis=None):
-    body = {"normalized_requirement": normalized(**(normalized_changes or {}))}
+def analysis_output(
+    normalized_changes=None, findings=(), relations=(), analysis=None, questions=()
+):
+    """A Process response. Open Questions is rendered from `questions`, so the
+    normalized sections never carry it (Material-WHAT Gate v0.1)."""
+    sections = normalized(**(normalized_changes or {}))
+    if sections.pop("open_questions") != "None.":
+        raise AssertionError("pass open questions as `questions`, not as a section")
+    body = {"normalized_requirement": sections}
+    if questions:
+        body["product_questions"] = list(questions)
     if analysis is not None:
         body["analysis"] = analysis
     if findings:

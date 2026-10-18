@@ -188,7 +188,9 @@ def review(case: AbstractionCase, output=None):
         findings=claims, normalized_changes=root_sections(scenario.root)
     )
     ws.content["raw-secret"] = case.source
-    model = FakeModelRuntime([json.dumps(output or scenario.reference)])
+    # The corpus predates the material-WHAT contract, whose list is required.
+    response = {"material_unresolved_what": [], **(output or scenario.reference)}
+    model = FakeModelRuntime([json.dumps(response)])
 
     result = review_standard_requirement(ws, model, std.id)
 
