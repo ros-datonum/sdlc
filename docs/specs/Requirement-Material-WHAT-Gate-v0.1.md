@@ -13,8 +13,8 @@ Those documents are unchanged on disk. Where this delta and they disagree, this 
 
 ## 1. Purpose and boundary
 
-A known, material, unresolved product question about WHAT must not become Applied and must not enter TSA. This delta adds one deterministic gate for that. It does not change:
-- the lifecycle, the Fibery States or the human authority to approve a NEEDS_WORK or BLOCKING verdict;
+A Requirement may newly become Applied, and may enter a new TSA cycle, only when its current Review evidence establishes WHAT clearance under this contract. A known, material, unresolved product question about WHAT is never waivable. This delta adds one deterministic gate for that. It does not change:
+- the lifecycle, the Fibery States or the human authority to approve a NEEDS_WORK or BLOCKING verdict of CLEAR evidence;
 - relation semantics (dependency bindings are a later work item);
 - the quality verdict;
 - the normative tree binding.
@@ -99,18 +99,31 @@ A pre-0.4 Review Result paired with a Process Result 0.4 is also incoherent and 
 
 Changed normative content is therefore stale before the gate is reached, and changed questions are incoherent.
 
+`what_clearance` thus has exactly three coherent outcomes, and every gate admits only the first:
+
+| Outcome | Meaning |
+|---|---|
+| `CLEAR` | current 0.4 evidence establishes that no material WHAT question is open |
+| `BLOCKED_ON_WHAT` | current 0.4 evidence confirms an unresolved material WHAT question |
+| **UNKNOWN** (no status) | the evidence predates this contract (§10), so whether a material WHAT question is open is not established either way |
+
+UNKNOWN is not a status the Review Result records and is never reported as a confirmed defect.
+
 ## 7. Ready approval
 
-- `approve` refuses `BLOCKED_ON_WHAT` with `MATERIAL_WHAT_UNRESOLVED`, whatever verdict acknowledgement is given. It writes nothing, and its details name the open questions.
-- Incoherent or forged evidence: `INVALID_REVIEW_RESULT`.
-- The verdict acknowledgement rule is unchanged for CLEAR evidence.
+`approve` changes State only for CLEAR evidence. After the existing binding checks and before the verdict acknowledgement check, it refuses:
+- `BLOCKED_ON_WHAT` with `MATERIAL_WHAT_UNRESOLVED`; its details name the open questions;
+- UNKNOWN with `PRODUCT_QUESTION_EVIDENCE_REQUIRED`; the message says clearance is unknown and names no defect;
+- incoherent or forged evidence with `INVALID_REVIEW_RESULT`.
+
+No verdict acknowledgement waives either refusal, and each writes nothing. The verdict acknowledgement rule is unchanged for CLEAR evidence.
 - REWORK is unchanged.
 
 ## 8. Apply
 
-- Apply refuses `BLOCKED_ON_WHAT` with `MATERIAL_WHAT_UNRESOLVED` however State became Apply, including a direct Fibery move.
+- Apply applies only CLEAR evidence, however State became Apply: the approve command, a direct Fibery move, a Requirement already in Apply before this gate, or any later delegated transition. It refuses `BLOCKED_ON_WHAT` with `MATERIAL_WHAT_UNRESOLVED` and UNKNOWN with `PRODUCT_QUESTION_EVIDENCE_REQUIRED`.
 - The check runs inside the binding check, so it applies at the start, immediately before the first write and immediately before Applied, against the Process Result read at that moment.
-- On refusal nothing is written. The worker records `Failed` in Apply, as for every Apply refusal.
+- On refusal nothing is written: no relation, Document or State. Through the runner, the only effects are its existing `Processing` claim and `Failed` status in Apply, as for every Apply refusal.
 - All other Apply validation is unchanged.
 
 ## 9. TSA admission
@@ -122,16 +135,17 @@ Changed normative content is therefore stale before the gate is reached, and cha
 
 ## 10. Legacy evidence
 
-- 0.1–0.3 Process and Review Results stay parseable and are never rewritten.
-- They never establish CLEAR. "Legacy" means both artifacts are pre-0.4 (§6):
+- 0.1–0.3 Process and Review Results stay parseable and are never rewritten. "Legacy" means both artifacts are pre-0.4 (§6); they establish no WHAT status, so clearance is **UNKNOWN**, never CLEAR.
 
-| Consumer | Behaviour with legacy evidence |
+| Record | Behaviour |
 |---|---|
-| `approve`, Apply | Unchanged. The success message adds that the evidence predates the gate and establishes no WHAT status. |
-| Review | A Process Result older than 0.4 is refused with `PRODUCT_QUESTION_EVIDENCE_REQUIRED` before any model call. A pre-0.4 Review never makes a new review redundant. |
-| TSA admission | Refused. |
+| Legacy evidence in Ready | `approve` refuses with `PRODUCT_QUESTION_EVIDENCE_REQUIRED` until requalified (§11). REWORK is available. |
+| Legacy evidence in Apply, however it got there | Apply refuses with `PRODUCT_QUESTION_EVIDENCE_REQUIRED` before any write (§8). |
+| Historical Applied Requirement | Unchanged: its State, relations and Process and Review artifacts stay valid historical records. Nothing re-validates, migrates, resets or rewrites it; Apply reports it as already Applied. |
+| Historical Applied Requirement selected for a new TSA cycle | Admission refuses (§9) until current clearance exists. Existing TSA Documents are not modified. |
+| Review of a pre-0.4 Process Result | Refused with `PRODUCT_QUESTION_EVIDENCE_REQUIRED` before any model call. A pre-0.4 Review never makes a new review redundant. |
 
-- There is no migration path.
+- There is no migration path; requalification is the only route to clearance (§11). This delta does not provide requalification of an Applied Requirement; that is the separate Applied-revision work item.
 - The historical TSAP1 Project is not requalified; its artifacts serve only as offline regression fixtures.
 
 ## 11. Recovery after a refusal
@@ -139,17 +153,18 @@ Changed normative content is therefore stale before the gate is reached, and cha
 - The human answers the question **in the Requirement's normative content**, by editing the Root Document (for example removing it from Open Questions and stating the answer in the normative sections).
 - The Requirement then goes back to Process:
   - from Ready by REWORK (Ready → Process);
-  - after an Apply refusal by a human Apply → Process move. This is a State move the lifecycle documents do not yet list; it uses the existing Process route, which re-runs Process as an authorized new cycle.
-- A new Process and an independent Review must then derive CLEAR.
+  - after an Apply refusal by a human Apply → Process move in Fibery. This is a State move the lifecycle documents do not yet list. It needs no new behaviour: the reset automation fires on any State change into Standard + Process whatever the source State, and the existing `Standard + Process + Not Processed` route runs Process as an authorized new cycle, which writes a new iteration whether the latest Process Result is 0.3 (an unchanged tree is processed again) or older (an older format is never replayed).
+- **Requalification** is that ordinary new Process and independent Review: they write 0.4 evidence, and only a derived CLEAR then permits approval and Apply. It applies equally to UNKNOWN legacy evidence, for which no edit is required.
+- Earlier Process and Review Results stay as immutable history.
 - No acknowledgement, flag or edit to a Review Result substitutes for that.
-- A Review refused for missing question evidence (§10) recovers the same way: by moving it to Process.
+- A Review, approval or Apply refused for missing question evidence (§10) recovers the same way: by moving it to Process. No transition is automatic.
 
 ## 12. Refusal codes
 
 | Code | Raised by |
 |---|---|
-| `MATERIAL_WHAT_UNRESOLVED` | Ready, Apply |
-| `PRODUCT_QUESTION_EVIDENCE_REQUIRED` | Review |
+| `MATERIAL_WHAT_UNRESOLVED` | Ready, Apply: confirmed BLOCKED_ON_WHAT |
+| `PRODUCT_QUESTION_EVIDENCE_REQUIRED` | Review: a pre-0.4 Process Result. Ready, Apply: UNKNOWN clearance from legacy evidence |
 | `INVALID_REVIEW_RESULT` (existing) | incoherent or forged WHAT evidence |
 | `REQUIREMENT_NOT_ADMISSIBLE` (existing) | TSA check 9 |
 
@@ -161,4 +176,4 @@ All are deterministic, write nothing and are never retried automatically.
 
 **Limits:**
 - Materiality and discovery remain model judgements: the gate catches what Process or Review records, not what both miss.
-- The Apply → Process recovery move is not live-verified.
+- The Apply → Process recovery move is verified offline against the fakes only, including the modelled reset automation; it is not live-verified.

@@ -191,7 +191,6 @@ def apply_standard_requirement(
         message=(
             f"{requirement.requirement_id} applied from Review Result "
             f"{evidence.latest_review.iteration}; State is now {APPLIED_STATE}."
-            + _legacy_what_note(evidence)
         ),
         requirement_id=requirement.requirement_id,
         state=APPLIED_STATE,
@@ -578,8 +577,9 @@ def _check_bindings(requirement: RequirementRecord, evidence: _Evidence) -> None
 def _check_what(requirement: RequirementRecord, evidence: _Evidence) -> None:
     """Material-WHAT Gate v0.1 section 8: Apply refuses BLOCKED_ON_WHAT itself.
 
-    Independently of how State became Apply, including a direct Fibery move.
-    Legacy (pre-0.4) evidence establishes no status and is applied as before.
+    Independently of how State became Apply, including a direct Fibery move,
+    Apply applies only CLEAR. Legacy (pre-0.4) evidence establishes no status
+    (UNKNOWN) and is refused as missing evidence, never reported as a defect.
     """
     review = evidence.latest_review
     try:
@@ -591,6 +591,15 @@ def _check_what(requirement: RequirementRecord, evidence: _Evidence) -> None:
             "cannot be applied, and an older one is not used in its place.",
             (str(error),),
         ) from error
+    if status is None:
+        raise _StageFailed(
+            ApplyResultCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED,
+            f"Review Result {review.iteration} (version {review.version}) of "
+            f"{requirement.requirement_id} predates the material-WHAT gate, so "
+            "whether a material WHAT question is open is unknown and it must not "
+            "become Applied. Move it to Process for a new Process and Review. "
+            "Nothing was written.",
+        )
     if status is WhatStatus.BLOCKED_ON_WHAT:
         raise _StageFailed(
             ApplyResultCode.MATERIAL_WHAT_UNRESOLVED,
@@ -601,17 +610,6 @@ def _check_what(requirement: RequirementRecord, evidence: _Evidence) -> None:
             "to Process for a new Process and Review. Nothing was written.",
             open_material_questions(review),
         )
-
-
-def _legacy_what_note(evidence: _Evidence) -> str:
-    """Say so when the applied evidence establishes no WHAT status."""
-    review = evidence.latest_review
-    if review.what_status is not None:
-        return ""
-    return (
-        f" Review Result {review.iteration} predates the material-WHAT gate, so "
-        "it does not establish that no material WHAT question is open."
-    )
 
 
 def _recheck_bindings(

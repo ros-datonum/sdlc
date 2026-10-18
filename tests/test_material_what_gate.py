@@ -2,8 +2,9 @@
 
 Process records structured product questions; Review verifies each exactly
 once and may add the material WHAT questions Process missed; code alone
-derives CLEAR or BLOCKED_ON_WHAT. Ready, Apply and TSA admission each refuse
-BLOCKED_ON_WHAT on their own, and pre-0.4 evidence is never read as CLEAR.
+derives CLEAR or BLOCKED_ON_WHAT. Ready, Apply and TSA admission each admit
+only CLEAR on their own: pre-0.4 evidence is UNKNOWN, refused as missing
+evidence, and never read as CLEAR or reported as a confirmed defect.
 """
 
 from __future__ import annotations
@@ -30,8 +31,13 @@ from sdlc.process_result import (
     parse_process_result,
     render_process_result,
 )
-from sdlc.ready_decision import approve_standard_requirement
+from sdlc.ready_decision import (
+    approve_standard_requirement,
+    rework_standard_requirement,
+)
 from sdlc.requirement_apply import apply_standard_requirement
+from sdlc.requirement_dispatcher import RouteDecision, select_route
+from sdlc.requirement_runner import CycleOutcome, run_cycle
 from sdlc.results import ApplyResultCode, ReadyDecisionResultCode
 from sdlc.results import StandardReviewResultCode as ReviewCode
 from sdlc.review_result import (
@@ -58,6 +64,13 @@ from sdlc.standard_review import (
 from sdlc.standard_reviewer import review_standard_requirement
 from sdlc.tsa_admission import AdmissionResultCode
 from standard_fake import analysis_output
+from test_requirement_dispatcher import NOT_PROCESSED, real_workers
+from test_requirement_runner import (
+    FAILED_STATUS,
+    PROCESSING,
+    SUCCEEDED,
+    StatusWorkspace,
+)
 from test_tsa_admission import (
     REQUIREMENT_ID as TSA_REQUIREMENT_ID,
 )
@@ -457,7 +470,7 @@ def test_a_pre_gate_review_of_a_question_bound_process_is_incoherent():
 # -- F. Ready approval -----------------------------------------------------
 
 
-@pytest.mark.parametrize("acknowledged", [None, ReviewVerdict.PASS])
+@pytest.mark.parametrize("acknowledged", [None, *ReviewVerdict])
 def test_approval_refuses_blocked_on_what_whatever_is_acknowledged(acknowledged):
     ws, requirement, _, _ = reviewed(
         questions=[MATERIAL], question_verifications=[verify_question()]
@@ -497,12 +510,49 @@ def test_approval_refuses_a_forged_status():
     assert mutations_since(ws, before) == []
 
 
-def test_approval_of_legacy_evidence_says_it_establishes_no_status():
+def legacy_needs_work():
+    ws, requirement, root, _ = reviewed(
+        findings=(finding(),), finding_verifications=[confirm(severity="WARNING")]
+    )
+    make_legacy(ws)
+    return ws, requirement, root
+
+
+@pytest.mark.parametrize("acknowledged", [None, *ReviewVerdict])
+def test_approval_of_legacy_evidence_is_refused_as_unknown(acknowledged):
+    """The pre-correction warning-only approval is no longer possible."""
     ws, requirement, _, _ = reviewed()
     make_legacy(ws)
+    before = len(ws.mutations)
+    result = approve_standard_requirement(ws, requirement.id, acknowledged)
+    assert result.code is ReadyDecisionResultCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED
+    assert not result.is_normal
+    assert "unknown" in result.message
+    assert "BLOCKED_ON_WHAT" not in result.message and result.details == ()
+    assert mutations_since(ws, before) == []
+    assert ws.requirements[requirement.id].state == "Ready"
+
+
+@pytest.mark.parametrize("acknowledged", [None, ReviewVerdict.NEEDS_WORK])
+def test_acknowledging_a_legacy_needs_work_verdict_does_not_waive_unknown(
+    acknowledged,
+):
+    """UNKNOWN is reported first: no acknowledgement is asked for in vain."""
+    ws, requirement, _ = legacy_needs_work()
+    before = len(ws.mutations)
+    result = approve_standard_requirement(ws, requirement.id, acknowledged)
+    assert result.code is ReadyDecisionResultCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED
+    assert result.verdict == "NEEDS_WORK"
+    assert mutations_since(ws, before) == []
+    assert ws.requirements[requirement.id].state == "Ready"
+
+
+def test_stale_legacy_evidence_is_refused_as_stale_first():
+    ws, requirement, root, _ = reviewed()
+    make_legacy(ws)
+    ws.content[root.secret] += "\nA new obligation.\n"
     result = approve_standard_requirement(ws, requirement.id)
-    assert result.code is ReadyDecisionResultCode.REQUIREMENT_APPROVED, result
-    assert "predates the material-WHAT gate" in result.message
+    assert result.code is ReadyDecisionResultCode.REVIEW_RESULT_STALE, result
 
 
 def test_changed_normative_content_is_stale_before_the_gate_is_reached():
@@ -564,13 +614,154 @@ def test_apply_of_a_clear_requirement_is_unchanged():
     assert "predates" not in result.message
 
 
-def test_apply_of_legacy_evidence_is_unchanged_and_says_so():
-    ws, requirement, _, _ = reviewed()
-    make_legacy(ws)
-    move_to_apply_in_fibery(ws, requirement)
+def test_apply_of_a_clear_needs_work_requirement_after_acknowledgement():
+    ws, requirement, _, _ = reviewed(
+        findings=(finding(),), finding_verifications=[confirm(severity="WARNING")]
+    )
+    approved = approve_standard_requirement(
+        ws, requirement.id, ReviewVerdict.NEEDS_WORK
+    )
+    assert approved.is_normal, approved
     result = apply_standard_requirement(ws, requirement.id)
     assert result.code is ApplyResultCode.REQUIREMENT_APPLIED, result
-    assert "predates the material-WHAT gate" in result.message
+
+
+@pytest.mark.parametrize("make", [reviewed, legacy_needs_work])
+def test_apply_refuses_legacy_evidence_before_any_write(make):
+    """However it reached Apply: a Fibery move, or an approval made before WI-1.
+
+    The pre-correction warning-only application is no longer possible.
+    """
+    ws, requirement, *_ = make()
+    make_legacy(ws)
+    before = move_to_apply_in_fibery(ws, requirement)
+    snapshot = dict(ws.content)
+
+    result = apply_standard_requirement(ws, requirement.id)
+
+    assert result.code is ApplyResultCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED, result
+    assert not result.is_normal
+    assert "unknown" in result.message and "BLOCKED_ON_WHAT" not in result.message
+    assert mutations_since(ws, before) == [], "no relation, State or Document write"
+    assert ws.content == snapshot
+    assert ws.requirements[requirement.id].state == "Apply"
+
+
+def test_stale_legacy_evidence_in_apply_is_refused_as_stale_first():
+    ws, requirement, root, _ = reviewed()
+    make_legacy(ws)
+    before = move_to_apply_in_fibery(ws, requirement)
+    ws.content[root.secret] += "\nA new obligation.\n"
+    result = apply_standard_requirement(ws, requirement.id)
+    assert result.code is ApplyResultCode.REVIEW_RESULT_STALE, result
+    assert mutations_since(ws, before) == []
+
+
+def test_a_legacy_applied_requirement_is_preserved_untouched():
+    ws, requirement, _, _ = reviewed()
+    make_legacy(ws)
+    ws.set_requirement_state(requirement.id, "Applied")  # applied before WI-1
+    before = len(ws.mutations)
+    snapshot = dict(ws.content)
+
+    applied = apply_standard_requirement(ws, requirement.id)
+    approval = approve_standard_requirement(ws, requirement.id)
+
+    assert applied.code is ApplyResultCode.REQUIREMENT_ALREADY_APPLIED, applied
+    assert approval.code is ReadyDecisionResultCode.REQUIREMENT_NOT_IN_READY
+    route = select_route(ws.requirements[requirement.id], NOT_PROCESSED)
+    assert route.decision is RouteDecision.NO_MACHINE_WORK
+    assert mutations_since(ws, before) == [] and ws.content == snapshot
+    assert ws.requirements[requirement.id].state == "Applied"
+    assert latest_review(ws)[1].version == "0.3"
+    assert latest_process(ws)[1].version == "0.3"
+
+
+# -- the worker path, and recovery through existing lifecycle stages ---------
+
+
+def review_results(ws):
+    nodes = sorted(
+        (d for d in ws.documents if "Review Result" in d.name), key=lambda d: d.name
+    )
+    return [parse_review_result(ws.content[node.secret]) for node in nodes]
+
+
+def runner_over(inner, requirement, status):
+    """The runner's Fibery view, with the RW-C04 reset automation modelled."""
+    ws = StatusWorkspace(inner, {requirement.id: status}, default=SUCCEEDED)
+    workers = real_workers(
+        ws,
+        process_model=FakeModelRuntime([analysis_output()]),
+        review_model=FakeModelRuntime([review_output()]),
+    )
+    return ws, workers
+
+
+def requalify(ws, workers, requirement):
+    """Process then Review, by the runner alone, from a reset Process cycle."""
+    assert ws.status_of(requirement.id) == NOT_PROCESSED
+    assert run_cycle(ws, workers).outcome is CycleOutcome.HANDED_OFF
+    assert latest_process(ws)[1].version == "0.4"
+    assert run_cycle(ws, workers).outcome is CycleOutcome.SUCCEEDED
+    assert ws.requirements[requirement.id].state == "Ready"
+    review = review_results(ws)[-1]
+    assert review.version == "0.4" and review.what_status is WhatStatus.CLEAR
+
+
+def test_the_worker_fails_legacy_apply_with_only_its_processing_status():
+    inner, requirement, _, _ = reviewed()
+    make_legacy(inner)
+    ws, workers = runner_over(inner, requirement, SUCCEEDED)
+    ws.set_requirement_state(requirement.id, "Apply")  # direct Fibery move
+    before = len(ws.mutations)
+    snapshot = dict(ws.content)
+
+    report = run_cycle(ws, workers)
+
+    assert report.outcome is CycleOutcome.FAILED, report
+    worker_result = report.dispatch_result.worker_result
+    assert worker_result.code is ApplyResultCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED
+    assert mutations_since(ws, before) == [
+        f"set_processing_status {requirement.id} {PROCESSING}",
+        f"set_processing_status {requirement.id} {FAILED_STATUS}",
+    ]
+    assert ws.content == snapshot
+    assert ws.requirements[requirement.id].state == "Apply"
+
+
+def test_a_legacy_requirement_refused_at_ready_requalifies_through_rework():
+    inner, requirement, _, _ = reviewed()
+    make_legacy(inner)
+    legacy = dict(inner.content)
+    ws, workers = runner_over(inner, requirement, SUCCEEDED)
+    refused = approve_standard_requirement(ws, requirement.id)
+    assert refused.code is ReadyDecisionResultCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED
+
+    rework = rework_standard_requirement(ws, requirement.id)
+    assert rework.code is ReadyDecisionResultCode.REQUIREMENT_SENT_FOR_REWORK
+    requalify(ws, workers, requirement)
+
+    assert approve_standard_requirement(ws, requirement.id).is_normal
+    assert run_cycle(ws, workers).outcome is CycleOutcome.SUCCEEDED
+    assert ws.requirements[requirement.id].state == "Applied"
+    assert {secret: ws.content[secret] for secret in legacy} == legacy
+
+
+def test_a_legacy_requirement_refused_in_apply_requalifies_after_a_human_move():
+    inner, requirement, _, _ = reviewed()
+    make_legacy(inner)
+    legacy = dict(inner.content)
+    ws, workers = runner_over(inner, requirement, SUCCEEDED)
+    ws.set_requirement_state(requirement.id, "Apply")
+    assert run_cycle(ws, workers).outcome is CycleOutcome.FAILED
+    assert ws.status_of(requirement.id) == FAILED_STATUS
+
+    ws.set_requirement_state(requirement.id, "Process")  # the human, in Fibery
+    assert ws.resets[-1] == (requirement.id, "Process")
+    requalify(ws, workers, requirement)
+
+    assert {secret: ws.content[secret] for secret in legacy} == legacy
 
 
 # -- H. TSA admission ------------------------------------------------------
@@ -622,6 +813,7 @@ def test_admission_refuses_legacy_evidence_without_clearance():
     error = clean_refusal(scene, requirement_ids=(TSA_REQUIREMENT_ID, SECOND_ID))
     assert error.code is AdmissionResultCode.REQUIREMENT_NOT_ADMISSIBLE
     assert "establishes no WHAT clearance" in str(error)
+    assert "BLOCKED_ON_WHAT" not in str(error), "UNKNOWN is not a confirmed defect"
 
 
 # -- historical TSAP1 evidence, offline only --------------------------------

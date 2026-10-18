@@ -152,7 +152,7 @@ def approve_standard_requirement(
         history = _read_history(workspace, requirement)
         review = history.latest_review
         _check_bindings(requirement, history)
-        what_status = _check_what(requirement, history)
+        _check_what(requirement, history)
         _check_acknowledgement(review.verdict, acknowledged_verdict)
         _transition(workspace, requirement, APPLY_STATE)
     except _Refused as refusal:
@@ -164,11 +164,6 @@ def approve_standard_requirement(
             f"{requirement.requirement_id} approved at Review Result "
             f"{review.iteration} with verdict {review.verdict.value}; "
             f"State is now {APPLY_STATE}."
-            + (
-                ""
-                if what_status is WhatStatus.CLEAR
-                else f" {LEGACY_WHAT_NOTE.format(iteration=review.iteration)}"
-            )
         ),
         decision=APPROVE_DECISION,
         requirement_id=requirement.requirement_id,
@@ -538,17 +533,12 @@ def _check_bindings(requirement: RequirementRecord, history: _History) -> None:
         )
 
 
-LEGACY_WHAT_NOTE = (
-    "Review Result {iteration} predates the material-WHAT gate, so it does not "
-    "establish that no material WHAT question is open."
-)
+def _check_what(requirement: RequirementRecord, history: _History) -> None:
+    """Approve only CLEAR: no acknowledgement can override anything else.
 
-
-def _check_what(requirement: RequirementRecord, history: _History) -> WhatStatus | None:
-    """Refuse BLOCKED_ON_WHAT outright: no acknowledgement can override it.
-
-    Material-WHAT Gate v0.1 section 7. None is legacy evidence, which
-    establishes no status and is reported as such, never as CLEAR.
+    Material-WHAT Gate v0.1 section 7. BLOCKED_ON_WHAT is a confirmed open
+    material question; legacy evidence establishes no status at all (UNKNOWN),
+    which is refused as missing evidence, never reported as a defect.
     """
     review = history.latest_review
     try:
@@ -560,6 +550,15 @@ def _check_what(requirement: RequirementRecord, history: _History) -> WhatStatus
             "cannot be trusted for approval. Nothing was written.",
             (str(error),),
         ) from error
+    if status is None:
+        raise _Refused(
+            ReadyDecisionResultCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED,
+            f"Review Result {review.iteration} (version {review.version}) of "
+            f"{requirement.requirement_id} predates the material-WHAT gate, so "
+            "whether a material WHAT question is open is unknown; no "
+            "acknowledgement overrides that. Send it for rework (Ready -> "
+            "Process) for a new Process and Review. Nothing was written.",
+        )
     if status is WhatStatus.BLOCKED_ON_WHAT:
         raise _Refused(
             ReadyDecisionResultCode.MATERIAL_WHAT_UNRESOLVED,
@@ -570,7 +569,6 @@ def _check_what(requirement: RequirementRecord, history: _History) -> WhatStatus
             "Process) and have it reviewed again. Nothing was written.",
             open_material_questions(review),
         )
-    return status
 
 
 def _describe_drift(reviewed: _Bindings, current: _Bindings) -> tuple[str, ...]:
