@@ -46,6 +46,7 @@ from sdlc.results import StandardReviewResultCode as ReviewCode
 from sdlc.review_result import (
     InvalidReviewResult,
     build_rework_brief,
+    open_material_questions,
     parse_review_result,
     render_review_result,
     what_clearance,
@@ -62,6 +63,8 @@ from sdlc.standard_analysis import (
     ProductQuestion,
     RelationKind,
     ReworkExpectation,
+    ReworkOutcome,
+    ReworkResponse,
     parse_analysis_output,
 )
 from sdlc.standard_processor import process_standard_requirement
@@ -69,10 +72,14 @@ from sdlc.standard_prompt import INSTRUCTIONS, REWORK_HEADING
 from sdlc.standard_review import (
     InvalidReviewOutput,
     ReviewVerdict,
+    ReworkVerification,
+    VerificationOutcome,
     WhatStatus,
     parse_review_output,
+    rework_leaves_what_open,
 )
 from sdlc.standard_reviewer import review_standard_requirement
+from sdlc.tsa_admission import AdmissionResultCode
 from standard_fake import (
     analysis_output,
     build_standard_workspace,
@@ -81,6 +88,7 @@ from standard_fake import (
 )
 from test_requirement_dispatcher import NOT_PROCESSED, real_workers
 from test_requirement_runner import SUCCEEDED, StatusWorkspace
+from test_tsa_admission import clean_refusal, start, world
 
 WHAT = {"detail": "Must an oversized valid request still succeed?", "material": True}
 MINOR = {"detail": "Should the error body name the endpoint?", "material": False}
@@ -982,3 +990,464 @@ def test_the_complete_rework_loop_offline():
     assert states == ["Review", "Ready", "Ready", "Review", "Ready", "Ready"]
     assert set(states) <= {"Process", "Review", "Ready"}
     assert relation_state(inner) == relations_before
+
+
+# -- escalation consistency (Rework Brief v0.1 §7) -----------------------------
+
+
+ESCALATE_W0 = answer(
+    "R0001.W0", "ESCALATED", "No source settles it.", product_question_index=0
+)
+
+
+@pytest.mark.parametrize(
+    "rework_verification, question_verification",
+    [
+        (verify("R0001.W0"), question(0)),
+        (verify("R0001.W0"), question(0, "UNRESOLVED")),
+        (
+            verify("R0001.W0"),
+            question(
+                0,
+                "REJECTED",
+                basis="ANSWERED_BY_OTHER_REQUIREMENT",
+                requirement_id="SDLC-FR-0002",
+            ),
+        ),
+        (
+            verify("R0001.W0", "REJECTED", severity="WARNING"),
+            question(0, "REJECTED", basis="ANSWERED_IN_THIS_REQUIREMENT"),
+        ),
+        (
+            verify("R0001.W0", "UNRESOLVED"),
+            question(0, "REJECTED", basis="TECHNICAL_HOW"),
+        ),
+        (verify("R0001.W0", "UNRESOLVED"), question(0, material=False)),
+    ],
+    ids=[
+        "confirmed+open",
+        "confirmed+unresolved",
+        "confirmed+other-requirement",
+        "rejected-escalation+answered",
+        "unresolved+how",
+        "unresolved+immaterial",
+    ],
+)
+def test_an_escalated_material_what_never_clears(
+    rework_verification, question_verification
+):
+    ws, requirement = what_reworked(ESCALATE_W0, questions=[WHAT])
+    result, _ = review_again(
+        ws,
+        requirement,
+        rework_verifications=[rework_verification],
+        question_verifications=[question_verification],
+    )
+    assert result.code is ReviewCode.REQUIREMENT_REVIEWED, result
+    (_, process), (_, review) = processes(ws)[-1], reviews(ws)[-1]
+    assert review.what_status is WhatStatus.BLOCKED_ON_WHAT
+    assert what_clearance(review, process) is WhatStatus.BLOCKED_ON_WHAT
+    assert any(line.startswith("R0001.W0:") for line in open_material_questions(review))
+
+
+@pytest.mark.parametrize(
+    "question_verification",
+    [
+        question(0, "REJECTED", basis="ANSWERED_IN_THIS_REQUIREMENT"),
+        question(0, "REJECTED", basis="TECHNICAL_HOW"),
+        question(0, material=False),
+    ],
+    ids=["answered-here", "technical-how", "immaterial"],
+)
+def test_confirming_an_escalation_while_closing_its_question_is_refused(
+    question_verification,
+):
+    ws, requirement = what_reworked(ESCALATE_W0, questions=[WHAT])
+    before = len(ws.mutations)
+    result, _ = review_again(
+        ws,
+        requirement,
+        rework_verifications=[verify("R0001.W0")],
+        question_verifications=[question_verification],
+    )
+    assert result.code is ReviewCode.INVALID_MODEL_OUTPUT, result
+    assert "confirms and" in result.message or "R0001.W0" in " ".join(result.details)
+    assert ws.mutations[before:] == []
+    assert len(reviews(ws)) == 1
+
+
+def test_a_persisted_contradictory_escalation_is_refused_on_read():
+    ws, requirement = what_reworked(ESCALATE_W0, questions=[WHAT])
+    review_again(
+        ws,
+        requirement,
+        rework_verifications=[verify("R0001.W0")],
+        question_verifications=[question(0)],
+    )
+    node, _ = reviews(ws)[-1]
+    rewrite_payload(
+        ws,
+        node,
+        product_question_verifications=[
+            {
+                "question_index": 0,
+                "outcome": "REJECTED",
+                "material": None,
+                "basis": "ANSWERED_IN_THIS_REQUIREMENT",
+                "requirement_id": None,
+                "reason": "Edited later.",
+            }
+        ],
+    )
+    with pytest.raises(InvalidReviewResult, match="both confirms and contradicts"):
+        parse_review_result(ws.content[node.secret])
+
+
+def test_the_quality_verdict_stays_independent_of_the_escalation():
+    ws, requirement = what_reworked(ESCALATE_W0, questions=[WHAT])
+    result, _ = review_again(
+        ws,
+        requirement,
+        rework_verifications=[verify("R0001.W0")],
+        question_verifications=[question(0)],
+    )
+    assert result.verdict == "PASS", "an open WHAT is not a quality defect"
+    _, review = reviews(ws)[-1]
+    assert review.what_status is WhatStatus.BLOCKED_ON_WHAT
+
+
+# -- relation feedback fidelity (Rework Brief v0.1 §4, §12) ----------------------
+
+
+def relation_rejected_twice():
+    """Review 1 rejects a proposed DEPENDS_ON; Review 2 rejects its resolution."""
+    ws, requirement, _ = at_ready(
+        findings=(),
+        relations=(relation(),),
+        relation_verifications=[
+            verify_relation(outcome="REJECTED", reason="No dependency.")
+        ],
+    )
+    rework(
+        ws, requirement, analysis_output(rework=[resolved("R0001.L0", "Dropped it.")])
+    )
+    review_again(
+        ws,
+        requirement,
+        rework_verifications=[
+            verify(
+                "R0001.L0", "REJECTED", "The dependency is real.", severity="WARNING"
+            )
+        ],
+    )
+    (_, process), (_, review) = processes(ws)[-1], reviews(ws)[-1]
+    return ws, requirement, build_rework_brief(review, process)
+
+
+def test_a_carried_relation_item_keeps_its_structured_identity():
+    ws, requirement, brief = relation_rejected_twice()
+    [claim] = brief.items
+    assert claim.ref == "R0002.C0" and claim.origin_ref == "R0001.L0"
+    assert claim.kind == "DEPENDS_ON" and claim.requirement_id == "SDLC-FR-0002"
+    assert claim.outcome.value == "REJECTED"
+    assert claim.feedback == "The dependency is real."
+    assert brief.source.review_iteration == 2 and brief.source.process_iteration == 2
+
+    result, model = rework(
+        ws, requirement, analysis_output(rework=[resolved("R0002.C0", "Restored it.")])
+    )
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    feedback = model.calls[0]["context"].split(REWORK_HEADING)[1]
+    assert "[R0002.C0] (REWORK_CLAIM, DEPENDS_ON" in feedback
+    assert "about SDLC-FR-0002" in feedback
+    _, stored = processes(ws)[-1]
+    assert stored.rework_brief == brief, "persisted and read back without loss"
+
+    _, review_model = review_again(
+        ws, requirement, rework_verifications=[verify("R0002.C0")]
+    )
+    claims = review_model.calls[0]["context"].split("Rework responses claimed")[1]
+    assert "[R0002.C0] (REWORK_CLAIM, DEPENDS_ON, about SDLC-FR-0002)" in claims
+
+
+def rewrite_bound_brief(ws, change):
+    """A consistent hand edit: the item changes, identities are recomputed."""
+    node, stored = processes(ws)[-1]
+    items = tuple(change(item) for item in stored.rework_brief.items)
+    edited = replace(stored, rework_brief=replace(stored.rework_brief, items=items))
+    ws.content[node.secret] = render_process_result(edited)
+    return node
+
+
+def test_a_relation_keeps_its_identity_through_a_third_generation():
+    ws, requirement, _ = relation_rejected_twice()
+    rework(ws, requirement, analysis_output(rework=[resolved("R0002.C0", "Restored.")]))
+    review_again(
+        ws,
+        requirement,
+        rework_verifications=[verify("R0002.C0", "UNRESOLVED", "Peer unchecked.")],
+    )
+    result, model = rework(
+        ws,
+        requirement,
+        analysis_output(rework=[answer("R0003.C0", "ESCALATED", "Peer unchecked.")]),
+    )
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    _, stored = processes(ws)[-1]
+    [claim] = stored.rework_brief.items
+    assert claim.ref == "R0003.C0" and claim.origin_ref == "R0002.C0"
+    assert claim.kind == "DEPENDS_ON" and claim.requirement_id == "SDLC-FR-0002"
+    assert "about SDLC-FR-0002" in model.calls[0]["context"].split(REWORK_HEADING)[1]
+    reviewed, _ = review_again(
+        ws, requirement, rework_verifications=[verify("R0003.C0")]
+    )
+    assert reviewed.code is ReviewCode.REQUIREMENT_REVIEWED, reviewed
+
+
+def test_review_refuses_a_brief_from_an_older_review_than_the_latest():
+    """A genuine Brief of Review 1 swapped into a rework of Review 2's cycle."""
+    ws, requirement, _ = relation_rejected_twice()
+    (_, process_1), (_, review_1) = processes(ws)[0], reviews(ws)[0]
+    older = build_rework_brief(review_1, process_1)
+    rework(ws, requirement, analysis_output(rework=[resolved("R0002.C0")]))
+    node, stored = processes(ws)[-1]
+    swapped = replace(
+        stored,
+        rework_brief=older,
+        rework_responses=(
+            ReworkResponse("R0001.L0", ReworkOutcome.RESOLVED, "Dropped it."),
+        ),
+    )
+    ws.content[node.secret] = render_process_result(swapped)
+    before = len(ws.mutations)
+    result, model = review_again(
+        ws, requirement, rework_verifications=[verify("R0001.L0")]
+    )
+    assert result.code is ReviewCode.INVALID_PROCESS_RESULT, result
+    assert "not the latest Review Result" in " ".join(result.details)
+    assert not model.was_invoked and ws.mutations[before:] == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda item: replace(item, kind="AFFECTS"),
+        lambda item: replace(item, requirement_id="SDLC-FR-0099"),
+        lambda item: replace(item, detail="Something the review never said."),
+    ],
+    ids=["relation-kind", "relation-target", "item-text"],
+)
+def test_review_refuses_a_brief_its_source_review_does_not_give(change):
+    ws, requirement, _ = at_ready(
+        findings=(),
+        relations=(relation(),),
+        relation_verifications=[
+            verify_relation(outcome="REJECTED", reason="No dependency.")
+        ],
+    )
+    rework(
+        ws, requirement, analysis_output(rework=[resolved("R0001.L0", "Dropped it.")])
+    )
+    rewrite_bound_brief(ws, change)
+    before = len(ws.mutations)
+    result, model = review_again(
+        ws, requirement, rework_verifications=[verify("R0001.L0")]
+    )
+    assert result.code is ReviewCode.INVALID_PROCESS_RESULT, result
+    assert "gives a different Brief" in " ".join(result.details)
+    assert not model.was_invoked and ws.mutations[before:] == []
+
+
+def test_a_resume_refuses_a_persisted_brief_with_an_altered_relation_target():
+    ws, requirement, _ = at_ready(
+        findings=(),
+        relations=(relation(),),
+        relation_verifications=[
+            verify_relation(outcome="REJECTED", reason="No dependency.")
+        ],
+    )
+    rework_standard_requirement(ws, requirement.id)
+    root = next(d for d in ws.documents if d.secret == "std-secret")
+    failing_root_write(ws, root)
+    partial, _ = rework(ws, requirement, analysis_output(rework=[resolved("R0001.L0")]))
+    assert partial.code is ProcessCode.PARTIAL_PROCESSING, partial
+    node = rewrite_bound_brief(
+        ws, lambda item: replace(item, requirement_id="SDLC-FR-0099")
+    )
+    model = FakeModelRuntime()
+    result = process_standard_requirement(
+        ws, model, requirement.id, resume_result=node.id
+    )
+    assert result.code is ProcessCode.PROCESSING_STATE_CONFLICT, result
+    assert not model.was_invoked
+
+
+def test_a_relation_claim_without_its_structured_identity_is_refused():
+    _, _, brief = relation_rejected_twice()
+    payload = brief.to_payload()
+    payload["items"][0]["kind"] = None
+    with pytest.raises(InvalidReworkBrief, match="shape its category"):
+        ReworkBrief.from_payload(payload)
+
+
+def test_an_escalated_material_what_item_blocks_whatever_its_verification():
+    """Rule A on its own, independently of the contradiction check."""
+    confirmed = (
+        ReworkVerification("R0001.W0", VerificationOutcome.CONFIRMED, "Open."),
+    )
+    what = frozenset({"R0001.W0"})
+    assert rework_leaves_what_open(what, what, confirmed)
+    assert not rework_leaves_what_open(what, frozenset(), confirmed)
+
+
+def test_a_claim_cannot_originate_in_its_own_or_a_later_review():
+    _, _, brief = relation_rejected_twice()
+    payload = brief.to_payload()
+    payload["items"][0]["origin_ref"] = "R0002.L0"
+    with pytest.raises(InvalidReworkBrief, match="shape its category"):
+        ReworkBrief.from_payload(payload)
+
+
+def test_a_repeated_item_reference_is_refused():
+    _, _, brief = relation_rejected_twice()
+    payload = brief.to_payload()
+    payload["items"].append(dict(payload["items"][0]))
+    payload["brief_identity"] = ReworkBrief(
+        brief.source, (brief.items[0], brief.items[0]), brief.assessment
+    ).identity
+    with pytest.raises(InvalidReworkBrief, match="repeated"):
+        ReworkBrief.from_payload(payload)
+
+
+def test_the_brief_and_its_source_identity_are_deterministic():
+    ws, _, brief = relation_rejected_twice()
+    (_, process), (_, review) = processes(ws)[-1], reviews(ws)[-1]
+    again = build_rework_brief(review, process)
+    assert again.identity == brief.identity and again.source == brief.source
+
+
+# -- TSA admission over rework-bound 0.5 evidence (I05) -------------------------
+
+
+def tsa_scene_after(ws, requirement, *, applied_by_hand=False):
+    if applied_by_hand:
+        ws._replace(requirement.id, state="Applied")
+    else:
+        assert approve_standard_requirement(ws, requirement.id).is_normal
+        applied = apply_standard_requirement(ws, requirement.id)
+        assert applied.code is ApplyResultCode.REQUIREMENT_APPLIED, applied
+    ws.calls.clear()
+    scene = world()
+    scene.req = ws
+    return scene
+
+
+def admitted_rework():
+    ws, requirement, _ = reworked()
+    review_again(ws, requirement, rework_verifications=[verify("R0001.F0")])
+    (_, process), (_, review) = processes(ws)[-1], reviews(ws)[-1]
+    assert process.version == review.version == "0.5" and process.rework_brief
+    assert review.what_status is WhatStatus.CLEAR
+    return ws, requirement
+
+
+def test_tsa_admits_a_reworked_requirement_with_clear_0_5_evidence():
+    ws, requirement = admitted_rework()
+    scene = tsa_scene_after(ws, requirement)
+    result = start(scene)
+    assert result.is_newly_written
+    [row] = result.artifact.body["manifest_body"]["requirements"]
+    assert row["requirement_id"] == requirement.requirement_id
+
+
+def blocked_by_resolved_claim():
+    ws, requirement = what_reworked(answer("R0001.W0", "RESOLVED", "Now stated."))
+    review_again(
+        ws, requirement, rework_verifications=[verify("R0001.W0", "UNRESOLVED")]
+    )
+    return ws, requirement
+
+
+def blocked_by_escalation():
+    ws, requirement = what_reworked(ESCALATE_W0, questions=[WHAT])
+    review_again(
+        ws,
+        requirement,
+        rework_verifications=[verify("R0001.W0")],
+        question_verifications=[question(0)],
+    )
+    return ws, requirement
+
+
+def forged_clear(ws):
+    node, _ = reviews(ws)[-1]
+    rewrite_payload(ws, node, derived_what_status="CLEAR")
+
+
+def mismatched_rework(ws):
+    node, _ = reviews(ws)[-1]
+    payload, _, _ = payload_of(ws, node)
+    payload["reviewed_rework_responses"][0]["explanation"] = "Something else."
+    rewrite_payload(
+        ws, node, reviewed_rework_responses=payload["reviewed_rework_responses"]
+    )
+
+
+def contradictory_escalation(ws):
+    node, _ = reviews(ws)[-1]
+    rewrite_payload(
+        ws,
+        node,
+        product_question_verifications=[
+            {
+                "question_index": 0,
+                "outcome": "REJECTED",
+                "material": None,
+                "basis": "TECHNICAL_HOW",
+                "requirement_id": None,
+                "reason": "Edited later.",
+            }
+        ],
+    )
+
+
+def stale_tree(ws):
+    root = next(d for d in ws.documents if d.secret == "std-secret")
+    ws.content[root.secret] += "\nAn unreviewed sentence.\n"
+
+
+def wrong_binding(ws):
+    node, _ = reviews(ws)[-1]
+    rewrite_payload(ws, node, reviewed_process_iteration=1)
+
+
+@pytest.mark.parametrize(
+    "build, corrupt, reason",
+    [
+        (blocked_by_resolved_claim, None, "BLOCKED_ON_WHAT"),
+        (blocked_by_escalation, None, "BLOCKED_ON_WHAT"),
+        (blocked_by_resolved_claim, forged_clear, "cannot be trusted"),
+        (admitted_rework, mismatched_rework, "not those of Process Result"),
+        (blocked_by_escalation, contradictory_escalation, "cannot be trusted"),
+        (admitted_rework, stale_tree, "does not bind the current normative tree"),
+        (admitted_rework, wrong_binding, "reviewed Process iteration 1"),
+    ],
+    ids=[
+        "resolved-not-confirmed",
+        "escalated",
+        "forged-clear",
+        "mismatched-rework",
+        "contradictory-escalation",
+        "stale-tree",
+        "wrong-binding",
+    ],
+)
+def test_tsa_never_admits_blocked_or_invalid_rework_evidence(build, corrupt, reason):
+    ws, requirement = build()
+    scene = tsa_scene_after(ws, requirement, applied_by_hand=True)
+    if corrupt is not None:
+        corrupt(scene.req)
+    error = clean_refusal(scene)
+    assert error.code is AdmissionResultCode.REQUIREMENT_NOT_ADMISSIBLE, error
+    if reason is not None:
+        assert reason in " ".join([str(error), *error.details])

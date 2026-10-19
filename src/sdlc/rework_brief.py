@@ -79,6 +79,7 @@ ITEM_KEYS = frozenset(
         "severity",
         "requirement_id",
         "blocks_what",
+        "origin_ref",
     }
 )
 BRIEF_KEYS = frozenset({"brief_identity", "source_review", "items", "assessment"})
@@ -110,6 +111,10 @@ class BriefItem:
     Review's verification outcome for a verified claim. `blocks_what` says
     the item is a material WHAT question the source Review left open: only a
     later independent Review that confirms its resolution clears it.
+
+    A REWORK_CLAIM carries the item it re-raises: `origin_ref` names it in
+    the earlier Brief, and its structured `kind` and `requirement_id` (a
+    relation's kind and exact target) are copied, never parsed from text.
     """
 
     ref: str
@@ -121,6 +126,7 @@ class BriefItem:
     kind: str | None = None
     severity: ReviewSeverity | None = None
     requirement_id: str | None = None
+    origin_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +229,7 @@ def _item_payload(item: BriefItem) -> dict[str, object]:
         "severity": item.severity.value if item.severity else None,
         "requirement_id": item.requirement_id,
         "blocks_what": item.blocks_what,
+        "origin_ref": item.origin_ref,
     }
 
 
@@ -266,6 +273,7 @@ def _read_item(entry: object, review_iteration: int) -> BriefItem:
                 else None
             ),
             requirement_id=entry["requirement_id"],
+            origin_ref=entry["origin_ref"],
         )
     except ValueError as error:
         raise InvalidReworkBrief(f"Malformed Rework Brief item: {error}") from error
@@ -297,11 +305,39 @@ def _require_item_shape(item: BriefItem, review_iteration: int) -> None:
     ):
         if value is not None and (not isinstance(value, str) or not value.strip()):
             raise InvalidReworkBrief(f"Rework Brief item {item.ref} {label} is empty.")
-    if not _has_category_shape(item):
+    if not _has_category_shape(item) or not _has_origin_shape(item, review_iteration):
         raise InvalidReworkBrief(
             f"Rework Brief item {item.ref} does not have the shape its category "
             f"{item.category.value} requires."
         )
+
+
+def _has_origin_shape(item: BriefItem, review_iteration: int) -> bool:
+    """Only a REWORK_CLAIM names an origin: an item of an earlier Brief.
+
+    A claim that re-raises a relation item keeps the relation's kind and
+    exact target. A claim that re-raises an earlier claim keeps whatever that
+    claim carried, which may itself be a relation; any other origin carries
+    a finding kind or none.
+    """
+    if item.category is not BriefCategory.REWORK_CLAIM:
+        return item.origin_ref is None
+    match = (
+        REF_PATTERN.match(item.origin_ref) if isinstance(item.origin_ref, str) else None
+    )
+    if match is None or int(match.group("iteration")) >= review_iteration:
+        return False
+    is_relation = (
+        item.kind in {kind.value for kind in RelationKind}
+        and item.requirement_id is not None
+    )
+    is_finding = item.kind is None or item.kind in {kind.value for kind in FindingKind}
+    letter = match.group("letter")
+    if letter == REF_LETTERS[BriefCategory.RELATION_PROPOSAL]:
+        return is_relation
+    if letter == REF_LETTERS[BriefCategory.REWORK_CLAIM]:
+        return is_relation or is_finding
+    return is_finding
 
 
 def _has_category_shape(item: BriefItem) -> bool:
@@ -349,8 +385,6 @@ def _has_category_shape(item: BriefItem) -> bool:
     return (
         verified
         and item.outcome is not VerificationOutcome.CONFIRMED
-        and item.kind is None
-        and item.requirement_id is None
         and graded_iff_rejected
     )
 

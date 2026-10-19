@@ -53,6 +53,8 @@ Recovery from `REVIEW_LINEAGE_INVALID` is manual; this delta adds none.
 
 Each item carries: reference, category, the actual finding, question or rationale text, the source reviewer's reason (`feedback`), the Review's verification outcome where one exists, finding or relation kind, severity where the Review graded one, the Requirement ID where the source names one, and `blocks_what`.
 
+A `REWORK_CLAIM` also carries `origin_ref`, the reference of the item it re-raises in the source Process Result's own Brief, and copies that item's structured `kind` and `requirement_id`. For an item that came from a relation proposal they are the relation's kind and exact target, never parsed from text: with the claim's own outcome and feedback, and the source identity's Review and Process iterations, they keep the relation's full identity. `origin_ref` must name an earlier Review than the claim's own. A claim whose origin is a relation item must carry a relation kind and a target; a claim whose origin is itself a claim carries what that claim carried, so a relation keeps its kind and target through every generation. No other category carries `origin_ref`.
+
 `blocks_what` is true for a `MATERIAL_WHAT` item, for a `PRODUCT_QUESTION` item whose verification blocks under Material-WHAT Gate §5, and for a `REWORK_CLAIM` that carried a material WHAT item forward. It is false otherwise.
 
 **Assessment.** The source Review's assessment travels as context. It needs no response, because nothing in it is deterministically actionable; actionable content belongs in findings.
@@ -99,7 +101,19 @@ When the Process Result answered a Brief the key is required and every response 
 
 **Derivation**, by code only:
 - **verdict:** a REJECTED rework verification contributes its severity, like a confirmed finding;
-- **WHAT status:** a material WHAT item whose verification is not CONFIRMED makes the status `BLOCKED_ON_WHAT`. This term can only block. A RESOLVED, REBUTTED or ESCALATED claim never clears anything by itself; a confirmed escalation leaves its product question to the unchanged Material-WHAT Gate derivation.
+- **WHAT status:** a material WHAT item makes the status `BLOCKED_ON_WHAT` when its response is ESCALATED (whatever the verification), or when its verification is not CONFIRMED. This term can only block. A material WHAT item clears only through a RESOLVED or REBUTTED answer that the reviewer CONFIRMED, and then only if the unchanged Material-WHAT Gate derivation over the new Process Result's own questions and `material_unresolved_what` is also CLEAR. No Process-authored outcome overrides the gate.
+
+**Escalation consistency.** A CONFIRMED verification of an ESCALATED material WHAT answer asserts that the WHAT is still open. The same review's verification of the product question that answer names (`product_question_index`) must then leave the question open under Material-WHAT Gate §5: CONFIRMED with `material: true`, UNRESOLVED, or REJECTED as `ANSWERED_BY_OTHER_REQUIREMENT` (still open here). Confirming the escalation while rejecting the question as answered in this Requirement or as technical HOW, or confirming it as immaterial, is a contradiction: the model output is `INVALID_MODEL_OUTPUT`, and a persisted Review Result that carries it is `INVALID_REVIEW_RESULT` on read. A rejected or unresolved escalation is not a contradiction; it blocks.
+
+| Answer to a material WHAT item | Verification | Status contribution |
+|---|---|---|
+| RESOLVED or REBUTTED | CONFIRMED | none: may clear |
+| RESOLVED or REBUTTED | REJECTED or UNRESOLVED | blocks |
+| ESCALATED | CONFIRMED, question left open | blocks |
+| ESCALATED | CONFIRMED, question closed | refused as contradictory |
+| ESCALATED | REJECTED or UNRESOLVED | blocks |
+
+The quality verdict is unchanged by this rule.
 
 ## 8. Artifact versions
 
@@ -119,9 +133,17 @@ On read the verdict and WHAT status are recomputed with the §7 terms, the verif
 
 **Coherence** (`what_clearance`, extending Material-WHAT Gate §6): a 0.5 Review must carry exactly the bound Process Result's Brief identity and responses. A pre-0.5 Review of a 0.5 Process Result is incoherent, because the reviewer of a 0.5 Result always writes 0.5. A 0.5 Review of a 0.4 Process Result carries a null Brief and no responses. Incoherence is `INVALID_REVIEW_RESULT` at Ready and Apply, and `REQUIREMENT_NOT_ADMISSIBLE` at TSA admission, exactly as for WI-1 evidence.
 
+**Validation against history.** Read-back of a persisted Brief checks its shape and recomputes its identity, which detects an inconsistent edit but not a consistent one. So a bound Brief is also rebuilt from the artifacts it names and must have the same identity:
+- by Process on `--resume-result` (§10);
+- by Review before the reviewer runs: the source must be the latest Review Result of an earlier Process iteration (§3), and the Brief of the Process Result under review is rebuilt from it and the Process Result it reviewed, both under the Root. A missing source, an incoherent lineage or a different identity (for example an altered item, relation kind or target) is `INVALID_PROCESS_RESULT`; no model call, nothing written.
+
+A Review Result therefore binds only a Brief that its own stage proved from history. A consistent hand edit of both the Brief and its source Review remains undetectable, as for every Standard artifact without a digest.
+
 Older Process and Review Results (0.1–0.4) stay readable and are never rewritten or reinterpreted.
 
 ## 9. WI-1 compatibility
+
+TSA admission (I05 check 9) is unchanged: it calls `what_clearance` on the latest Process and Review Results, so 0.5 rework evidence is admitted only when CLEAR, coherent and bound to the current tree, and every BLOCKED_ON_WHAT, contradictory, mismatched, stale or misbound pair is `REQUIREMENT_NOT_ADMISSIBLE`. Offline regressions run the production admission over evidence produced by the real Process and Review stages.
 
 Preserved unchanged: structured product questions, independent question verification, `material_unresolved_what`, the derived status, CLEAR / BLOCKED_ON_WHAT, legacy UNKNOWN, and the Ready, Apply and TSA admission refusals. 0.5 evidence is WI-1 evidence (`has_question_evidence`). Only a valid current Review can establish clearance.
 
@@ -150,7 +172,8 @@ The full Project comparison context and the existing relations are reused unchan
 | Code | Raised by |
 |---|---|
 | `REVIEW_LINEAGE_INVALID` (new) | Process: the review history cannot establish which feedback a rework must answer (§3) |
-| `INVALID_MODEL_OUTPUT` (existing) | Process: `rework_responses` breaks §6; Review: `rework_verifications` breaks §7 |
+| `INVALID_MODEL_OUTPUT` (existing) | Process: `rework_responses` breaks §6; Review: `rework_verifications` breaks §7, including a contradictory escalation |
+| `INVALID_PROCESS_RESULT` (existing) | Review: the bound Brief is not the one its source Review gives (§8) |
 | `PROCESSING_STATE_CONFLICT` (existing) | Process: the Brief changed during the run or since a resumed Result (§10) |
 | `NO_CHANGES_TO_PROCESS` (existing, normal) | Process: exactly repeated run input (§5) |
 | `INVALID_REVIEW_RESULT` / `REQUIREMENT_NOT_ADMISSIBLE` (existing) | incoherent rework evidence (§8) |
@@ -164,7 +187,6 @@ All are deterministic, are never retried automatically, and write nothing beyond
 **Limits:**
 - Whether a correction is faithful, a rebuttal right or an escalation genuine is a model judgement; code enforces coverage, binding and the WHAT rule only.
 - An empty Process Result shell left by an **unedited** rework cannot be completed with `--recover-empty-result`: an ordinary call over the unchanged tree reports no changes first. This predates this delta (it equally affects CR-002) and is not changed here.
-- A `REWORK_CLAIM` carries the earlier item's text, the response and the reviewer's reason, but not the earlier item's relation kind or peer Requirement ID; for a relation item those survive only inside the carried text.
-- A confirmed ESCALATED material WHAT item does not block by itself: the status then follows the WI-1 verification of the product question it names, so a reviewer who confirms the escalation but rejects that question yields CLEAR. Tying the two judgements together is a decision left open.
+- Escalation consistency compares judgements by structure (the named question); a reviewer who confirms a RESOLVED answer while listing the same question again in `material_unresolved_what` under different wording is not detected as contradictory, but still blocks through that list.
 - Any unreadable Review Result under the Root, including an empty Review shell left by a failed review, now refuses every Process run with `REVIEW_LINEAGE_INVALID`, where Process previously ignored it; recovery is manual (complete the Review shell in `Review` first).
 - Not live-verified: the 0.5 payloads have not been compared against live Fibery serialization. Under the project's Fibery rule they are not frozen until a live probe and a fake-versus-live comparison exist.

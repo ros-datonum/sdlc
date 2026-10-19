@@ -66,8 +66,10 @@ from sdlc.standard_review import (
     ReworkVerification,
     VerificationOutcome,
     WhatStatus,
+    contradictory_escalations,
     derive_verdict,
     derive_what_status,
+    material_escalations,
     question_blocks,
     rework_leaves_what_open,
 )
@@ -172,6 +174,16 @@ class ReviewedReworkResponse:
     blocks_what: bool
 
 
+def _escalated_refs(
+    responses: tuple[ReviewedReworkResponse, ...],
+) -> frozenset[str]:
+    return frozenset(
+        reviewed.response.item
+        for reviewed in responses
+        if reviewed.response.outcome is ReworkOutcome.ESCALATED
+    )
+
+
 def review_result_name(requirement_id: str, iteration: int) -> str:
     """`<Requirement ID> — Review Result 0001`."""
     return f"{requirement_id} — {REVIEW_RESULT_SUFFIX} {iteration:0{ITERATION_WIDTH}d}"
@@ -236,8 +248,12 @@ class ReviewResult:
         )
 
     @property
+    def rework_escalated_refs(self) -> frozenset[str]:
+        return _escalated_refs(self.reviewed_rework_responses)
+
+    @property
     def is_current(self) -> bool:
-        """0.3 or 0.4 with a manifest v2 tree: current tree evidence.
+        """0.3, 0.4 or 0.5 with a manifest v2 tree: current tree evidence.
 
         Whether it also establishes a WHAT status is `what_status`.
         """
@@ -343,7 +359,11 @@ def build_review_result(
             tuple(reviewed_product_questions),
             review.question_verifications,
             review.material_unresolved_what,
-            rework_leaves_what_open(what_refs, review.rework_verifications),
+            rework_leaves_what_open(
+                what_refs,
+                _escalated_refs(reviewed_responses),
+                review.rework_verifications,
+            ),
         ),
         reviewed_brief_identity=(
             reviewed_rework_brief.identity if reviewed_rework_brief else None
@@ -715,11 +735,27 @@ def _read_what_evidence(payload: dict[str, object], version: str, rework: dict) 
     what_refs = frozenset(
         reviewed.response.item for reviewed in responses if reviewed.blocks_what
     )
+    rework_verifications = rework.get("rework_verifications", ())
+    contradicted = contradictory_escalations(
+        questions,
+        verifications,
+        material_escalations(
+            tuple(reviewed.response for reviewed in responses), what_refs
+        ),
+        rework_verifications,
+    )
+    if contradicted:
+        raise InvalidReviewResult(
+            "The persisted review both confirms and contradicts that a material "
+            "WHAT stays open: " + ", ".join(contradicted)
+        )
     recalculated = _derive_what_status(
         questions,
         verifications,
         material,
-        rework_leaves_what_open(what_refs, rework.get("rework_verifications", ())),
+        rework_leaves_what_open(
+            what_refs, _escalated_refs(responses), rework_verifications
+        ),
     )
     if stored is not recalculated:
         raise InvalidReviewResult(
@@ -809,6 +845,7 @@ def open_material_questions(review: ReviewResult) -> tuple[str, ...]:
         if index in by_index and question_blocks(question, by_index[index])
     ]
     what_refs = review.rework_what_refs
+    escalated = review.rework_escalated_refs
     explanations = {
         reviewed.response.item: reviewed.response.explanation
         for reviewed in review.reviewed_rework_responses
@@ -816,7 +853,10 @@ def open_material_questions(review: ReviewResult) -> tuple[str, ...]:
     open_rework = [
         f"{item.item}: {explanations[item.item]}"
         for item in review.rework_verifications
-        if item.item in what_refs and item.outcome is not VerificationOutcome.CONFIRMED
+        if item.item in what_refs
+        and (
+            item.item in escalated or item.outcome is not VerificationOutcome.CONFIRMED
+        )
     ]
     return (
         *open_questions,
@@ -1017,6 +1057,9 @@ def _rework_claim_items(
                 feedback=verification.reason,
                 outcome=verification.outcome,
                 severity=verification.severity,
+                kind=earlier.kind,
+                requirement_id=earlier.requirement_id,
+                origin_ref=earlier.ref,
             )
         )
     return tuple(items)

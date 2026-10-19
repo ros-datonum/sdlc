@@ -68,6 +68,7 @@ from sdlc.review_result import (
     InvalidReviewResult,
     ReviewResult,
     build_review_result,
+    build_rework_brief,
     parse_review_result,
     parse_review_result_name,
     render_review_result,
@@ -372,6 +373,7 @@ def _load_context(
         )
     tree = _read_tree(workspace, requirement, root, "loading the Requirement")
     _require_tree_evidence(requirement, process_results[-1], tree.manifest)
+    _require_brief_from_history(requirement, process_results, reviews)
 
     return _Context(
         requirement=requirement,
@@ -474,6 +476,73 @@ def _require_tree_evidence(
             "Process again before reviewing. Nothing was written.",
             describe_drift(process.output_tree, current),
         )
+
+
+def _require_brief_from_history(
+    requirement: RequirementRecord,
+    process_results: tuple[ProcessResult, ...],
+    reviews: tuple[tuple[DocumentNode, ReviewResult], ...],
+) -> None:
+    """The Brief the Process Result binds is the one its source Review gives.
+
+    Requirement-Rework-Brief-v0.1 section 8: the Brief is rebuilt from the
+    Review Result and Process Result it names, so an altered item, relation
+    kind or target, or a vanished source, refuses before the reviewer runs.
+    """
+    process = process_results[-1]
+    brief = process.rework_brief
+    if brief is None:
+        return
+    source = brief.source
+    earlier = [
+        result
+        for _, result in reviews
+        if result.reviewed_process_iteration < process.iteration
+    ]
+    if not earlier or earlier[-1].iteration != source.review_iteration:
+        raise _brief_unproven(
+            requirement,
+            process,
+            f"its source is Review Result {source.review_iteration}, not the "
+            "latest Review Result of an earlier Process iteration.",
+        )
+    review = earlier[-1]
+    reviewed = next(
+        (
+            result
+            for result in process_results
+            if result.iteration == source.process_iteration
+        ),
+        None,
+    )
+    try:
+        if review is None or reviewed is None:
+            raise InvalidReviewResult(
+                f"its source Review Result {source.review_iteration} or the Process "
+                f"Result {source.process_iteration} it reviewed is not under the Root."
+            )
+        rebuilt = build_rework_brief(review, reviewed)
+    except InvalidReviewResult as error:
+        raise _brief_unproven(requirement, process, str(error)) from error
+    if rebuilt.identity != brief.identity:
+        raise _brief_unproven(
+            requirement,
+            process,
+            f"Review Result {source.review_iteration} gives a different Brief.",
+        )
+
+
+def _brief_unproven(
+    requirement: RequirementRecord, process: ProcessResult, detail: str
+) -> _StageFailed:
+    return _StageFailed(
+        StandardReviewResultCode.INVALID_PROCESS_RESULT,
+        f"The Rework Brief that Process Result {process.iteration} of "
+        f"{requirement.requirement_id} answered is not the one its source Review "
+        "gives, so its rework claims cannot be verified. The reviewer was not "
+        "invoked and nothing was written.",
+        (detail,),
+    )
 
 
 def _read_children(
@@ -835,6 +904,11 @@ def _verify(
                 context.process_result.rework_responses
                 if context.process_result.rework_brief is not None
                 else None
+            ),
+            (
+                context.process_result.rework_brief.what_refs
+                if context.process_result.rework_brief is not None
+                else frozenset()
             ),
         )
     except InvalidReviewOutput as error:

@@ -43,6 +43,7 @@ from sdlc.standard_analysis import (
     ProductQuestion,
     ProposedRelation,
     RelationKind,
+    ReworkOutcome,
     ReworkResponse,
 )
 
@@ -300,18 +301,53 @@ def question_blocks(
 
 
 def rework_leaves_what_open(
-    what_refs: frozenset[str], rework_verifications: tuple[ReworkVerification, ...]
+    what_refs: frozenset[str],
+    escalated_refs: frozenset[str],
+    rework_verifications: tuple[ReworkVerification, ...],
 ) -> bool:
-    """Whether a material WHAT Brief item is not confirmed as settled.
+    """Whether a material WHAT Brief item is not settled by consistent evidence.
 
-    Resolving, rebutting or escalating a material WHAT item is a Process
-    claim; only the independent reviewer's CONFIRMED clears the claim. A
-    confirmed escalation still leaves its product question to the WI-1 gate.
+    Resolving or rebutting a material WHAT item is a Process claim that only
+    the independent reviewer's CONFIRMED can make good. Escalating one says it
+    stays open, so it never clears, whatever the reviewer concludes: a
+    confirmed escalation agrees that it is open, and a rejected or unresolved
+    one leaves a defect or doubt.
     """
-    return any(
+    return bool(what_refs & escalated_refs) or any(
         verification.item in what_refs
         and verification.outcome is not VerificationOutcome.CONFIRMED
         for verification in rework_verifications
+    )
+
+
+def contradictory_escalations(
+    product_questions: tuple[ProductQuestion, ...],
+    question_verifications: tuple[QuestionVerification, ...],
+    escalations: tuple[tuple[str, int], ...],
+    rework_verifications: tuple[ReworkVerification, ...],
+) -> tuple[str, ...]:
+    """Material WHAT escalations the reviewer both confirmed and contradicted.
+
+    `escalations` are (item, product_question_index) of the ESCALATED
+    responses to material WHAT items. CONFIRMED asserts the WHAT is still
+    open, so the reviewer's own verification of the named question must
+    leave it open too (`question_blocks`); rejecting it as answered or as
+    technical HOW, or judging it immaterial, says the opposite. One review
+    cannot assert both.
+    """
+    confirmed = {
+        verification.item
+        for verification in rework_verifications
+        if verification.outcome is VerificationOutcome.CONFIRMED
+    }
+    by_index = {item.question_index: item for item in question_verifications}
+    return tuple(
+        item
+        for item, index in escalations
+        if item in confirmed
+        and index in by_index
+        and index < len(product_questions)
+        and not question_blocks(product_questions[index], by_index[index])
     )
 
 
@@ -354,6 +390,7 @@ def parse_review_output(
     proposed_relations: tuple[ProposedRelation, ...],
     product_questions: tuple[ProductQuestion, ...],
     rework_responses: tuple[ReworkResponse, ...] | None = None,
+    rework_what_refs: frozenset[str] = frozenset(),
 ) -> ReviewOutput:
     """Validate the reviewer's JSON response against the Process claims.
 
@@ -361,7 +398,8 @@ def parse_review_output(
     only means something in relation to the specific claim it addresses, so
     coverage is part of the contract rather than a later check.
     `rework_responses` are the Process rework claims, None when that Process
-    received no Rework Brief.
+    received no Rework Brief; `rework_what_refs` the Brief items among them
+    that are material WHAT questions.
     """
     payload = _load_json(text)
     _reject_unknown(payload, REVIEW_KEYS, "review")
@@ -414,6 +452,19 @@ def parse_review_output(
         describe=lambda index: f"Process product question {index}",
     )
 
+    rework = _read_rework_verifications(payload, rework_responses)
+    contradicted = contradictory_escalations(
+        product_questions,
+        questions,
+        material_escalations(rework_responses or (), rework_what_refs),
+        rework,
+    )
+    if contradicted:
+        raise InvalidReviewOutput(
+            "The review confirms that a material WHAT stays open and, in its "
+            "verification of the product question that keeps it open, that it "
+            "does not: " + ", ".join(contradicted)
+        )
     return ReviewOutput(
         question_verifications=questions,
         material_unresolved_what=tuple(
@@ -433,7 +484,20 @@ def parse_review_output(
             )
         ),
         assessment=_read_assessment(payload.get("assessment")),
-        rework_verifications=_read_rework_verifications(payload, rework_responses),
+        rework_verifications=rework,
+    )
+
+
+def material_escalations(
+    rework_responses: tuple[ReworkResponse, ...], what_refs: frozenset[str]
+) -> tuple[tuple[str, int], ...]:
+    """(item, product_question_index) of each escalated material WHAT item."""
+    return tuple(
+        (response.item, response.product_question_index)
+        for response in rework_responses
+        if response.item in what_refs
+        and response.outcome is ReworkOutcome.ESCALATED
+        and response.product_question_index is not None
     )
 
 
