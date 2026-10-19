@@ -34,7 +34,7 @@ from sdlc.results import (
     StandardProcessResultCode,
 )
 from sdlc.standard_processor import process_standard_requirement
-from standard_fake import analysis_output
+from standard_fake import analysis_output, resolved
 
 VERDICTS = ["PASS", "NEEDS_WORK", "BLOCKING"]
 
@@ -167,7 +167,7 @@ def test_a_direct_ready_to_process_is_the_rework_authority_edited_or_not(edited)
         edit_root(ws, root, "The human narrowed the scope for this rework.")
 
     result = process_standard_requirement(
-        ws, FakeModelRuntime([analysis_output()]), requirement.id
+        ws, FakeModelRuntime([analysis_output(rework=[resolved()])]), requirement.id
     )
 
     assert result.code is not StandardProcessResultCode.REQUIREMENT_NOT_IN_PROCESS
@@ -180,7 +180,7 @@ def test_an_edited_rework_already_completes_a_new_process_iteration():
     reviews = review_result_nodes(ws)
     human_moves(ws, requirement, "Process")
     edit_root(ws, root, "The human narrowed the scope for this rework.")
-    model = FakeModelRuntime([analysis_output()])
+    model = FakeModelRuntime([analysis_output(rework=[resolved()])])
 
     result = process_standard_requirement(ws, model, requirement.id)
 

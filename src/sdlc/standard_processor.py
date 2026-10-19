@@ -21,6 +21,14 @@ Any drift is a processing-state conflict: nothing further is written, nothing
 already durable is rolled back, and the change made by a human or another
 writer stands. These are fresh reads, not a transaction; a change that lands
 between a guard's read and the write it protects is still not detected.
+
+A rework (Requirement-Rework-Brief-v0.1) receives the actionable items of the
+latest completed Review as a Rework Brief: non-normative feedback, assembled
+by code from that Review Result and the Process Result it reviewed, supplied
+to the model in its own labelled section and bound into the new Process
+Result. A Review that cannot be read or does not form a coherent lineage
+refuses the run; it is never skipped. Two runs over the same input tree and
+the same Brief never both call the model.
 """
 
 from __future__ import annotations
@@ -70,12 +78,16 @@ from sdlc.result_shell import (
 from sdlc.results import StandardProcessResult, StandardProcessResultCode
 from sdlc.review_result import (
     InvalidReviewResult,
+    ReviewResult,
+    build_rework_brief,
     parse_review_result,
     parse_review_result_name,
 )
+from sdlc.rework_brief import ReworkBrief, run_input_identity
 from sdlc.standard_analysis import (
     AnalysisResult,
     InvalidAnalysisOutput,
+    ReworkExpectation,
     parse_analysis_output,
 )
 from sdlc.standard_prompt import build_analysis_prompt
@@ -218,7 +230,9 @@ def process_standard_requirement(
             result = _select_explicit_resume(workspace, context, resume_result)
         elif new_iteration_after is not None:
             _require_new_iteration_anchor(context, new_iteration_after)
-            result = _produce_result(workspace, model, context, journal)
+            result = _produce_result(
+                workspace, model, context, journal, _rework_brief(workspace, context)
+            )
         elif resumable is None and _is_unchanged(context) and not authorized_new_cycle:
             return _no_changes_result(context)
         elif context.shell is not None:
@@ -230,11 +244,16 @@ def process_standard_requirement(
                     "applied; settle that iteration first with "
                     f"{RESUME_OPTION} or {NEW_ITERATION_OPTION}, not the empty shell.",
                 )
-            result = _recover_result(workspace, model, context, journal)
+            result = _recover_result(
+                workspace, model, context, journal, _rework_brief(workspace, context)
+            )
         elif resumable is not None:
             raise _ambiguous_input(context)
         else:
-            result = _produce_result(workspace, model, context, journal)
+            brief = _rework_brief(workspace, context)
+            if _repeats_latest_run(context, brief):
+                return _identical_input_result(context)
+            result = _produce_result(workspace, model, context, journal, brief)
 
         _apply_document(workspace, context, result, journal)
         _transition_to_review(workspace, context, result, journal)
@@ -327,6 +346,28 @@ def _no_changes_result(context: _Context) -> StandardProcessResult:
         message=(
             f"{context.requirement.requirement_id} is unchanged since iteration "
             f"{latest[1].iteration}; nothing to process."
+        ),
+        requirement_id=context.requirement.requirement_id,
+        iteration=latest[1].iteration,
+        model_invoked=False,
+    )
+
+
+def _identical_input_result(context: _Context) -> StandardProcessResult:
+    """The latest iteration already consumed exactly this run input.
+
+    Same normative input tree, same Rework Brief: a model call would see what
+    the latest one saw, so none is made and nothing is written. This only
+    arises when a cycle is authorized over a tree the latest iteration left
+    unchanged and no newer Review exists (Requirement-Rework-Brief-v0.1).
+    """
+    latest = context.latest
+    return StandardProcessResult(
+        code=StandardProcessResultCode.NO_CHANGES_TO_PROCESS,
+        message=(
+            f"{context.requirement.requirement_id} has the same normative input "
+            f"and review feedback as iteration {latest[1].iteration}; nothing new "
+            "to process."
         ),
         requirement_id=context.requirement.requirement_id,
         iteration=latest[1].iteration,
@@ -639,7 +680,8 @@ def _is_review_artifact(name: str, requirement_id: str | None) -> bool:
     Review writes numbered children under the same Root Document. They are this
     Requirement's review history, not requirement content, so feeding one back
     to the model as source material would let a reviewer's findings be read as
-    something the requirement says.
+    something the requirement says. A rework receives the latest one only as
+    a code-built Rework Brief, in its own non-normative section.
     """
     parsed = parse_review_result_name(name)
     return parsed is not None and parsed[0] == requirement_id
@@ -747,6 +789,19 @@ def _resumable_result(context: _Context) -> ProcessResult | None:
     return result if current == result.input_tree.fingerprint else None
 
 
+def _repeats_latest_run(context: _Context, brief: ReworkBrief | None) -> bool:
+    """Whether this run's input identity is the latest iteration's own."""
+    latest = context.latest
+    return (
+        latest is not None
+        and latest[1].is_current
+        and latest[1].run_input_identity
+        == run_input_identity(
+            context.input_tree.fingerprint, brief.identity if brief else None
+        )
+    )
+
+
 def _is_unchanged(context: _Context) -> bool:
     """Whether the normative tree still matches the last applied output."""
     latest = context.latest
@@ -840,7 +895,35 @@ def _select_explicit_resume(
     node, result = _require_latest_anchor(context, document_id, RESUME_OPTION)
     _require_input_state(context, node, result, RESUME_OPTION)
     _require_unreviewed(workspace, context, node, result.iteration)
+    _require_bound_brief(workspace, context, node, result)
     return result
+
+
+def _require_bound_brief(
+    workspace: RawProcessorWorkspace,
+    context: _Context,
+    node: DocumentNode,
+    result: ProcessResult,
+) -> None:
+    """A resumed iteration replays the feedback it was produced with, or none.
+
+    The Brief is rebuilt from durable history and must be the one the
+    iteration bound; a changed or vanished source Review is a conflict, never
+    a reason to apply output produced from different feedback. Results older
+    than 0.5 received no feedback by construction and are replayed as is.
+    """
+    if not result.is_rework_bound:
+        return
+    current = _rework_brief(workspace, context)
+    if (current.identity if current else None) != result.brief_identity:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Process Result Document {document_label(node)} was produced from "
+            "review feedback that its source Review Result no longer gives; "
+            f"replaying it is not recovery. Use {NEW_ITERATION_OPTION} {node.id} "
+            "to process the current tree with the current feedback. Nothing was "
+            "written.",
+        )
 
 
 def _require_new_iteration_anchor(context: _Context, document_id: str) -> None:
@@ -888,6 +971,140 @@ def _require_unreviewed(
                 f"recovery. Use {NEW_ITERATION_OPTION} {node.id} to process the "
                 "current tree as a new iteration. Nothing was written.",
             )
+
+
+# -- review feedback ---------------------------------------------------------
+
+
+def _rework_brief(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> ReworkBrief | None:
+    """The Rework Brief for the next iteration, from the history already read."""
+    return _brief_from(workspace, context.requirement, context.results, context.reviews)
+
+
+def _brief_from(
+    workspace: RawProcessorWorkspace,
+    requirement: RequirementRecord,
+    results: tuple[tuple[DocumentNode, ProcessResult], ...],
+    review_nodes: tuple[DocumentNode, ...],
+) -> ReworkBrief | None:
+    """The latest completed Review, as feedback; None before any Review.
+
+    The source is the Review Result with the highest iteration. Every Review
+    Result under the Root must parse and name this Requirement, each must
+    bind a persisted Process Result by iteration and output fingerprint, and
+    successive Reviews must review successive Process iterations. An
+    unreadable, duplicated or crossed lineage refuses: choosing a Review by
+    anything else, or skipping one, would make the feedback a guess.
+    """
+    reviews = _read_lineage_reviews(workspace, requirement, review_nodes)
+    if not reviews:
+        return None
+    processes = {result.iteration: result for _, result in results}
+    previous = 0
+    for review in reviews:
+        bound = processes.get(review.reviewed_process_iteration)
+        if bound is None or (
+            bound.output_fingerprint != review.reviewed_process_output_fingerprint
+        ):
+            raise _lineage_invalid(
+                requirement,
+                f"Review Result {review.iteration} reviews Process iteration "
+                f"{review.reviewed_process_iteration}, which is not a persisted "
+                "Process Result with that output.",
+            )
+        if review.reviewed_process_iteration <= previous:
+            raise _lineage_invalid(
+                requirement,
+                f"Review Result {review.iteration} reviews Process iteration "
+                f"{review.reviewed_process_iteration}, which an earlier Review "
+                "Result already reviewed or follows.",
+            )
+        previous = review.reviewed_process_iteration
+    source = reviews[-1]
+    try:
+        return build_rework_brief(source, processes[source.reviewed_process_iteration])
+    except InvalidReviewResult as error:
+        raise _lineage_invalid(
+            requirement,
+            f"Review Result {source.iteration} is not coherent with the Process "
+            f"Result it reviewed: {error}",
+        ) from error
+
+
+def _read_lineage_reviews(
+    workspace: RawProcessorWorkspace,
+    requirement: RequirementRecord,
+    review_nodes: tuple[DocumentNode, ...],
+) -> tuple[ReviewResult, ...]:
+    reviews: dict[int, ReviewResult] = {}
+    for node in review_nodes:
+        _, iteration = parse_review_result_name(node.name)
+        if iteration in reviews:
+            raise _lineage_invalid(
+                requirement,
+                f"There is more than one Review Result for iteration {iteration}.",
+            )
+        try:
+            review = parse_review_result(
+                workspace.read_document_content(node.secret or "")
+            )
+        except FiberyError as error:
+            raise _StageFailed(
+                StandardProcessResultCode.FIBERY_READ_FAILED,
+                f"Could not read Review Result {document_label(node)}.",
+                (str(error),),
+            ) from error
+        except InvalidReviewResult as error:
+            raise _lineage_invalid(
+                requirement,
+                f"Review Result {document_label(node)} cannot be read: {error}",
+            ) from error
+        if (
+            review.iteration != iteration
+            or review.requirement_id != requirement.requirement_id
+        ):
+            raise _lineage_invalid(
+                requirement,
+                f"Review Result {node.name!r} describes {review.requirement_id!r} "
+                f"iteration {review.iteration}.",
+            )
+        reviews[iteration] = review
+    return tuple(reviews[iteration] for iteration in sorted(reviews))
+
+
+def _lineage_invalid(requirement: RequirementRecord, detail: str) -> _StageFailed:
+    return _StageFailed(
+        StandardProcessResultCode.REVIEW_LINEAGE_INVALID,
+        f"The review history of {requirement.requirement_id} does not establish "
+        "which feedback a rework must answer, so Process was not run and nothing "
+        "was written.",
+        (detail,),
+    )
+
+
+def _require_brief_unchanged(
+    workspace: RawProcessorWorkspace, context: _Context, brief: ReworkBrief | None
+) -> None:
+    """Freshly rebuild the Brief before persisting what the model produced.
+
+    The reserved empty shell of a recovery is not history and is skipped.
+    """
+    results, reviews, _ = _read_children(
+        workspace,
+        context.requirement,
+        context.root_document,
+        context.shell[0].id if context.shell else None,
+    )
+    current = _brief_from(workspace, context.requirement, results, reviews)
+    if (current.identity if current else None) != (brief.identity if brief else None):
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"The review history of {context.requirement.requirement_id} changed "
+            "while the model was running; its output answers feedback that is no "
+            "longer current and was not persisted. Nothing was written.",
+        )
 
 
 # -- write preconditions ----------------------------------------------------
@@ -1019,14 +1236,16 @@ def _produce_result(
     model: ModelRuntime,
     context: _Context,
     journal: _Journal,
+    brief: ReworkBrief | None,
 ) -> ProcessResult:
     """Invoke the model once and persist the iteration before mutating."""
     result = build_process_result(
         requirement_id=context.requirement.requirement_id or "",
         iteration=context.next_iteration,
         input_fingerprint=context.input_fingerprint,
-        analysis=_analyze(workspace, model, context, journal),
+        analysis=_analyze(workspace, model, context, journal, brief),
         input_tree=context.input_tree,
+        rework_brief=brief,
     )
     # The model reasoned over the captured input; persist only if it is still
     # the input. A stale output is dropped, never recorded as an iteration.
@@ -1037,6 +1256,7 @@ def _produce_result(
         "while the model was running",
         context.input_tree,
     )
+    _require_brief_unchanged(workspace, context, brief)
     _persist_result(workspace, context, result, journal)
     return result
 
@@ -1046,6 +1266,7 @@ def _recover_result(
     model: ModelRuntime,
     context: _Context,
     journal: _Journal,
+    brief: ReworkBrief | None,
 ) -> ProcessResult:
     """Run the model once and complete the named empty shell in place.
 
@@ -1059,8 +1280,9 @@ def _recover_result(
         requirement_id=context.requirement.requirement_id or "",
         iteration=iteration,
         input_fingerprint=context.input_fingerprint,
-        analysis=_analyze(workspace, model, context, journal),
+        analysis=_analyze(workspace, model, context, journal, brief),
         input_tree=context.input_tree,
+        rework_brief=brief,
     )
     _require_unchanged(
         workspace,
@@ -1070,6 +1292,7 @@ def _recover_result(
         context.input_tree,
     )
     current = _current_shell(workspace, context, shell, iteration)
+    _require_brief_unchanged(workspace, context, brief)
     _store_result(workspace, current, result, journal)
     return result
 
@@ -1079,11 +1302,14 @@ def _analyze(
     model: ModelRuntime,
     context: _Context,
     journal: _Journal,
+    brief: ReworkBrief | None,
 ) -> AnalysisResult:
     """One model invocation, validated against the analysis contract.
 
     The comparison corpus is read here, once a new invocation is certain:
     a resume, a no-change result or a refused recovery never loads it.
+    `brief` is supplied as non-normative feedback and every one of its items
+    must be answered.
     """
     prompt, model_context = build_analysis_prompt(
         requirement=context.requirement,
@@ -1092,6 +1318,7 @@ def _analyze(
         child_content=render_descendants(context.tree),
         raw_ancestry=context.raw_ancestry,
         comparison=_comparison_context(workspace, context),
+        rework_brief=brief,
     )
     try:
         require_input_within_budget("Standard Process", prompt, model_context)
@@ -1109,7 +1336,10 @@ def _analyze(
             (str(error),),
         ) from error
     try:
-        return parse_analysis_output(response.text)
+        return parse_analysis_output(
+            response.text,
+            ReworkExpectation(brief.item_refs, brief.what_refs) if brief else None,
+        )
     except InvalidAnalysisOutput as error:
         raise _StageFailed(
             StandardProcessResultCode.INVALID_MODEL_OUTPUT,
@@ -1253,6 +1483,8 @@ def _store_result(
         or read_back.input_fingerprint != result.input_fingerprint
         or read_back.input_tree != result.input_tree
         or read_back.output_tree != result.output_tree
+        or read_back.brief_identity != result.brief_identity
+        or read_back.rework_responses != result.rework_responses
     ):
         raise _StageFailed(
             StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,

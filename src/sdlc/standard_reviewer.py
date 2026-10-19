@@ -831,6 +831,11 @@ def _verify(
             context.process_result.findings,
             context.process_result.proposed_relations,
             context.process_result.product_questions or (),
+            (
+                context.process_result.rework_responses
+                if context.process_result.rework_brief is not None
+                else None
+            ),
         )
     except InvalidReviewOutput as error:
         raise _StageFailed(
@@ -852,6 +857,8 @@ def _build_result(
         review=review,
         reviewed_tree=context.tree.manifest,
         reviewed_product_questions=context.process_result.product_questions or (),
+        reviewed_rework_brief=context.process_result.rework_brief,
+        reviewed_rework_responses=context.process_result.rework_responses,
     )
 
 

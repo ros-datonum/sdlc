@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sdlc.normative_tree import (
     LEGACY_NORMATIVE_TREE_VERSION,
@@ -23,6 +23,7 @@ from sdlc.normative_tree import (
     TreeManifest,
     document_fingerprint,
 )
+from sdlc.rework_brief import InvalidReworkBrief, ReworkBrief, run_input_identity
 from sdlc.standard_analysis import (
     SECTION_KEYS,
     AnalysisResult,
@@ -33,21 +34,30 @@ from sdlc.standard_analysis import (
     ProductQuestion,
     ProposedRelation,
     RelationKind,
+    ReworkExpectation,
+    ReworkOutcome,
+    ReworkResponse,
+    require_rework_coverage,
 )
 
-# 0.4 is 0.3 plus the structured product questions of the Material-WHAT Gate
-# v0.1. 0.3 binds the normative tree with manifest v2 (exact canonical-byte
+# 0.5 is 0.4 plus the Rework Brief the iteration received (null when none),
+# one response per Brief item and the run-input identity
+# (Requirement-Rework-Brief-v0.1). 0.4 is 0.3 plus the structured product
+# questions of the Material-WHAT Gate v0.1; no older iteration received any
+# review feedback. 0.3 binds the normative tree with manifest v2 (exact canonical-byte
 # document fingerprints, audit A8); it stays current tree evidence but carries
 # no question evidence. 0.2 bound manifest v1 under the older fingerprint
 # algorithm; 0.1 is the Root-only binding. Older versions stay readable as
 # history under their own semantics and are never written or rewritten.
-PROCESS_RESULT_VERSION = "0.4"
+PROCESS_RESULT_VERSION = "0.5"
+PRE_REWORK_PROCESS_RESULT_VERSION = "0.4"
 PRE_QUESTION_PROCESS_RESULT_VERSION = "0.3"
 TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION = "0.2"
 LEGACY_PROCESS_RESULT_VERSION = "0.1"
 SUPPORTED_PROCESS_RESULT_VERSIONS = frozenset(
     {
         PROCESS_RESULT_VERSION,
+        PRE_REWORK_PROCESS_RESULT_VERSION,
         PRE_QUESTION_PROCESS_RESULT_VERSION,
         TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION,
         LEGACY_PROCESS_RESULT_VERSION,
@@ -55,13 +65,22 @@ SUPPORTED_PROCESS_RESULT_VERSIONS = frozenset(
 )
 #: Versions whose tree binding is manifest v2: the current tree evidence.
 CURRENT_TREE_PROCESS_RESULT_VERSIONS = frozenset(
-    {PROCESS_RESULT_VERSION, PRE_QUESTION_PROCESS_RESULT_VERSION}
+    {
+        PROCESS_RESULT_VERSION,
+        PRE_REWORK_PROCESS_RESULT_VERSION,
+        PRE_QUESTION_PROCESS_RESULT_VERSION,
+    }
+)
+#: Versions that record the structured product questions.
+QUESTION_BOUND_PROCESS_RESULT_VERSIONS = frozenset(
+    {PROCESS_RESULT_VERSION, PRE_REWORK_PROCESS_RESULT_VERSION}
 )
 # The manifest version each tree-bound Result version must carry; a payload
 # that mixes them is a contradiction, never a best-effort read.
 MANIFEST_VERSION_BY_RESULT_VERSION = {
     TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION: LEGACY_NORMATIVE_TREE_VERSION,
     PRE_QUESTION_PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
+    PRE_REWORK_PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
     PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
 }
 PROCESS_RESULT_SUFFIX = "Process Result"
@@ -85,6 +104,10 @@ ANALYSIS_KEY = "analysis"
 FINDINGS_KEY = "findings"
 RELATIONS_KEY = "proposed_relations"
 PRODUCT_QUESTIONS_KEY = "product_questions"
+REWORK_BRIEF_KEY = "rework_brief"
+REWORK_RESPONSES_KEY = "rework_responses"
+RUN_INPUT_KEY = "run_input_identity"
+REWORK_KEYS = (REWORK_BRIEF_KEY, REWORK_RESPONSES_KEY, RUN_INPUT_KEY)
 
 
 class InvalidProcessResult(ValueError):
@@ -122,9 +145,14 @@ class ProcessResult:
     # fingerprint replaced. None on a legacy 0.1 result.
     input_tree: TreeManifest | None = None
     output_tree: TreeManifest | None = None
-    # The structured open product questions (0.4). None on every older
-    # version: their absence is "not recorded", never "there were none".
+    # The structured open product questions (0.4 and later). None on every
+    # older version: their absence is "not recorded", never "there were none".
     product_questions: tuple[ProductQuestion, ...] | None = None
+    # The Rework Brief this iteration received and its answer to each item
+    # (0.5). None and () on an initial Process and on every older version,
+    # none of which ever received review feedback.
+    rework_brief: ReworkBrief | None = None
+    rework_responses: tuple[ReworkResponse, ...] = ()
 
     @property
     def name(self) -> str:
@@ -132,10 +160,30 @@ class ProcessResult:
 
     @property
     def has_question_evidence(self) -> bool:
-        """Whether this iteration recorded its product questions (0.4)."""
-        return self.version == PROCESS_RESULT_VERSION and (
+        """Whether this iteration recorded its product questions (0.4, 0.5)."""
+        return self.version in QUESTION_BOUND_PROCESS_RESULT_VERSIONS and (
             self.product_questions is not None
         )
+
+    @property
+    def is_rework_bound(self) -> bool:
+        """Whether this iteration records which review feedback it received."""
+        return self.version == PROCESS_RESULT_VERSION
+
+    @property
+    def brief_identity(self) -> str | None:
+        return self.rework_brief.identity if self.rework_brief else None
+
+    @property
+    def run_input_identity(self) -> str | None:
+        """The normative input tree and the Brief this iteration consumed.
+
+        None for a 0.1 result, which binds no tree. Before 0.5 no iteration
+        received review feedback, so its Brief is none by construction.
+        """
+        if self.input_tree is None:
+            return None
+        return run_input_identity(self.input_tree.fingerprint, self.brief_identity)
 
     @property
     def is_tree_bound(self) -> bool:
@@ -164,11 +212,13 @@ def build_process_result(
     input_fingerprint: str,
     analysis: AnalysisResult,
     input_tree: TreeManifest,
+    rework_brief: ReworkBrief | None = None,
 ) -> ProcessResult:
     """Assemble the artifact, fingerprinting the document it will produce.
 
     The intended output tree is derived here from the deterministic rendering
     of the normalized document, never from anything the model supplied.
+    `rework_brief` is the feedback this iteration received, bound as is.
     """
     document = analysis.normalized.document(requirement_id)
     output_fingerprint = document_fingerprint(document)
@@ -193,16 +243,17 @@ def build_process_result(
         input_tree=input_tree,
         output_tree=input_tree.with_root_fingerprint(output_fingerprint),
         product_questions=tuple(analysis.product_questions),
+        rework_brief=rework_brief,
+        rework_responses=tuple(analysis.rework_responses),
     )
 
 
 def render_process_result(result: ProcessResult) -> str:
     """Render the artifact: a short human header plus the machine payload."""
-    is_question_bound = result.version == PROCESS_RESULT_VERSION
+    is_question_bound = result.version in QUESTION_BOUND_PROCESS_RESULT_VERSIONS
     if is_question_bound and result.product_questions is None:
         raise InvalidProcessResult(
-            f"A Process Result {PROCESS_RESULT_VERSION} must carry its product "
-            "questions."
+            f"A Process Result {result.version} must carry its product questions."
         )
     payload = {
         VERSION_KEY: result.version,
@@ -251,6 +302,7 @@ def render_process_result(result: ProcessResult) -> str:
             if is_question_bound
             else {}
         ),
+        **(_rework_payload(result) if result.is_rework_bound else {}),
     }
     body = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False)
     return (
@@ -264,6 +316,24 @@ def render_process_result(result: ProcessResult) -> str:
         "\n"
         f"```json\n{body}\n```\n"
     )
+
+
+def _rework_payload(result: ProcessResult) -> dict[str, object]:
+    return {
+        REWORK_BRIEF_KEY: (
+            result.rework_brief.to_payload() if result.rework_brief else None
+        ),
+        REWORK_RESPONSES_KEY: [
+            {
+                "item": response.item,
+                "outcome": response.outcome.value,
+                "explanation": response.explanation,
+                "product_question_index": response.product_question_index,
+            }
+            for response in result.rework_responses
+        ],
+        RUN_INPUT_KEY: result.run_input_identity,
+    }
 
 
 def parse_process_result(text: str) -> ProcessResult:
@@ -315,7 +385,7 @@ def parse_process_result(text: str) -> ProcessResult:
     input_tree, output_tree = _read_trees(
         payload, version, requirement_id, input_fingerprint, output_fingerprint
     )
-    return ProcessResult(
+    result = ProcessResult(
         requirement_id=requirement_id,
         iteration=iteration,
         input_fingerprint=input_fingerprint,
@@ -333,13 +403,110 @@ def parse_process_result(text: str) -> ProcessResult:
         output_tree=output_tree,
         product_questions=_read_product_questions(payload, version),
     )
+    return _with_rework_evidence(result, payload)
+
+
+def _with_rework_evidence(
+    result: ProcessResult, payload: dict[str, object]
+) -> ProcessResult:
+    """0.5 carries all three rework keys, re-validated; no older version may."""
+    if not result.is_rework_bound:
+        present = [key for key in REWORK_KEYS if key in payload]
+        if present:
+            raise InvalidProcessResult(
+                f"A {result.version} Process Result cannot carry rework evidence: "
+                + ", ".join(present)
+            )
+        return result
+    missing = [key for key in REWORK_KEYS if key not in payload]
+    if missing:
+        raise InvalidProcessResult(
+            f"A {PROCESS_RESULT_VERSION} Process Result is missing its rework "
+            "evidence: " + ", ".join(missing)
+        )
+    brief = _read_brief(payload[REWORK_BRIEF_KEY], result.requirement_id)
+    entries = payload[REWORK_RESPONSES_KEY]
+    if not isinstance(entries, list):
+        raise InvalidProcessResult(f"{REWORK_RESPONSES_KEY} must be a list.")
+    responses = tuple(_read_rework_response(entry) for entry in entries)
+    if brief is None and responses:
+        raise InvalidProcessResult(
+            "A Process Result that received no Rework Brief cannot answer one."
+        )
+    if brief is not None:
+        try:
+            require_rework_coverage(
+                responses,
+                ReworkExpectation(brief.item_refs, brief.what_refs),
+                result.product_questions or (),
+            )
+        except InvalidAnalysisOutput as error:
+            raise InvalidProcessResult(
+                f"The persisted rework responses are incoherent: {error}"
+            ) from error
+    bound = replace(result, rework_brief=brief, rework_responses=responses)
+    if payload[RUN_INPUT_KEY] != bound.run_input_identity:
+        raise InvalidProcessResult(
+            "The persisted run_input_identity does not match the bound input tree "
+            "and Rework Brief."
+        )
+    return bound
+
+
+def _read_brief(value: object, requirement_id: str) -> ReworkBrief | None:
+    if value is None:
+        return None
+    try:
+        brief = ReworkBrief.from_payload(value)
+    except InvalidReworkBrief as error:
+        raise InvalidProcessResult(f"Invalid Rework Brief: {error}") from error
+    if brief.source.requirement_id != requirement_id:
+        raise InvalidProcessResult(
+            f"The Rework Brief comes from a review of {brief.source.requirement_id!r}, "
+            f"not {requirement_id!r}."
+        )
+    return brief
+
+
+def _read_rework_response(entry: object) -> ReworkResponse:
+    if not isinstance(entry, dict) or set(entry) != {
+        "item",
+        "outcome",
+        "explanation",
+        "product_question_index",
+    }:
+        raise InvalidProcessResult(f"Malformed persisted rework response: {entry!r}")
+    explanation = entry["explanation"]
+    index = entry["product_question_index"]
+    try:
+        outcome = ReworkOutcome(entry["outcome"])
+    except ValueError as error:
+        raise InvalidProcessResult(
+            f"Malformed persisted rework response: {error}"
+        ) from error
+    if (
+        not isinstance(entry["item"], str)
+        or not isinstance(explanation, str)
+        or not explanation.strip()
+        or (
+            index is not None
+            and (not isinstance(index, int) or isinstance(index, bool))
+        )
+    ):
+        raise InvalidProcessResult(f"Malformed persisted rework response: {entry!r}")
+    return ReworkResponse(
+        item=entry["item"],
+        outcome=outcome,
+        explanation=explanation,
+        product_question_index=index,
+    )
 
 
 def _read_product_questions(
     payload: dict[str, object], version: str
 ) -> tuple[ProductQuestion, ...] | None:
-    """0.4 must carry the list, even empty; no older version may carry it."""
-    if version != PROCESS_RESULT_VERSION:
+    """0.4 and 0.5 carry the list, even empty; no older version may carry it."""
+    if version not in QUESTION_BOUND_PROCESS_RESULT_VERSIONS:
         if PRODUCT_QUESTIONS_KEY in payload:
             raise InvalidProcessResult(
                 f"A {version} Process Result cannot carry product questions."
@@ -348,8 +515,7 @@ def _read_product_questions(
     entries = payload.get(PRODUCT_QUESTIONS_KEY)
     if not isinstance(entries, list):
         raise InvalidProcessResult(
-            f"A {PROCESS_RESULT_VERSION} Process Result must carry its "
-            f"{PRODUCT_QUESTIONS_KEY} list."
+            f"A {version} Process Result must carry its {PRODUCT_QUESTIONS_KEY} list."
         )
     return tuple(_read_product_question(entry) for entry in entries)
 

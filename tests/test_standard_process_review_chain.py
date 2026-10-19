@@ -13,12 +13,14 @@ from sdlc.fibery_workspace import RequirementRecord
 from sdlc.process_result import parse_process_result
 from sdlc.results import StandardProcessResultCode, StandardReviewResultCode
 from sdlc.standard_processor import process_standard_requirement
+from sdlc.standard_prompt import REWORK_HEADING
 from sdlc.standard_reviewer import review_standard_requirement
 from standard_fake import (
     REQUIREMENT_ID,
     analysis_output,
     build_standard_workspace,
     process_results,
+    resolved,
 )
 
 FINDING = {"kind": "NOT_TESTABLE", "detail": "No measurable threshold is given."}
@@ -116,7 +118,7 @@ def test_review_does_not_disturb_the_document_process_produced():
     assert ws.content[root.secret] == after_process
 
 
-def test_a_second_process_run_after_review_ignores_the_review_result():
+def test_a_second_process_run_receives_the_review_only_as_labelled_feedback():
     """The regression the two capabilities could otherwise cause each other."""
     ws, requirement, root = build_standard_workspace()
     process_standard_requirement(
@@ -144,10 +146,16 @@ def test_a_second_process_run_after_review_ignores_the_review_result():
         **{**ws.requirements[requirement.id].__dict__, "state": "Process"}
     )
     ws.content[root.secret] += "\n## Added\n\nA human edit.\n"
-    model = FakeModelRuntime(responses=[analysis_output()])
-    process_standard_requirement(ws, model, requirement.id)
+    model = FakeModelRuntime(responses=[analysis_output(rework=[resolved("R0001.N0")])])
+    result = process_standard_requirement(ws, model, requirement.id)
 
+    # Requirement-Rework-Brief-v0.1: the criticism reaches the model only in
+    # the labelled non-normative section, after every normative one, and
+    # never as Requirement content.
+    assert result.code is StandardProcessResultCode.REQUIREMENT_PROCESSED, result
     context = model.calls[0]["context"]
-    assert "A reviewer criticism" not in context
-    assert "Review Result" not in context
+    normative, feedback = context.split(f"# {REWORK_HEADING}")
+    assert "A reviewer criticism" not in normative
+    assert "A reviewer criticism" in feedback
     assert REQUIREMENT_ID in context
+    assert "A reviewer criticism" not in ws.content[root.secret]

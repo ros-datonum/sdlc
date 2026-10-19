@@ -209,9 +209,14 @@ def review_output(
     assessment=None,
     question_verifications=(),
     material_unresolved_what=(),
+    rework_verifications=(),
 ):
-    """A reviewer response. There is deliberately no verdict field."""
-    body = {}
+    """A reviewer response. There is deliberately no verdict field.
+
+    `rework_verifications` is always stated: a review of a Process Result
+    that answered a Rework Brief must verify it (Requirement-Rework-Brief-v0.1).
+    """
+    body = {"rework_verifications": list(rework_verifications)}
     if question_verifications:
         body["question_verifications"] = list(question_verifications)
     # Always stated: an absent list is refused (Material-WHAT Gate v0.1 §4).

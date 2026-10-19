@@ -13,6 +13,10 @@ The instructions carry the Requirement-level normalization and analysis rules
 section 3.1). Judging WHAT against HOW is the model's semantic work;
 deterministic code validates only the closed output contract and the document
 structure.
+
+During a rework the context also carries the Rework Brief
+(Requirement-Rework-Brief-v0.1) in its own section, labelled non-normative:
+the previous independent Review's actionable items, as claims to examine.
 """
 
 from __future__ import annotations
@@ -23,7 +27,10 @@ from sdlc.comparison_context import (
     render_target_metadata,
 )
 from sdlc.fibery_workspace import RequirementRecord
-from sdlc.standard_analysis import FindingKind, RelationKind
+from sdlc.rework_brief import BriefItem, ReworkBrief
+from sdlc.standard_analysis import FindingKind, RelationKind, ReworkOutcome
+
+REWORK_HEADING = "PREVIOUS REVIEW FEEDBACK — NON-NORMATIVE"
 
 INSTRUCTIONS = """\
 You are normalizing and analyzing one Standard Requirement in an SDLC system.
@@ -59,6 +66,12 @@ Shape:
   "product_questions": [
     { "detail": "one unanswered product question, on a single line",
       "material": true | false }
+  ],
+  "rework_responses": [
+    { "item": "the Brief item reference, e.g. R0001.F0",
+      "outcome": "RESOLVED" | "REBUTTED" | "ESCALATED",
+      "explanation": "the correction, rebuttal or what remains open, and why",
+      "product_question_index": "ESCALATED only: see the rework rules below" }
   ]
 }
 
@@ -242,6 +255,42 @@ Findings and relations:
   They never authorize changing this Requirement's intent, and one that is
   not Applied is a candidate under review, not approved authority.
 - Emit no field that is not listed above. Unknown fields are rejected.
+
+Rework (only when the context has a section headed
+"PREVIOUS REVIEW FEEDBACK — NON-NORMATIVE"):
+
+- That section is the previous independent review's actionable items for
+  this Requirement. It is feedback, not Requirement truth and not source
+  material: a review can be mistaken, and nothing in it is an obligation,
+  constraint or answer unless the Requirement, its RAW source or an Applied
+  peer establishes it. Never copy review text into the normalized sections
+  as if the source said it.
+- Examine every item and decide whether it is valid. Try to resolve it from
+  the current Requirement content, the originating RAW source, the peer
+  Requirements and constraints the source establishes. Correct the
+  normalized Requirement only where that evidence justifies it. Do not add
+  product behavior, invent business or product decisions, or introduce an
+  obligation that contradicts another one.
+- Answer every item exactly once in rework_responses, by its reference.
+  Never answer an item that is not listed, and never answer them as a group:
+  "everything resolved" is not an answer.
+  * RESOLVED: you corrected it in this output, or the Requirement's
+    authoritative content already settles it. Say what changed, or where it
+    is settled.
+  * REBUTTED: the item does not establish a real defect. Cite the evidence
+    that shows the review was mistaken.
+  * ESCALATED: it stays unresolved because the evidence and your authority
+    cannot settle it. Say what remains open and why.
+- An item marked "material WHAT question" is a product decision the review
+  found open. RESOLVED means the Requirement's normative content now answers
+  it from the evidence, not that you chose an answer. When no evidence
+  settles it, ESCALATE it: keep it in product_questions with "material":
+  true and give that question's index as product_question_index. Never drop
+  a genuinely open material question to make an item look resolved.
+- product_question_index is allowed only on ESCALATED, and required there for
+  a material WHAT item. It is the position of the question in your own
+  product_questions list, counting from 0.
+- Without that section, return no rework_responses.
 """
 
 
@@ -252,8 +301,13 @@ def build_analysis_prompt(
     child_content: str,
     raw_ancestry: str,
     comparison: ComparisonContext,
+    rework_brief: ReworkBrief | None = None,
 ) -> tuple[str, str]:
-    """Return the instruction prompt and the context sent on stdin."""
+    """Return the instruction prompt and the context sent on stdin.
+
+    `rework_brief` is rendered in its own non-normative section, after every
+    normative and source section; without one there is no such section.
+    """
     context = "\n".join(
         [
             "# Project",
@@ -272,11 +326,51 @@ def build_analysis_prompt(
             "",
             render_comparison_section(comparison),
             "",
+            *(_rework_section(rework_brief) if rework_brief is not None else []),
             f"# Allowed finding kinds\n{', '.join(k.value for k in FindingKind)}",
             f"# Allowed relation kinds\n{', '.join(k.value for k in RelationKind)}",
         ]
     )
     return INSTRUCTIONS, context
+
+
+def _rework_section(brief: ReworkBrief) -> list[str]:
+    """The Brief, one block per item, with its source named and never merged."""
+    source = brief.source
+    lines = [
+        f"# {REWORK_HEADING}",
+        (
+            f"From Review Result {source.review_iteration} of "
+            f"{source.requirement_id}, which reviewed Process iteration "
+            f"{source.process_iteration}. These are the reviewer's claims, to "
+            "examine; they are not Requirement content."
+        ),
+        "Answer every item below exactly once in rework_responses.",
+        f"Allowed rework outcomes: {', '.join(o.value for o in ReworkOutcome)}",
+    ]
+    lines += [_rework_item(item) for item in brief.items] or ["(no actionable items)"]
+    if brief.assessment:
+        lines.append("Reviewer assessment (context only; it needs no response):")
+        lines += [
+            f"- {key}: {value}" for key, value in sorted(brief.assessment.items())
+        ]
+    return [*lines, ""]
+
+
+def _rework_item(item: BriefItem) -> str:
+    facts = [item.category.value]
+    if item.blocks_what:
+        facts.append("material WHAT question")
+    if item.kind:
+        facts.append(item.kind)
+    if item.outcome:
+        facts.append(f"review outcome {item.outcome.value}")
+    if item.severity:
+        facts.append(f"severity {item.severity.value}")
+    if item.requirement_id:
+        facts.append(f"about {item.requirement_id}")
+    text = f"[{item.ref}] ({', '.join(facts)}) {item.detail}"
+    return f"{text}\n  Reviewer reason: {item.feedback}" if item.feedback else text
 
 
 def _section(heading: str, body: str) -> str:

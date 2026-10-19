@@ -19,7 +19,10 @@ Two exclusions carry the independence of this stage:
   sees is the *validated, persisted* Process Result, presented as claims to
   check rather than as conclusions to agree with;
 - previous Review Results are never sent, so a reviewer cannot anchor on its
-  own earlier verdict.
+  own earlier verdict. During a rework (Requirement-Rework-Brief-v0.1) the
+  Process Result's own rework claims are sent: each response with the Brief
+  item it answers, as Process recorded it. That is the only trace of earlier
+  feedback, and it carries no verdict, severity, WHAT status or assessment.
 
 The model is asked for structured data only, never for reasoning, never for
 Fibery mechanics, and never for a verdict: deriving that is the code's job.
@@ -40,6 +43,8 @@ from sdlc.standard_review import (
     ReviewSeverity,
     VerificationOutcome,
 )
+
+REWORK_HEADING = "Rework responses claimed by the earlier analysis"
 
 INSTRUCTIONS = """\
 You are independently reviewing one Standard Requirement in an SDLC system.
@@ -84,6 +89,12 @@ Shape:
   ],
   "material_unresolved_what": [
     { "detail": "a material product question nobody listed, on one line" }
+  ],
+  "rework_verifications": [
+    { "item": "the Brief item reference of one rework response",
+      "outcome": "CONFIRMED" | "REJECTED" | "UNRESOLVED",
+      "severity": "INFO" | "WARNING" | "BLOCKING",
+      "reason": "concise justification" }
   ],
   "assessment": {
     "clarity": "...", "completeness": "...", "atomicity": "...",
@@ -237,6 +248,25 @@ Rules:
   including one you see in the document, in its Open Questions section or in
   the earlier analysis. Never answer such a question and never list a HOW
   question there. An empty list asserts that you found none.
+- Rework responses (only when the context lists them): the earlier analysis
+  received feedback on an earlier version and answered each item. Its answers
+  are claims. Verify every listed response exactly once, by its item
+  reference, against the current document, the RAW source and the peers:
+  * CONFIRMED: the claim holds. For RESOLVED, the defect is gone in the
+    current document, the correction is faithful to the source, consistent
+    with the rest of the Requirement and with related Requirements, and
+    introduces no new defect. For REBUTTED, the evidence shows the item was
+    not a real defect. For ESCALATED, it genuinely cannot be settled from the
+    evidence and stays recorded as an open question.
+  * REJECTED: the claim does not hold, so a defect remains: the original
+    problem still exists, the correction is unfaithful or contradictory, the
+    rebuttal is wrong, or the escalation was avoidable. Always give the
+    severity of what remains.
+  * UNRESOLVED: the available context cannot settle it. No severity.
+  A material WHAT item is cleared only by your CONFIRMED. Report any new
+  defect a correction introduced as a new finding as well. Do your own full
+  review of the current Requirement regardless: the responses are not the
+  scope of your review.
 - Do not state an overall verdict, WHAT status, score or recommendation. There
   is no field for one: code derives them from what you report.
 - Do not propose changes, rewrites, updates, retirement or supersession of any
@@ -286,6 +316,11 @@ def build_review_prompt(
             "",
             _questions_section(process_result),
             "",
+            *(
+                [_rework_section(process_result), ""]
+                if process_result.rework_brief is not None
+                else []
+            ),
             _existing_relations_section(relations),
             "",
             render_comparison_section(comparison),
@@ -342,6 +377,30 @@ def _questions_section(result: ProcessResult) -> str:
         for index, question in enumerate(result.product_questions or ())
     ]
     return "\n".join([header, *lines]) if lines else f"{header}\n(none)"
+
+
+def _rework_section(result: ProcessResult) -> str:
+    """Each Process rework response with the Brief item it answers, as claims."""
+    header = (
+        f"# {REWORK_HEADING}\n"
+        "Verify each by its item reference. Each item is earlier feedback the "
+        "analysis answered; the item and the answer are claims, not conclusions."
+    )
+    blocks = []
+    for response in result.rework_responses:
+        item = result.rework_brief.item(response.item)
+        facts = [item.category.value]
+        if item.blocks_what:
+            facts.append("material WHAT question")
+        if item.kind:
+            facts.append(item.kind)
+        if item.requirement_id:
+            facts.append(f"about {item.requirement_id}")
+        answer = f"  Answer: {response.outcome.value}: {response.explanation}"
+        if response.product_question_index is not None:
+            answer += f" (kept as product question [{response.product_question_index}])"
+        blocks.append(f"[{item.ref}] ({', '.join(facts)}) {item.detail}\n{answer}")
+    return "\n".join([header, *blocks]) if blocks else f"{header}\n(none)"
 
 
 def _analysis_section(result: ProcessResult) -> str:

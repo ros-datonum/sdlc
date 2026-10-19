@@ -229,6 +229,9 @@ def test_no_chain_of_thought_field_exists_in_the_payload():
         "product_question_verifications",
         "material_unresolved_what",
         "derived_what_status",
+        "reviewed_rework_brief_identity",
+        "reviewed_rework_responses",
+        "rework_verifications",
     }
 
 
@@ -247,7 +250,7 @@ def test_invalid_json_is_rejected():
 
 def test_an_unsupported_version_is_rejected():
     result = build()
-    tampered = render_review_result(result).replace('"0.4"', '"9.9"', 1)
+    tampered = render_review_result(result).replace('"0.5"', '"9.9"', 1)
     with pytest.raises(InvalidReviewResult, match="is not supported"):
         parse_review_result(tampered)
 

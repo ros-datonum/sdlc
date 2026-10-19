@@ -393,10 +393,13 @@ def test_process_never_reads_a_review_result_as_requirement_content():
         "# Review Result 0001\n\nBLOCKING: this requirement is untestable.\n"
     )
 
+    before = len(ws.mutations)
     model = FakeModelRuntime(responses=[analysis_output()])
     result = process_standard_requirement(ws, model, requirement.id)
 
-    assert result.code is StandardProcessResultCode.REQUIREMENT_PROCESSED
-    context = model.calls[0]["context"]
-    assert "Review Result" not in context
-    assert "untestable" not in context
+    # Requirement-Rework-Brief-v0.1: a Review artifact is never content, and
+    # one that cannot be read is refused rather than skipped, before any
+    # model call. A readable one reaches the model only as a labelled Brief.
+    assert result.code is StandardProcessResultCode.REVIEW_LINEAGE_INVALID, result
+    assert not model.was_invoked
+    assert ws.mutations[before:] == []

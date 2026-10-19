@@ -310,7 +310,7 @@ def test_process_upgrades_0_2_history_with_a_fresh_iteration_and_no_edit():
     stored = parse_process_result(
         reserialize_like_fibery(ws.content[process_results(ws)[-1].secret])
     )
-    assert stored.version == "0.4" and stored.is_current
+    assert stored.version == "0.5" and stored.is_current
     assert stored.input_tree.version == NORMATIVE_TREE_VERSION
 
 
@@ -358,7 +358,7 @@ def test_review_over_current_process_and_0_2_review_history_is_a_fresh_review():
     assert result.code is ReviewCode.REQUIREMENT_REVIEWED, result
     assert result.iteration == 2 and model.was_invoked
     assert ws.content[old_review.secret] == old_body
-    assert stored_review(ws).version == "0.4" and stored_review(ws).is_current
+    assert stored_review(ws).version == "0.5" and stored_review(ws).is_current
 
 
 @pytest.mark.parametrize("entry", ["approve", "apply"])
@@ -542,7 +542,7 @@ def test_recovery_fills_the_shell_with_current_format_evidence(stage):
     result = stage.run(ws, record, model_for(stage), recover=shell.id)
     assert result.code is stage.codes["ok"], result
     parsed = stage.parser(reserialize_like_fibery(ws.content[shell.secret]))
-    assert parsed.version == "0.4" and parsed.is_current
+    assert parsed.version == "0.5" and parsed.is_current
     assert [d.id for d in ws.documents if d.id == shell.id] == [shell.id]
 
 

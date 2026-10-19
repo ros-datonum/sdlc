@@ -38,14 +38,23 @@ def normalized(**changes) -> dict:
 
 
 def analysis_output(
-    normalized_changes=None, findings=(), relations=(), analysis=None, questions=()
+    normalized_changes=None,
+    findings=(),
+    relations=(),
+    analysis=None,
+    questions=(),
+    rework=(),
 ):
     """A Process response. Open Questions is rendered from `questions`, so the
-    normalized sections never carry it (Material-WHAT Gate v0.1)."""
+    normalized sections never carry it (Material-WHAT Gate v0.1).
+
+    `rework_responses` is always stated, as `rework`: a run that received a
+    Rework Brief must answer it, even when it has no items, and an empty list
+    is accepted when none was supplied (Requirement-Rework-Brief-v0.1)."""
     sections = normalized(**(normalized_changes or {}))
     if sections.pop("open_questions") != "None.":
         raise AssertionError("pass open questions as `questions`, not as a section")
-    body = {"normalized_requirement": sections}
+    body = {"normalized_requirement": sections, "rework_responses": list(rework)}
     if questions:
         body["product_questions"] = list(questions)
     if analysis is not None:
@@ -55,6 +64,11 @@ def analysis_output(
     if relations:
         body["proposed_relations"] = list(relations)
     return json.dumps(body)
+
+
+def resolved(item="R0001.F0", explanation="Corrected from the source wording."):
+    """One rework response: the first Brief item of Review Result 1, resolved."""
+    return {"item": item, "outcome": "RESOLVED", "explanation": explanation}
 
 
 def rendered_document(requirement_id=REQUIREMENT_ID, **changes) -> str:

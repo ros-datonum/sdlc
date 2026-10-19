@@ -1,9 +1,11 @@
 """Structured contract for Standard Requirement normalization and analysis.
 
 The model returns data only: a normalized requirement in the approved document
-sections, analysis findings, proposed relations and the open product questions
-(Requirement-Material-WHAT-Gate-v0.1). Code renders the Open Questions section
-from those structured questions, so the gate never reads Markdown prose. It never writes to Fibery,
+sections, analysis findings, proposed relations, the open product questions
+(Requirement-Material-WHAT-Gate-v0.1) and, during a rework, one response per
+Rework Brief item (Requirement-Rework-Brief-v0.1). Code renders the Open
+Questions section from those structured questions, so the gate never reads
+Markdown prose. It never writes to Fibery,
 never names a Fibery identifier, and is never asked for reasoning traces.
 
 Anything the contract does not define is a validation error, which is what keeps
@@ -85,6 +87,17 @@ class RelationKind(StrEnum):
     AFFECTS = "AFFECTS"
 
 
+class ReworkOutcome(StrEnum):
+    """How one Process iteration answered one Rework Brief item."""
+
+    # Corrected in this output, or already answered by authoritative content.
+    RESOLVED = "RESOLVED"
+    # The previous finding does not establish a real defect.
+    REBUTTED = "REBUTTED"
+    # It stays unresolved; a material WHAT is kept as a product question.
+    ESCALATED = "ESCALATED"
+
+
 class InvalidAnalysisOutput(ValueError):
     """The model's response does not satisfy the contract."""
 
@@ -99,6 +112,10 @@ REQUIRED_NORMALIZED_KEYS = frozenset({"title", "requirement"})
 FINDING_KEYS = frozenset({"kind", "requirement_id", "detail"})
 RELATION_KEYS = frozenset({"kind", "requirement_id", "rationale"})
 PRODUCT_QUESTION_KEYS = frozenset({"detail", "material"})
+REWORK_RESPONSE_KEYS = frozenset(
+    {"item", "outcome", "explanation", "product_question_index"}
+)
+REWORK_RESPONSES_KEY = "rework_responses"
 RESULT_KEYS = frozenset(
     {
         "normalized_requirement",
@@ -106,6 +123,7 @@ RESULT_KEYS = frozenset(
         "findings",
         "proposed_relations",
         "product_questions",
+        REWORK_RESPONSES_KEY,
     }
 )
 OPEN_QUESTION_TEMPLATE = "- {detail}"
@@ -141,6 +159,32 @@ class ProductQuestion:
 
     detail: str
     material: bool
+
+
+@dataclass(frozen=True)
+class ReworkResponse:
+    """The answer to one Rework Brief item, referenced by its item ref.
+
+    `product_question_index` names the product question of the same output
+    that keeps an ESCALATED item open; only ESCALATED may carry one.
+    """
+
+    item: str
+    outcome: ReworkOutcome
+    explanation: str
+    product_question_index: int | None = None
+
+
+@dataclass(frozen=True)
+class ReworkExpectation:
+    """What the Rework Brief demands: one response per item, by reference.
+
+    `what_refs` are the items that are material WHAT questions; an ESCALATED
+    response to one must keep it as a material product question.
+    """
+
+    item_refs: tuple[str, ...]
+    what_refs: frozenset[str]
 
 
 def render_open_questions(questions: tuple[ProductQuestion, ...]) -> str:
@@ -182,10 +226,16 @@ class AnalysisResult:
     findings: tuple[Finding, ...]
     proposed_relations: tuple[ProposedRelation, ...]
     product_questions: tuple[ProductQuestion, ...] = ()
+    rework_responses: tuple[ReworkResponse, ...] = ()
 
 
-def parse_analysis_output(text: str) -> AnalysisResult:
-    """Validate the model's JSON response, or raise InvalidAnalysisOutput."""
+def parse_analysis_output(
+    text: str, rework: ReworkExpectation | None = None
+) -> AnalysisResult:
+    """Validate the model's JSON response, or raise InvalidAnalysisOutput.
+
+    `rework` is the Rework Brief this run supplied, None when it supplied none.
+    """
     payload = _load_json(text)
     _reject_unknown(payload, RESULT_KEYS, "result")
 
@@ -213,6 +263,117 @@ def parse_analysis_output(text: str) -> AnalysisResult:
             )
         ),
         product_questions=questions,
+        rework_responses=_read_rework_responses(payload, rework, questions),
+    )
+
+
+def _read_rework_responses(
+    payload: dict[str, object],
+    rework: ReworkExpectation | None,
+    questions: tuple[ProductQuestion, ...],
+) -> tuple[ReworkResponse, ...]:
+    entries = payload.get(REWORK_RESPONSES_KEY)
+    if rework is None:
+        if entries:
+            raise InvalidAnalysisOutput(
+                "rework_responses answers a Rework Brief, but no previous review "
+                "feedback was supplied."
+            )
+        return ()
+    if REWORK_RESPONSES_KEY not in payload:
+        raise InvalidAnalysisOutput(
+            "Previous review feedback was supplied, so rework_responses must "
+            "answer every item: its absence answers none."
+        )
+    responses = tuple(
+        _read_rework_response(entry, index)
+        for index, entry in enumerate(_as_list(entries, REWORK_RESPONSES_KEY))
+    )
+    require_rework_coverage(responses, rework, questions)
+    return responses
+
+
+def require_rework_coverage(
+    responses: tuple[ReworkResponse, ...],
+    rework: ReworkExpectation,
+    questions: tuple[ProductQuestion, ...],
+) -> None:
+    """Exactly one response per Brief item; escalations stay recorded.
+
+    Shared with the Process Result reader, so a persisted iteration is held to
+    the same contract as the model's response.
+    """
+    seen: set[str] = set()
+    for response in responses:
+        if response.item not in rework.item_refs:
+            raise InvalidAnalysisOutput(
+                f"rework response for {response.item!r} answers no Brief item."
+            )
+        if response.item in seen:
+            raise InvalidAnalysisOutput(
+                f"Brief item {response.item} is answered more than once."
+            )
+        seen.add(response.item)
+        _require_escalation_recorded(response, rework, questions)
+    missing = [ref for ref in rework.item_refs if ref not in seen]
+    if missing:
+        raise InvalidAnalysisOutput(
+            "rework_responses leaves Brief items unanswered: " + ", ".join(missing)
+        )
+
+
+def _require_escalation_recorded(
+    response: ReworkResponse,
+    rework: ReworkExpectation,
+    questions: tuple[ProductQuestion, ...],
+) -> None:
+    index = response.product_question_index
+    if response.outcome is not ReworkOutcome.ESCALATED:
+        if index is not None:
+            raise InvalidAnalysisOutput(
+                f"rework response for {response.item} is {response.outcome.value}; "
+                "only ESCALATED names a product question."
+            )
+        return
+    if index is None:
+        if response.item in rework.what_refs:
+            raise InvalidAnalysisOutput(
+                f"Brief item {response.item} is a material WHAT question; "
+                "escalating it must name the product question that keeps it open."
+            )
+        return
+    if not 0 <= index < len(questions):
+        raise InvalidAnalysisOutput(
+            f"rework response for {response.item} names product question {index}, "
+            f"but the output has {len(questions)}."
+        )
+    if response.item in rework.what_refs and not questions[index].material:
+        raise InvalidAnalysisOutput(
+            f"Brief item {response.item} is a material WHAT question, but product "
+            f"question {index} that keeps it open is not material."
+        )
+
+
+def _read_rework_response(entry: object, index: int) -> ReworkResponse:
+    where = f"rework response {index}"
+    if not isinstance(entry, dict):
+        raise InvalidAnalysisOutput(f"{where} must be an object.")
+    _reject_unknown(entry, REWORK_RESPONSE_KEYS, where)
+    missing = sorted({"item", "outcome", "explanation"} - set(entry))
+    if missing:
+        raise InvalidAnalysisOutput(f"{where} is missing: " + ", ".join(missing))
+    question = entry.get("product_question_index")
+    if question is not None and (
+        not isinstance(question, int) or isinstance(question, bool)
+    ):
+        raise InvalidAnalysisOutput(
+            f"{where} product_question_index must be an integer."
+        )
+    return ReworkResponse(
+        item=_read_text(entry["item"], f"{where} item"),
+        outcome=_read_enum(ReworkOutcome, entry["outcome"], where),
+        explanation=_read_text(entry["explanation"], f"{where} explanation"),
+        product_question_index=question,
     )
 
 

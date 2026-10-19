@@ -48,7 +48,7 @@ from sdlc.results import (
 )
 from sdlc.standard_processor import process_standard_requirement
 from sdlc.standard_reviewer import review_standard_requirement
-from standard_fake import analysis_output
+from standard_fake import analysis_output, resolved
 from test_standard_process_explicit_resume import completed_then_reverted
 
 NOT_PROCESSED = ProcessingStatus.NOT_PROCESSED
@@ -435,7 +435,7 @@ def test_the_dispatcher_turns_an_unedited_rework_into_the_next_iteration():
     ws, record, _root = ready_sent_back_unedited()
     history = [*process_result_nodes(ws), *review_result_nodes(ws)]
     evidence = {node.secret: ws.content[node.secret] for node in history}
-    model = FakeModelRuntime([analysis_output()])
+    model = FakeModelRuntime([analysis_output(rework=[resolved()])])
 
     result = dispatch_current(ws, real_workers(ws, process_model=model), record.id)
 
@@ -452,7 +452,7 @@ def test_the_dispatcher_turns_an_unedited_rework_into_the_next_iteration():
 def test_an_edited_rework_keeps_the_existing_new_iteration_behavior():
     ws, record, root = ready_sent_back_unedited()
     ws.content[root.secret] += "\nThe human narrowed the scope.\n"
-    model = FakeModelRuntime([analysis_output()])
+    model = FakeModelRuntime([analysis_output(rework=[resolved()])])
 
     result = dispatch_current(ws, real_workers(ws, process_model=model), record.id)
 
@@ -723,7 +723,9 @@ def test_after_standard_process_only_a_new_review_cycle_is_selectable():
     ws, record, _root = ready_sent_back_unedited()
     first = dispatch_current(
         ws,
-        real_workers(ws, process_model=FakeModelRuntime([analysis_output()])),
+        real_workers(
+            ws, process_model=FakeModelRuntime([analysis_output(rework=[resolved()])])
+        ),
         record.id,
     )
     assert first.outcome is DispatchOutcome.ROUTE_COMPLETED

@@ -98,14 +98,22 @@ def make_legacy_review(ws, index=-1):
 def test_process_sends_every_normative_descendant_with_its_marker():
     ws, requirement, root = build_standard_workspace()
     child, grandchild = with_children(ws, root)
-    add_child(ws, root, f"{REQUIREMENT_ID} — Review Result 0001", "PRIOR-VERDICT")
     result, model = run_process(ws, requirement)
     assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
     context = model.calls[0]["context"]
     assert CHILD_TEXT in context and GRANDCHILD_TEXT in context
     assert f"| id: {child.id} | parent: {root.id} | depth: 1 -->" in context
     assert f"| id: {grandchild.id} | parent: {child.id} | depth: 2 -->" in context
-    assert "PRIOR-VERDICT" not in context
+
+
+def test_a_review_artifact_is_never_a_normative_descendant():
+    """It is not content; an unreadable one refuses (Rework Brief v0.1 §3)."""
+    ws, requirement, root = build_standard_workspace()
+    with_children(ws, root)
+    add_child(ws, root, f"{REQUIREMENT_ID} — Review Result 0001", "PRIOR-VERDICT")
+    result, model = run_process(ws, requirement)
+    assert result.code is ProcessCode.REVIEW_LINEAGE_INVALID, result
+    assert not model.was_invoked
 
 
 def test_process_persists_a_tree_bound_result_over_the_tree_it_read():
@@ -115,7 +123,7 @@ def test_process_persists_a_tree_bound_result_over_the_tree_it_read():
     result, _ = run_process(ws, requirement)
     assert result.code is ProcessCode.REQUIREMENT_PROCESSED
     stored = stored_process(ws)
-    assert stored.is_tree_bound and stored.version == "0.4"
+    assert stored.is_tree_bound and stored.version == "0.5"
     assert stored.input_tree == before
     assert stored.output_tree == tree_manifest(ws, root)
     assert stored.output_tree.document_ids == before.document_ids

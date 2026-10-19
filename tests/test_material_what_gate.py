@@ -190,7 +190,7 @@ def test_the_model_cannot_write_open_questions_prose_itself():
 def test_a_process_result_persists_its_questions_and_older_ones_carry_none():
     ws, _, _, _ = build_review_workspace(questions=(material_question(),))
     _, process = latest_process(ws)
-    assert process.version == "0.4" and process.has_question_evidence
+    assert process.version == "0.5" and process.has_question_evidence
     assert process.product_questions == (material_question(),)
     older = replace(process, version="0.3")
     reread = parse_process_result(render_process_result(older))
@@ -702,11 +702,11 @@ def requalify(ws, workers, requirement):
     """Process then Review, by the runner alone, from a reset Process cycle."""
     assert ws.status_of(requirement.id) == NOT_PROCESSED
     assert run_cycle(ws, workers).outcome is CycleOutcome.HANDED_OFF
-    assert latest_process(ws)[1].version == "0.4"
+    assert latest_process(ws)[1].version == "0.5"
     assert run_cycle(ws, workers).outcome is CycleOutcome.SUCCEEDED
     assert ws.requirements[requirement.id].state == "Ready"
     review = review_results(ws)[-1]
-    assert review.version == "0.4" and review.what_status is WhatStatus.CLEAR
+    assert review.version == "0.5" and review.what_status is WhatStatus.CLEAR
 
 
 def test_the_worker_fails_legacy_apply_with_only_its_processing_status():

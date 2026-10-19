@@ -16,6 +16,12 @@ own contents is rejected rather than acted on. The same holds for the WHAT
 status of version 0.4 (Requirement-Material-WHAT-Gate-v0.1): it is recomputed
 from the product questions the review saw and their verifications, and
 `what_clearance` checks that those questions are the bound Process Result's.
+Version 0.5 (Requirement-Rework-Brief-v0.1) also verifies the bound Process
+Result's rework responses; a material WHAT item whose response it does not
+confirm keeps the status BLOCKED_ON_WHAT.
+
+`build_rework_brief` turns one completed Review Result and the Process Result
+it reviewed into the Rework Brief the next Process iteration receives.
 """
 
 from __future__ import annotations
@@ -31,7 +37,21 @@ from sdlc.normative_tree import (
     TreeManifest,
 )
 from sdlc.process_result import ProcessResult
-from sdlc.standard_analysis import FindingKind, ProductQuestion, RelationKind
+from sdlc.rework_brief import (
+    BriefCategory,
+    BriefItem,
+    InvalidReworkBrief,
+    ReviewSource,
+    ReworkBrief,
+    item_ref,
+)
+from sdlc.standard_analysis import (
+    FindingKind,
+    ProductQuestion,
+    RelationKind,
+    ReworkOutcome,
+    ReworkResponse,
+)
 from sdlc.standard_review import (
     FindingVerification,
     InvalidReviewOutput,
@@ -43,11 +63,13 @@ from sdlc.standard_review import (
     ReviewOutput,
     ReviewSeverity,
     ReviewVerdict,
+    ReworkVerification,
     VerificationOutcome,
     WhatStatus,
     derive_verdict,
     derive_what_status,
     question_blocks,
+    rework_leaves_what_open,
 )
 
 # 0.2 binds the normative tree (Requirement-Normative-Tree-Binding-v0.1); 0.1
@@ -58,24 +80,38 @@ from sdlc.standard_review import (
 # 0.4 is 0.3 plus the verified product questions and the derived WHAT status
 # of the Material-WHAT Gate v0.1. A 0.3 Review Result stays current tree
 # evidence but establishes no WHAT status: it is never read as CLEAR.
-REVIEW_RESULT_VERSION = "0.4"
+# 0.5 is 0.4 plus the verified rework responses of Requirement-Rework-Brief
+# v0.1; a 0.4 Review Result still establishes WHAT status for a Process
+# Result that received no Rework Brief.
+REVIEW_RESULT_VERSION = "0.5"
+PRE_REWORK_REVIEW_RESULT_VERSION = "0.4"
 PRE_WHAT_REVIEW_RESULT_VERSION = "0.3"
 TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION = "0.2"
 LEGACY_REVIEW_RESULT_VERSION = "0.1"
 SUPPORTED_REVIEW_RESULT_VERSIONS = frozenset(
     {
         REVIEW_RESULT_VERSION,
+        PRE_REWORK_REVIEW_RESULT_VERSION,
         PRE_WHAT_REVIEW_RESULT_VERSION,
         TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION,
         LEGACY_REVIEW_RESULT_VERSION,
     }
 )
 CURRENT_TREE_REVIEW_RESULT_VERSIONS = frozenset(
-    {REVIEW_RESULT_VERSION, PRE_WHAT_REVIEW_RESULT_VERSION}
+    {
+        REVIEW_RESULT_VERSION,
+        PRE_REWORK_REVIEW_RESULT_VERSION,
+        PRE_WHAT_REVIEW_RESULT_VERSION,
+    }
+)
+#: Versions that carry WHAT evidence and establish a WHAT status.
+WHAT_BOUND_REVIEW_RESULT_VERSIONS = frozenset(
+    {REVIEW_RESULT_VERSION, PRE_REWORK_REVIEW_RESULT_VERSION}
 )
 MANIFEST_VERSION_BY_RESULT_VERSION = {
     TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION: LEGACY_NORMATIVE_TREE_VERSION,
     PRE_WHAT_REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
+    PRE_REWORK_REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
     REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
 }
 REVIEW_RESULT_SUFFIX = "Review Result"
@@ -111,10 +147,29 @@ WHAT_KEYS = (
     MATERIAL_WHAT_KEY,
     WHAT_STATUS_KEY,
 )
+REVIEWED_BRIEF_KEY = "reviewed_rework_brief_identity"
+REVIEWED_RESPONSES_KEY = "reviewed_rework_responses"
+REWORK_VERIFICATIONS_KEY = "rework_verifications"
+REWORK_KEYS = (REVIEWED_BRIEF_KEY, REVIEWED_RESPONSES_KEY, REWORK_VERIFICATIONS_KEY)
+REVIEWED_RESPONSE_KEYS = frozenset(
+    {"item", "outcome", "explanation", "product_question_index", "blocks_what"}
+)
 
 
 class InvalidReviewResult(ValueError):
     """A persisted Review Result cannot be trusted."""
+
+
+@dataclass(frozen=True)
+class ReviewedReworkResponse:
+    """A copy of one Process rework response, as the review verified it.
+
+    `blocks_what` is copied from the Brief item it answers, so the WHAT
+    status can be recomputed from the Review Result alone.
+    """
+
+    response: ReworkResponse
+    blocks_what: bool
 
 
 def review_result_name(requirement_id: str, iteration: int) -> str:
@@ -147,11 +202,17 @@ class ReviewResult:
     version: str = REVIEW_RESULT_VERSION
     # The normative tree this review actually saw. None on a legacy 0.1 result.
     reviewed_tree: TreeManifest | None = None
-    # 0.4 only; None on every older version, which establishes no WHAT status.
+    # 0.4 and 0.5; None on every older version, which establishes no WHAT
+    # status.
     reviewed_product_questions: tuple[ProductQuestion, ...] | None = None
     question_verifications: tuple[QuestionVerification, ...] = ()
     material_unresolved_what: tuple[MaterialWhat, ...] = ()
     what_status: WhatStatus | None = None
+    # 0.5 only: the Brief the reviewed Process received, its responses and
+    # their verification. None and () when that Process received no Brief.
+    reviewed_brief_identity: str | None = None
+    reviewed_rework_responses: tuple[ReviewedReworkResponse, ...] = ()
+    rework_verifications: tuple[ReworkVerification, ...] = ()
 
     @property
     def name(self) -> str:
@@ -160,6 +221,19 @@ class ReviewResult:
     @property
     def is_tree_bound(self) -> bool:
         return self.reviewed_tree is not None
+
+    @property
+    def is_rework_bound(self) -> bool:
+        """Whether this review records the rework claims it verified (0.5)."""
+        return self.version == REVIEW_RESULT_VERSION
+
+    @property
+    def rework_what_refs(self) -> frozenset[str]:
+        return frozenset(
+            reviewed.response.item
+            for reviewed in self.reviewed_rework_responses
+            if reviewed.blocks_what
+        )
 
     @property
     def is_current(self) -> bool:
@@ -211,11 +285,14 @@ def build_review_result(
     reviewed_tree: TreeManifest,
     *,
     reviewed_product_questions: tuple[ProductQuestion, ...],
+    reviewed_rework_brief: ReworkBrief | None = None,
+    reviewed_rework_responses: tuple[ReworkResponse, ...] = (),
 ) -> ReviewResult:
     """Assemble the artifact, deriving verdict and WHAT status, never accepting.
 
     `reviewed_product_questions` are the bound Process Result's questions, the
-    ones the review verified.
+    ones the review verified; `reviewed_rework_brief` and
+    `reviewed_rework_responses` its Rework Brief and the responses verified.
     """
     if not reviewed_tree.is_current:
         raise InvalidReviewResult(
@@ -227,13 +304,33 @@ def build_review_result(
             "The reviewed tree's Root fingerprint disagrees with the reviewed "
             "document fingerprint."
         )
+    reviewed_responses = (
+        tuple(
+            ReviewedReworkResponse(
+                response=response,
+                blocks_what=response.item in reviewed_rework_brief.what_refs,
+            )
+            for response in reviewed_rework_responses
+        )
+        if reviewed_rework_brief is not None
+        else ()
+    )
+    what_refs = frozenset(
+        reviewed.response.item
+        for reviewed in reviewed_responses
+        if reviewed.blocks_what
+    )
     return ReviewResult(
         requirement_id=requirement_id,
         iteration=iteration,
         reviewed_document_fingerprint=reviewed_document_fingerprint,
         reviewed_process_iteration=reviewed_process_iteration,
         reviewed_process_output_fingerprint=reviewed_process_output_fingerprint,
-        verdict=derive_verdict(review.finding_verifications, review.new_findings),
+        verdict=derive_verdict(
+            review.finding_verifications,
+            review.new_findings,
+            review.rework_verifications,
+        ),
         finding_verifications=review.finding_verifications,
         relation_verifications=review.relation_verifications,
         new_findings=review.new_findings,
@@ -246,7 +343,13 @@ def build_review_result(
             tuple(reviewed_product_questions),
             review.question_verifications,
             review.material_unresolved_what,
+            rework_leaves_what_open(what_refs, review.rework_verifications),
         ),
+        reviewed_brief_identity=(
+            reviewed_rework_brief.identity if reviewed_rework_brief else None
+        ),
+        reviewed_rework_responses=reviewed_responses,
+        rework_verifications=review.rework_verifications,
     )
 
 
@@ -254,9 +357,10 @@ def _derive_what_status(
     questions: tuple[ProductQuestion, ...],
     verifications: tuple[QuestionVerification, ...],
     material: tuple[MaterialWhat, ...],
+    rework_what_open: bool = False,
 ) -> WhatStatus:
     try:
-        return derive_what_status(questions, verifications, material)
+        return derive_what_status(questions, verifications, material, rework_what_open)
     except InvalidReviewOutput as error:
         raise InvalidReviewResult(str(error)) from error
 
@@ -306,7 +410,12 @@ def render_review_result(result: ReviewResult) -> str:
             for finding in result.new_findings
         ],
         ASSESSMENT_KEY: result.assessment,
-        **(_what_payload(result) if result.version == REVIEW_RESULT_VERSION else {}),
+        **(
+            _what_payload(result)
+            if result.version in WHAT_BOUND_REVIEW_RESULT_VERSIONS
+            else {}
+        ),
+        **(_rework_payload(result) if result.is_rework_bound else {}),
     }
     body = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False)
     return (
@@ -325,7 +434,7 @@ def render_review_result(result: ReviewResult) -> str:
 def _what_payload(result: ReviewResult) -> dict[str, object]:
     if result.what_status is None or result.reviewed_product_questions is None:
         raise InvalidReviewResult(
-            f"A Review Result {REVIEW_RESULT_VERSION} must carry its WHAT evidence."
+            f"A Review Result {result.version} must carry its WHAT evidence."
         )
     return {
         REVIEWED_QUESTIONS_KEY: [
@@ -347,6 +456,31 @@ def _what_payload(result: ReviewResult) -> dict[str, object]:
             {"detail": item.detail} for item in result.material_unresolved_what
         ],
         WHAT_STATUS_KEY: result.what_status.value,
+    }
+
+
+def _rework_payload(result: ReviewResult) -> dict[str, object]:
+    return {
+        REVIEWED_BRIEF_KEY: result.reviewed_brief_identity,
+        REVIEWED_RESPONSES_KEY: [
+            {
+                "item": reviewed.response.item,
+                "outcome": reviewed.response.outcome.value,
+                "explanation": reviewed.response.explanation,
+                "product_question_index": reviewed.response.product_question_index,
+                "blocks_what": reviewed.blocks_what,
+            }
+            for reviewed in result.reviewed_rework_responses
+        ],
+        REWORK_VERIFICATIONS_KEY: [
+            {
+                "item": item.item,
+                "outcome": item.outcome.value,
+                "severity": item.severity.value if item.severity else None,
+                "reason": item.reason,
+            }
+            for item in result.rework_verifications
+        ],
     }
 
 
@@ -377,8 +511,12 @@ def parse_review_result(text: str) -> ReviewResult:
         _read_new_finding(entry) for entry in _as_list(payload.get(NEW_FINDINGS_KEY))
     )
 
+    _forbid_what_evidence(payload, version)
+    rework = _read_rework_evidence(payload, version)
     verdict = _read_verdict(payload.get(VERDICT_KEY))
-    recalculated = derive_verdict(verifications, new_findings)
+    recalculated = derive_verdict(
+        verifications, new_findings, rework.get("rework_verifications", ())
+    )
     if verdict is not recalculated:
         # The artifact grades itself. If the stored verdict and the findings it
         # stores disagree, one of them is wrong and neither can be preferred.
@@ -394,7 +532,7 @@ def parse_review_result(text: str) -> ReviewResult:
     reviewed_tree = _read_reviewed_tree(
         payload, version, requirement_id, reviewed_document
     )
-    what = _read_what_evidence(payload, version)
+    what = _read_what_evidence(payload, version, rework)
     return ReviewResult(
         requirement_id=requirement_id,
         iteration=iteration,
@@ -416,23 +554,141 @@ def parse_review_result(text: str) -> ReviewResult:
         version=version,
         reviewed_tree=reviewed_tree,
         **what,
+        **rework,
     )
 
 
-def _read_what_evidence(payload: dict[str, object], version: str) -> dict:
-    """The 0.4 WHAT evidence, its status recomputed; none for older versions."""
+def _read_rework_evidence(payload: dict[str, object], version: str) -> dict:
+    """The 0.5 rework evidence, closed and exactly covered; none before 0.5."""
     if version != REVIEW_RESULT_VERSION:
-        present = [key for key in WHAT_KEYS if key in payload]
+        present = [key for key in REWORK_KEYS if key in payload]
         if present:
             raise InvalidReviewResult(
-                f"A {version} Review Result cannot carry WHAT evidence: "
+                f"A {version} Review Result cannot carry rework evidence: "
                 + ", ".join(present)
             )
+        return {}
+    missing = [key for key in REWORK_KEYS if key not in payload]
+    if missing:
+        raise InvalidReviewResult(
+            f"A {REVIEW_RESULT_VERSION} Review Result is missing its rework "
+            "evidence: " + ", ".join(missing)
+        )
+    identity = payload[REVIEWED_BRIEF_KEY]
+    if identity is not None and (not isinstance(identity, str) or not identity):
+        raise InvalidReviewResult(f"{REVIEWED_BRIEF_KEY} must be text or null.")
+    for key in (REVIEWED_RESPONSES_KEY, REWORK_VERIFICATIONS_KEY):
+        if not isinstance(payload[key], list):
+            raise InvalidReviewResult(f"{key} must be a list.")
+    responses = tuple(
+        _read_reviewed_response(entry) for entry in payload[REVIEWED_RESPONSES_KEY]
+    )
+    verifications = tuple(
+        _read_rework_verification(entry) for entry in payload[REWORK_VERIFICATIONS_KEY]
+    )
+    if identity is None and responses:
+        raise InvalidReviewResult(
+            "A review of a Process Result without a Rework Brief verified rework "
+            "responses."
+        )
+    expected = [reviewed.response.item for reviewed in responses]
+    addressed = [item.item for item in verifications]
+    if len(set(expected)) != len(expected) or sorted(addressed) != sorted(expected):
+        raise InvalidReviewResult(
+            "The persisted rework verifications do not cover each reviewed rework "
+            "response exactly once."
+        )
+    return {
+        "reviewed_brief_identity": identity,
+        "reviewed_rework_responses": responses,
+        "rework_verifications": verifications,
+    }
+
+
+def _read_reviewed_response(entry: object) -> ReviewedReworkResponse:
+    if not isinstance(entry, dict) or set(entry) != REVIEWED_RESPONSE_KEYS:
+        raise InvalidReviewResult(f"Malformed reviewed rework response: {entry!r}")
+    index = entry["product_question_index"]
+    try:
+        outcome = ReworkOutcome(entry["outcome"])
+    except ValueError as error:
+        raise InvalidReviewResult(
+            f"Malformed reviewed rework response: {error}"
+        ) from error
+    if (
+        not isinstance(entry["item"], str)
+        or not isinstance(entry["explanation"], str)
+        or not entry["explanation"].strip()
+        or not isinstance(entry["blocks_what"], bool)
+        or (
+            index is not None
+            and (not isinstance(index, int) or isinstance(index, bool))
+        )
+        or (index is not None and outcome is not ReworkOutcome.ESCALATED)
+    ):
+        raise InvalidReviewResult(f"Malformed reviewed rework response: {entry!r}")
+    return ReviewedReworkResponse(
+        response=ReworkResponse(
+            item=entry["item"],
+            outcome=outcome,
+            explanation=entry["explanation"],
+            product_question_index=index,
+        ),
+        blocks_what=entry["blocks_what"],
+    )
+
+
+def _read_rework_verification(entry: object) -> ReworkVerification:
+    if not isinstance(entry, dict) or set(entry) != {
+        "item",
+        "outcome",
+        "severity",
+        "reason",
+    }:
+        raise InvalidReviewResult(f"Malformed rework verification: {entry!r}")
+    try:
+        outcome = VerificationOutcome(entry["outcome"])
+        severity = entry["severity"]
+        verification = ReworkVerification(
+            item=entry["item"],
+            outcome=outcome,
+            reason=entry["reason"],
+            severity=ReviewSeverity(severity) if severity is not None else None,
+        )
+    except ValueError as error:
+        raise InvalidReviewResult(f"Malformed rework verification: {error}") from error
+    if (
+        not isinstance(verification.item, str)
+        or not isinstance(verification.reason, str)
+        or not verification.reason.strip()
+        or (outcome is VerificationOutcome.REJECTED) != (severity is not None)
+    ):
+        raise InvalidReviewResult(
+            "A persisted rework verification carries a severity if and only if "
+            "it rejects the response."
+        )
+    return verification
+
+
+def _forbid_what_evidence(payload: dict[str, object], version: str) -> None:
+    if version in WHAT_BOUND_REVIEW_RESULT_VERSIONS:
+        return
+    present = [key for key in WHAT_KEYS if key in payload]
+    if present:
+        raise InvalidReviewResult(
+            f"A {version} Review Result cannot carry WHAT evidence: "
+            + ", ".join(present)
+        )
+
+
+def _read_what_evidence(payload: dict[str, object], version: str, rework: dict) -> dict:
+    """The 0.4/0.5 WHAT evidence, its status recomputed; none for older versions."""
+    if version not in WHAT_BOUND_REVIEW_RESULT_VERSIONS:
         return {}
     missing = [key for key in WHAT_KEYS if key not in payload]
     if missing:
         raise InvalidReviewResult(
-            f"A {REVIEW_RESULT_VERSION} Review Result is missing its WHAT evidence: "
+            f"A {version} Review Result is missing its WHAT evidence: "
             + ", ".join(missing)
         )
     for key in (REVIEWED_QUESTIONS_KEY, QUESTION_VERIFICATIONS_KEY, MATERIAL_WHAT_KEY):
@@ -455,7 +711,16 @@ def _read_what_evidence(payload: dict[str, object], version: str) -> dict:
         raise InvalidReviewResult(
             f"Unknown persisted WHAT status {payload.get(WHAT_STATUS_KEY)!r}."
         ) from error
-    recalculated = _derive_what_status(questions, verifications, material)
+    responses = rework.get("reviewed_rework_responses", ())
+    what_refs = frozenset(
+        reviewed.response.item for reviewed in responses if reviewed.blocks_what
+    )
+    recalculated = _derive_what_status(
+        questions,
+        verifications,
+        material,
+        rework_leaves_what_open(what_refs, rework.get("rework_verifications", ())),
+    )
     if stored is not recalculated:
         raise InvalidReviewResult(
             f"The persisted WHAT status {stored.value} contradicts the verified "
@@ -494,11 +759,48 @@ def what_clearance(review: ReviewResult, process: ProcessResult) -> WhatStatus |
             f"Review Result {review.iteration} verified product questions that are "
             f"not the questions of Process Result {process.iteration}."
         )
+    _require_rework_coherence(review, process)
     return review.what_status
 
 
+def _require_rework_coherence(review: ReviewResult, process: ProcessResult) -> None:
+    """The review verified exactly the rework claims the bound Process made.
+
+    A 0.4 review predates rework evidence, so it can only have reviewed a
+    Process Result that received no Brief; the reviewer of a 0.5 Process
+    Result always writes 0.5, so a downgraded review is incoherent.
+    """
+    if not review.is_rework_bound:
+        if process.is_rework_bound:
+            raise InvalidReviewResult(
+                f"Review Result {review.iteration} (version {review.version}) "
+                "carries no rework evidence for Process Result "
+                f"{process.iteration}, which records it."
+            )
+        return
+    expected = (
+        tuple(
+            ReviewedReworkResponse(
+                response=response,
+                blocks_what=response.item in process.rework_brief.what_refs,
+            )
+            for response in process.rework_responses
+        )
+        if process.rework_brief is not None
+        else ()
+    )
+    if (
+        review.reviewed_brief_identity != process.brief_identity
+        or review.reviewed_rework_responses != expected
+    ):
+        raise InvalidReviewResult(
+            f"Review Result {review.iteration} verified rework responses that are "
+            f"not those of Process Result {process.iteration}."
+        )
+
+
 def open_material_questions(review: ReviewResult) -> tuple[str, ...]:
-    """The material WHAT questions a 0.4 Review Result leaves open, for humans."""
+    """The material WHAT questions a 0.4+ Review Result leaves open, for humans."""
     questions = review.reviewed_product_questions or ()
     by_index = {item.question_index: item for item in review.question_verifications}
     open_questions = [
@@ -506,10 +808,218 @@ def open_material_questions(review: ReviewResult) -> tuple[str, ...]:
         for index, question in enumerate(questions)
         if index in by_index and question_blocks(question, by_index[index])
     ]
+    what_refs = review.rework_what_refs
+    explanations = {
+        reviewed.response.item: reviewed.response.explanation
+        for reviewed in review.reviewed_rework_responses
+    }
+    open_rework = [
+        f"{item.item}: {explanations[item.item]}"
+        for item in review.rework_verifications
+        if item.item in what_refs and item.outcome is not VerificationOutcome.CONFIRMED
+    ]
     return (
         *open_questions,
         *(item.detail for item in review.material_unresolved_what),
+        *open_rework,
     )
+
+
+def build_rework_brief(review: ReviewResult, process: ProcessResult) -> ReworkBrief:
+    """The Rework Brief one completed review gives the next Process iteration.
+
+    `process` must be the Process Result `review` reviewed. Every actionable
+    item keeps its source: a Process finding with the Review's outcome, a
+    new finding, an unconfirmed relation proposal, a verified product
+    question, an added material WHAT question, and an unconfirmed rework
+    response. Confirmed relations and confirmed rework responses are not
+    actionable and are left out; nothing else is. The assessment travels as
+    context. Raises InvalidReviewResult when the pair is not a coherent
+    lineage, so a malformed or mismatched review is refused, not skipped.
+    """
+    if review.requirement_id != process.requirement_id or not (
+        review.reviewed_process_iteration == process.iteration
+        and review.reviewed_process_output_fingerprint == process.output_fingerprint
+    ):
+        raise InvalidReviewResult(
+            f"Review Result {review.iteration} does not review Process Result "
+            f"{process.iteration} of {process.requirement_id}."
+        )
+    what_clearance(review, process)
+    source = ReviewSource(
+        requirement_id=review.requirement_id,
+        review_iteration=review.iteration,
+        review_version=review.version,
+        process_iteration=process.iteration,
+        process_output_fingerprint=process.output_fingerprint,
+        process_version=process.version,
+    )
+    brief = ReworkBrief(
+        source=source,
+        items=(
+            *_finding_items(review, process),
+            *_new_finding_items(review),
+            *_relation_items(review, process),
+            *_question_items(review),
+            *_material_what_items(review),
+            *_rework_claim_items(review, process),
+        ),
+        assessment=dict(review.assessment),
+    )
+    # The persisted Review readers are looser than the Brief's closed shape
+    # (an empty reason, a blank assessment); hold the Brief to the shape it
+    # will be read back with, so such a Review refuses before any model call.
+    try:
+        ReworkBrief.from_payload(brief.to_payload())
+    except InvalidReworkBrief as error:
+        raise InvalidReviewResult(
+            f"Review Result {review.iteration} cannot be carried as a Rework "
+            f"Brief: {error}"
+        ) from error
+    return brief
+
+
+def _ref(review: ReviewResult, category: BriefCategory, index: int) -> str:
+    return item_ref(review.iteration, category, index)
+
+
+def _finding_items(
+    review: ReviewResult, process: ProcessResult
+) -> tuple[BriefItem, ...]:
+    items = []
+    for verification in review.finding_verifications:
+        index = verification.process_finding_index
+        if not 0 <= index < len(process.findings):
+            raise InvalidReviewResult(
+                f"Review Result {review.iteration} verifies Process finding {index}, "
+                f"but Process Result {process.iteration} has "
+                f"{len(process.findings)}."
+            )
+        finding = process.findings[index]
+        items.append(
+            BriefItem(
+                ref=_ref(review, BriefCategory.PROCESS_FINDING, index),
+                category=BriefCategory.PROCESS_FINDING,
+                detail=finding.detail,
+                feedback=verification.reason,
+                outcome=verification.outcome,
+                kind=finding.kind.value,
+                severity=verification.severity,
+                requirement_id=finding.requirement_id,
+            )
+        )
+    return tuple(items)
+
+
+def _new_finding_items(review: ReviewResult) -> tuple[BriefItem, ...]:
+    return tuple(
+        BriefItem(
+            ref=_ref(review, BriefCategory.NEW_FINDING, index),
+            category=BriefCategory.NEW_FINDING,
+            detail=finding.detail,
+            kind=finding.kind.value,
+            severity=finding.severity,
+            requirement_id=finding.requirement_id,
+        )
+        for index, finding in enumerate(review.new_findings)
+    )
+
+
+def _relation_items(
+    review: ReviewResult, process: ProcessResult
+) -> tuple[BriefItem, ...]:
+    rationale = {
+        (relation.kind, relation.requirement_id): relation.rationale
+        for relation in process.proposed_relations
+    }
+    items = []
+    for index, verification in enumerate(review.relation_verifications):
+        edge = (verification.kind, verification.requirement_id)
+        if edge not in rationale:
+            raise InvalidReviewResult(
+                f"Review Result {review.iteration} verifies relation "
+                f"{verification.kind.value} {verification.requirement_id}, which "
+                f"Process Result {process.iteration} did not propose."
+            )
+        if verification.outcome is VerificationOutcome.CONFIRMED:
+            continue
+        items.append(
+            BriefItem(
+                ref=_ref(review, BriefCategory.RELATION_PROPOSAL, index),
+                category=BriefCategory.RELATION_PROPOSAL,
+                detail=rationale[edge],
+                feedback=verification.reason,
+                outcome=verification.outcome,
+                kind=verification.kind.value,
+                requirement_id=verification.requirement_id,
+            )
+        )
+    return tuple(items)
+
+
+def _question_items(review: ReviewResult) -> tuple[BriefItem, ...]:
+    questions = review.reviewed_product_questions or ()
+    return tuple(
+        BriefItem(
+            ref=_ref(review, BriefCategory.PRODUCT_QUESTION, item.question_index),
+            category=BriefCategory.PRODUCT_QUESTION,
+            detail=questions[item.question_index].detail,
+            blocks_what=question_blocks(questions[item.question_index], item),
+            feedback=item.reason,
+            outcome=item.outcome,
+            requirement_id=item.requirement_id,
+        )
+        for item in review.question_verifications
+    )
+
+
+def _material_what_items(review: ReviewResult) -> tuple[BriefItem, ...]:
+    return tuple(
+        BriefItem(
+            ref=_ref(review, BriefCategory.MATERIAL_WHAT, index),
+            category=BriefCategory.MATERIAL_WHAT,
+            detail=item.detail,
+            blocks_what=True,
+        )
+        for index, item in enumerate(review.material_unresolved_what)
+    )
+
+
+def _rework_claim_items(
+    review: ReviewResult, process: ProcessResult
+) -> tuple[BriefItem, ...]:
+    """Rework responses of the reviewed Process the review did not confirm.
+
+    The earlier item is carried forward by its own text, with the response
+    and the review's reason, so the next iteration answers it again.
+    """
+    if process.rework_brief is None:
+        return ()
+    claims = {
+        reviewed.response.item: reviewed
+        for reviewed in review.reviewed_rework_responses
+    }
+    items = []
+    for index, verification in enumerate(review.rework_verifications):
+        if verification.outcome is VerificationOutcome.CONFIRMED:
+            continue
+        claim = claims[verification.item]
+        earlier = process.rework_brief.item(verification.item)
+        items.append(
+            BriefItem(
+                ref=_ref(review, BriefCategory.REWORK_CLAIM, index),
+                category=BriefCategory.REWORK_CLAIM,
+                detail=(
+                    f"{earlier.detail} (answered {claim.response.outcome.value}: "
+                    f"{claim.response.explanation})"
+                ),
+                blocks_what=claim.blocks_what,
+                feedback=verification.reason,
+                outcome=verification.outcome,
+                severity=verification.severity,
+            )
+        )
+    return tuple(items)
 
 
 def _read_product_question(entry: object) -> ProductQuestion:

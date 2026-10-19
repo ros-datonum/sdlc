@@ -17,7 +17,11 @@ trusted:
 - **the model cannot state a WHAT status either.** `derive_what_status` is the
   only thing that says CLEAR or BLOCKED_ON_WHAT
   (Requirement-Material-WHAT-Gate-v0.1), and it is a separate axis from the
-  quality verdict.
+  quality verdict;
+- **every rework response is verified exactly once**
+  (Requirement-Rework-Brief-v0.1). A Process claim to have resolved or
+  rebutted a material WHAT item clears nothing: only a CONFIRMED verification
+  does, and an escalation stays a product question under the gate above.
 
 Anything the contract does not define is a validation error, which is what
 keeps chain-of-thought and invented mutation instructions out: no key outside
@@ -39,6 +43,7 @@ from sdlc.standard_analysis import (
     ProductQuestion,
     ProposedRelation,
     RelationKind,
+    ReworkResponse,
 )
 
 
@@ -118,6 +123,8 @@ QUESTION_VERIFICATION_KEYS = frozenset(
     {"question_index", "outcome", "material", "basis", "requirement_id", "reason"}
 )
 MATERIAL_WHAT_KEYS = frozenset({"detail"})
+REWORK_VERIFICATION_KEYS = frozenset({"item", "outcome", "severity", "reason"})
+REWORK_VERIFICATIONS_KEY = "rework_verifications"
 REVIEW_KEYS = frozenset(
     {
         "finding_verifications",
@@ -126,6 +133,7 @@ REVIEW_KEYS = frozenset(
         "assessment",
         "question_verifications",
         "material_unresolved_what",
+        REWORK_VERIFICATIONS_KEY,
     }
 )
 
@@ -194,6 +202,22 @@ class MaterialWhat:
 
 
 @dataclass(frozen=True)
+class ReworkVerification:
+    """The reviewer's conclusion about one Process rework response.
+
+    CONFIRMED: the claimed resolution, rebuttal or escalation is correct.
+    REJECTED: it is not, so a defect remains; it carries the severity of what
+    remains, as a confirmed finding does. UNRESOLVED: the context cannot
+    settle it, which asserts no defect and carries no severity.
+    """
+
+    item: str
+    outcome: VerificationOutcome
+    reason: str
+    severity: ReviewSeverity | None = None
+
+
+@dataclass(frozen=True)
 class ReviewOutput:
     """One validated review response."""
 
@@ -203,6 +227,7 @@ class ReviewOutput:
     assessment: dict[str, str]
     question_verifications: tuple[QuestionVerification, ...] = ()
     material_unresolved_what: tuple[MaterialWhat, ...] = ()
+    rework_verifications: tuple[ReworkVerification, ...] = ()
 
     @property
     def confirmed_relations(self) -> tuple[RelationVerification, ...]:
@@ -217,6 +242,7 @@ class ReviewOutput:
 def derive_verdict(
     finding_verifications: tuple[FindingVerification, ...],
     new_findings: tuple[NewFinding, ...],
+    rework_verifications: tuple[ReworkVerification, ...] = (),
 ) -> ReviewVerdict:
     """Derive the overall verdict from the severities of asserted defects.
 
@@ -229,12 +255,23 @@ def derive_verdict(
     uncertainty rather than a defect claim, and letting uncertainty downgrade
     every Requirement would make the verdict meaningless. Unresolved items stay
     fully visible in the Review Result for the human at Ready.
+
+    A rejected rework response asserts that a defect remains, so it counts
+    with its own severity, exactly like a confirmed finding.
     """
-    severities = {
-        verification.severity
-        for verification in finding_verifications
-        if verification.outcome is VerificationOutcome.CONFIRMED
-    } | {finding.severity for finding in new_findings}
+    severities = (
+        {
+            verification.severity
+            for verification in finding_verifications
+            if verification.outcome is VerificationOutcome.CONFIRMED
+        }
+        | {finding.severity for finding in new_findings}
+        | {
+            verification.severity
+            for verification in rework_verifications
+            if verification.outcome is VerificationOutcome.REJECTED
+        }
+    )
     if ReviewSeverity.BLOCKING in severities:
         return ReviewVerdict.BLOCKING
     if ReviewSeverity.WARNING in severities:
@@ -262,15 +299,34 @@ def question_blocks(
     return False
 
 
+def rework_leaves_what_open(
+    what_refs: frozenset[str], rework_verifications: tuple[ReworkVerification, ...]
+) -> bool:
+    """Whether a material WHAT Brief item is not confirmed as settled.
+
+    Resolving, rebutting or escalating a material WHAT item is a Process
+    claim; only the independent reviewer's CONFIRMED clears the claim. A
+    confirmed escalation still leaves its product question to the WI-1 gate.
+    """
+    return any(
+        verification.item in what_refs
+        and verification.outcome is not VerificationOutcome.CONFIRMED
+        for verification in rework_verifications
+    )
+
+
 def derive_what_status(
     product_questions: tuple[ProductQuestion, ...],
     question_verifications: tuple[QuestionVerification, ...],
     material_unresolved_what: tuple[MaterialWhat, ...],
+    rework_what_open: bool = False,
 ) -> WhatStatus:
     """CLEAR only when no material product question is left open.
 
     Requires exactly one verification per question; anything else is a
-    contract violation the caller has already refused.
+    contract violation the caller has already refused. `rework_what_open`
+    is `rework_leaves_what_open` for the reviewed rework responses: it can
+    only block, never clear.
     """
     by_index = {item.question_index: item for item in question_verifications}
     if sorted(by_index) != list(range(len(product_questions))) or len(by_index) != len(
@@ -280,9 +336,13 @@ def derive_what_status(
             "Every product question must be verified exactly once before a WHAT "
             "status can be derived."
         )
-    if material_unresolved_what or any(
-        question_blocks(question, by_index[index])
-        for index, question in enumerate(product_questions)
+    if (
+        rework_what_open
+        or material_unresolved_what
+        or any(
+            question_blocks(question, by_index[index])
+            for index, question in enumerate(product_questions)
+        )
     ):
         return WhatStatus.BLOCKED_ON_WHAT
     return WhatStatus.CLEAR
@@ -293,12 +353,15 @@ def parse_review_output(
     process_findings: tuple[Finding, ...],
     proposed_relations: tuple[ProposedRelation, ...],
     product_questions: tuple[ProductQuestion, ...],
+    rework_responses: tuple[ReworkResponse, ...] | None = None,
 ) -> ReviewOutput:
     """Validate the reviewer's JSON response against the Process claims.
 
     The Process Result is needed here, not merely afterwards: a verification
     only means something in relation to the specific claim it addresses, so
     coverage is part of the contract rather than a later check.
+    `rework_responses` are the Process rework claims, None when that Process
+    received no Rework Brief.
     """
     payload = _load_json(text)
     _reject_unknown(payload, REVIEW_KEYS, "review")
@@ -370,6 +433,68 @@ def parse_review_output(
             )
         ),
         assessment=_read_assessment(payload.get("assessment")),
+        rework_verifications=_read_rework_verifications(payload, rework_responses),
+    )
+
+
+def _read_rework_verifications(
+    payload: dict[str, object], rework_responses: tuple[ReworkResponse, ...] | None
+) -> tuple[ReworkVerification, ...]:
+    entries = payload.get(REWORK_VERIFICATIONS_KEY)
+    if rework_responses is None:
+        if entries:
+            raise InvalidReviewOutput(
+                "rework_verifications verifies rework responses, but the Process "
+                "Result received no Rework Brief."
+            )
+        return ()
+    if REWORK_VERIFICATIONS_KEY not in payload:
+        raise InvalidReviewOutput(
+            "The Process Result answered a Rework Brief, so rework_verifications "
+            "must verify every response: its absence verifies none."
+        )
+    verifications = tuple(
+        _read_rework_verification(entry, index)
+        for index, entry in enumerate(_as_list(entries, REWORK_VERIFICATIONS_KEY))
+    )
+    _require_exact_coverage(
+        addressed=[item.item for item in verifications],
+        expected=[response.item for response in rework_responses],
+        describe=lambda ref: f"rework response {ref}",
+    )
+    return verifications
+
+
+def _read_rework_verification(entry: object, index: int) -> ReworkVerification:
+    where = f"rework verification {index}"
+    if not isinstance(entry, dict):
+        raise InvalidReviewOutput(f"{where} must be an object.")
+    _reject_unknown(entry, REWORK_VERIFICATION_KEYS, where)
+    missing = sorted({"item", "outcome", "reason"} - set(entry))
+    if missing:
+        raise InvalidReviewOutput(f"{where} is missing: " + ", ".join(missing))
+    outcome = _read_enum(VerificationOutcome, entry["outcome"], where)
+    severity = entry.get("severity")
+    if outcome is VerificationOutcome.REJECTED:
+        if severity is None:
+            raise InvalidReviewOutput(
+                f"{where} rejects a rework response, so a defect remains and its "
+                "severity must be graded."
+            )
+    elif severity is not None:
+        raise InvalidReviewOutput(
+            f"{where} is {outcome.value} and asserts no remaining defect, so it "
+            "must not carry a severity."
+        )
+    return ReworkVerification(
+        item=_read_text(entry["item"], f"{where} item"),
+        outcome=outcome,
+        reason=_read_text(entry["reason"], f"{where} reason"),
+        severity=(
+            _read_enum(ReviewSeverity, severity, where)
+            if severity is not None
+            else None
+        ),
     )
 
 
