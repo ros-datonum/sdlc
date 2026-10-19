@@ -81,6 +81,7 @@ from sdlc.standard_review import (
 from sdlc.standard_reviewer import review_standard_requirement
 from sdlc.tsa_admission import AdmissionResultCode
 from standard_fake import (
+    REQUIREMENT_ID,
     analysis_output,
     build_standard_workspace,
     rendered_document,
@@ -112,7 +113,11 @@ def question(index, outcome="CONFIRMED", reason="Checked.", **fields):
 
 
 def processes(ws):
-    nodes = [d for d in ws.documents if "Process Result" in d.name]
+    nodes = [
+        d
+        for d in ws.documents
+        if d.name.startswith(f"{REQUIREMENT_ID} — Process Result")
+    ]
     return [
         (node, parse_process_result(reserialize_like_fibery(ws.content[node.secret])))
         for node in nodes
@@ -120,7 +125,11 @@ def processes(ws):
 
 
 def reviews(ws):
-    nodes = [d for d in ws.documents if "Review Result" in d.name]
+    nodes = [
+        d
+        for d in ws.documents
+        if d.name.startswith(f"{REQUIREMENT_ID} — Review Result")
+    ]
     return [
         (node, parse_review_result(reserialize_like_fibery(ws.content[node.secret])))
         for node in nodes
@@ -239,7 +248,8 @@ def test_the_brief_keeps_every_actionable_item_with_its_source():
     assert by_ref["R0001.L1"].requirement_id == "SDLC-FR-0003"
     assert brief.what_refs == {"R0001.Q0", "R0001.W0"}
     assert {item.category for item in brief.items} == set(BriefCategory) - {
-        BriefCategory.REWORK_CLAIM
+        BriefCategory.REWORK_CLAIM,
+        BriefCategory.EXISTING_DEPENDENCY,
     }
     assert brief == build_rework_brief(review, process), "deterministic"
 
@@ -372,7 +382,7 @@ def test_the_reviewer_rejects_an_incorrect_resolved_claim():
     context = model.calls[0]["context"]
     assert "[R0001.F0]" in context and "Answer: RESOLVED" in context
     _, review = reviews(ws)[-1]
-    assert review.version == "0.5" and review.what_status is WhatStatus.CLEAR
+    assert review.version == "0.6" and review.what_status is WhatStatus.CLEAR
 
 
 def test_a_rejected_claim_is_carried_into_the_next_brief():
@@ -542,7 +552,7 @@ def test_a_historical_review_is_feedback_but_never_what_clearance():
     assert stored.has_question_evidence, "the new iteration is WI-1 evidence"
     review_again(ws, requirement, rework_verifications=[verify("R0001.F0")])
     _, review = reviews(ws)[-1]
-    assert review.version == "0.5" and review.what_status is WhatStatus.CLEAR
+    assert review.version == "0.6" and review.what_status is WhatStatus.CLEAR
 
 
 # -- L. lineage refusals --------------------------------------------------------
@@ -1351,7 +1361,7 @@ def admitted_rework():
     ws, requirement, _ = reworked()
     review_again(ws, requirement, rework_verifications=[verify("R0001.F0")])
     (_, process), (_, review) = processes(ws)[-1], reviews(ws)[-1]
-    assert process.version == review.version == "0.5" and process.rework_brief
+    assert (process.version, review.version) == ("0.5", "0.6") and process.rework_brief
     assert review.what_status is WhatStatus.CLEAR
     return ws, requirement
 

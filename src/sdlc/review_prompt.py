@@ -90,6 +90,12 @@ Shape:
   "material_unresolved_what": [
     { "detail": "a material product question nobody listed, on one line" }
   ],
+  "dependency_verifications": [
+    { "requirement_id": "an existing DEPENDS_ON target",
+      "outcome": "CONFIRMED" | "REJECTED" | "UNRESOLVED",
+      "severity": "INFO" | "WARNING" | "BLOCKING",
+      "reason": "concise justification" }
+  ],
   "rework_verifications": [
     { "item": "the Brief item reference of one rework response",
       "outcome": "CONFIRMED" | "REJECTED" | "UNRESOLVED",
@@ -112,6 +118,20 @@ What a Standard Requirement is:
 - It is one independently meaningful product/system obligation: a capability,
   a required outcome, an observable behavior, a business or system constraint,
   or an invariant.
+
+Requirement relations:
+
+- DEPENDS_ON (this -> other): understanding or evaluating at least one
+  normative obligation of this Requirement requires a definition, rule,
+  constraint or behavior that the other Requirement owns. The two must be
+  interpreted together; the other keeps owning that definition, and this
+  Requirement refers to it instead of restating it.
+- AFFECTS (this -> other): a change to this Requirement may require
+  re-evaluating the other. It never means the other supplies, or depends on,
+  this Requirement's meaning, and it is never authority for a definition.
+- A shared topic, a similar subject or an AFFECTS edge does not establish
+  DEPENDS_ON. Dependencies have direction: the Requirement that needs the
+  definition depends on the one that owns it.
 
 Evidence:
 
@@ -248,6 +268,30 @@ Rules:
   including one you see in the document, in its Open Questions section or in
   the earlier analysis. Never answer such a question and never list a HOW
   question there. An empty list asserts that you found none.
+- Interpretation set: review this Requirement together with every
+  Requirement in its interpretation set (listed in the context, each with its
+  full text among the other Standard Requirements). A definition the
+  Requirement leaves to a listed dependency is not missing here. Check each
+  dependency independently: is it semantically necessary, in the right
+  direction, owned by that target, and consistent with this Requirement?
+- Verify every existing DEPENDS_ON edge exactly once in
+  dependency_verifications, by its target. CONFIRMED: the dependency is
+  necessary and correct. REJECTED: it is a false or wrongly directed
+  dependency, which is a defect: always give a severity. UNRESOLVED: the
+  context cannot settle it; no severity. Never confirm a proposed DEPENDS_ON
+  that the context says cannot be confirmed.
+- Report, with the existing finding kinds: a missing required dependency
+  (this Requirement needs a definition another Requirement owns but neither
+  depends on it nor states it) as INCOMPLETE naming the owner in the detail; a
+  duplicated normative definition that should have one owner as
+  POSSIBLE_DUPLICATE; contradictory definitions or ambiguous ownership of a
+  shared rule as POSSIBLE_CONFLICT; an AFFECTS edge used as if it supplied a
+  definition as INCONSISTENT. Do not choose between contradicting
+  Requirements, and do not repair anything.
+- A product question may be REJECTED as ANSWERED_BY_OTHER_REQUIREMENT only
+  when that Requirement genuinely answers it. It counts as answered only if
+  that Requirement is a confirmed DEPENDS_ON dependency of this one; a
+  question answered by any other Requirement stays open.
 - Rework responses (only when the context lists them): the earlier analysis
   received feedback on an earlier version and answered each item. Its answers
   are claims. Verify every listed response exactly once, by its item
@@ -290,8 +334,12 @@ def build_review_prompt(
     process_result: ProcessResult,
     relations: RequirementRelations,
     comparison: ComparisonContext,
+    dependencies: tuple[str, ...] = (),
 ) -> tuple[str, str]:
-    """Return the instruction prompt and the context sent on stdin."""
+    """Return the instruction prompt and the context sent on stdin.
+
+    `dependencies` describes the interpretation set, one line per member.
+    """
     context = "\n".join(
         [
             "# Project",
@@ -322,6 +370,8 @@ def build_review_prompt(
                 else []
             ),
             _existing_relations_section(relations),
+            "",
+            _dependencies_section(dependencies),
             "",
             render_comparison_section(comparison),
             "",
@@ -406,6 +456,15 @@ def _rework_section(result: ProcessResult) -> str:
 def _analysis_section(result: ProcessResult) -> str:
     header = "# Assessment claimed by the earlier analysis"
     lines = [f"- {key}: {value}" for key, value in sorted(result.analysis.items())]
+    return "\n".join([header, *lines]) if lines else f"{header}\n(none)"
+
+
+def _dependencies_section(lines: tuple[str, ...]) -> str:
+    header = (
+        "# Interpretation set (normative dependencies)\n"
+        "Interpret this Requirement together with these; their full text is "
+        "among the other Standard Requirements below."
+    )
     return "\n".join([header, *lines]) if lines else f"{header}\n(none)"
 
 

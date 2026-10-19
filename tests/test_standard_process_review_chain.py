@@ -8,7 +8,12 @@ deterministically here; the same chain is what the live acceptance exercises.
 from __future__ import annotations
 
 from processor_fake import FakeModelRuntime
-from review_fake import review_output, review_results, stored_review
+from review_fake import (
+    give_reviewed_evidence,
+    review_output,
+    review_results,
+    stored_review,
+)
 from sdlc.fibery_workspace import RequirementRecord
 from sdlc.process_result import parse_process_result
 from sdlc.results import StandardProcessResultCode, StandardReviewResultCode
@@ -44,6 +49,9 @@ def test_process_then_review_leaves_one_of_each_artifact():
         source_fingerprint=None,
     )
     ws, requirement, _ = build_standard_workspace(others=[target])
+    # A DEPENDS_ON target is confirmable only as reviewed authority
+    # (Requirement-Dependency-Bindings-v0.1).
+    give_reviewed_evidence(ws, target)
 
     processed = process_standard_requirement(
         ws,
@@ -84,8 +92,10 @@ def test_process_then_review_leaves_one_of_each_artifact():
     assert reviewed.code is StandardReviewResultCode.REQUIREMENT_REVIEWED
     assert reviewed.verdict == "BLOCKING"
     assert ws.requirements[requirement.id].state == "Ready"
-    assert len(process_results(ws)) == 1
-    assert len(review_results(ws)) == 1
+    own = [d for d in process_results(ws) if d.name.startswith(REQUIREMENT_ID)]
+    assert len(own) == 1
+    own_reviews = [d for d in review_results(ws) if d.name.startswith(REQUIREMENT_ID)]
+    assert len(own_reviews) == 1
 
 
 def test_review_binds_to_the_process_result_process_actually_wrote():

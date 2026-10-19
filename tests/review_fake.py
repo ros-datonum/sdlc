@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from processor_fake import reserialize_like_fibery
+from sdlc.dependency_evidence import bind, resolve_interpretation_set
 from sdlc.fibery_workspace import DocumentNode, RequirementRecord
 from sdlc.normative_tree import TreeManifest, read_normative_tree
 from sdlc.process_result import (
@@ -13,7 +15,13 @@ from sdlc.process_result import (
     process_result_name,
     render_process_result,
 )
-from sdlc.review_result import parse_review_result
+from sdlc.review_result import (
+    DependencyOrigin,
+    build_review_result,
+    parse_review_result,
+    render_review_result,
+    review_result_name,
+)
 from sdlc.standard_analysis import (
     AnalysisResult,
     Finding,
@@ -22,6 +30,11 @@ from sdlc.standard_analysis import (
     ProposedRelation,
     RelationKind,
     render_open_questions,
+)
+from sdlc.standard_review import (
+    DependencyVerification,
+    ReviewOutput,
+    VerificationOutcome,
 )
 from standard_fake import REQUIREMENT_ID, build_standard_workspace, normalized
 
@@ -97,6 +110,14 @@ def build_review_workspace(
     ws, requirement, root = build_standard_workspace(
         state=state, type_name=type_name, others=others, legacy_folders=legacy_folders
     )
+    for target in sorted(
+        {r.requirement_id for r in relations if r.kind is RelationKind.DEPENDS_ON}
+    ):
+        record = next(
+            (r for r in ws.requirements.values() if r.requirement_id == target), None
+        )
+        if record is not None and record.id != requirement.id:
+            give_reviewed_evidence(ws, record)
     content = normalized(**(normalized_changes or {}))
     if questions:
         content["open_questions"] = render_open_questions(tuple(questions))
@@ -131,6 +152,106 @@ def build_review_workspace(
         ws.content[secret] = render_process_result(result)
         results.append(result)
     return ws, requirement, root, results[-1] if results else None
+
+
+def give_reviewed_evidence(
+    ws,
+    record,
+    iteration=1,
+    title=None,
+    keep_content=False,
+    content=None,
+    depends_on=(),
+):
+    """A peer as admissible dependency authority (Dependency Bindings v0.1).
+
+    Its Root holds what a Process Result produced, and a dependency-bound
+    Review Result of that output derives CLEAR. `depends_on` are records the
+    peer already DEPENDS_ON, each verified and bound by the production
+    resolver (they need evidence first). The peer's State is left as the
+    fixture set it.
+    """
+    root = next(
+        (d for d in ws.documents if d.entity_public_id == record.public_id), None
+    )
+    if root is None:
+        return None  # a peer with no Root is not authority; Review refuses it
+    # Replace, never add to, any evidence the peer already had.
+    ws.documents = [
+        d
+        for d in ws.documents
+        if not (d.parent_document_id == root.id and " Result " in d.name)
+    ]
+    content = content or NormalizedRequirement(
+        **normalized(title=title or record.title)
+    )
+    if not keep_content:
+        ws.content[root.secret] = content.document(record.requirement_id)
+    process = tree_bound_process_result(
+        ws,
+        root,
+        iteration=iteration,
+        analysis=AnalysisResult(content, {}, (), ()),
+        requirement_id=record.requirement_id,
+    )
+    if keep_content:
+        # The peer's own text stays; its Process Result produced exactly that.
+        current = tree_manifest(ws, root, record.requirement_id).root_entry
+        process = replace(
+            process,
+            output_fingerprint=current.content_fingerprint,
+            output_tree=process.input_tree.with_root_fingerprint(
+                current.content_fingerprint
+            ),
+        )
+    reviewed = tree_manifest(ws, root, record.requirement_id)
+    if depends_on:
+        ws.depends_on_ids[record.id] = [dependency.id for dependency in depends_on]
+    targets = tuple(dependency.requirement_id for dependency in depends_on)
+    review = build_review_result(
+        record.requirement_id,
+        iteration,
+        reviewed.root_entry.content_fingerprint,
+        iteration,
+        process.output_fingerprint,
+        ReviewOutput(
+            (),
+            (),
+            (),
+            {},
+            dependency_verifications=tuple(
+                DependencyVerification(
+                    target, VerificationOutcome.CONFIRMED, "Owns it."
+                )
+                for target in targets
+            ),
+        ),
+        reviewed,
+        reviewed_product_questions=(),
+        dependency_bindings=bind(
+            resolve_interpretation_set(ws, record, targets),
+            {target: DependencyOrigin.EXISTING for target in targets},
+        ),
+    )
+    for name, body in (
+        (process_result_name(record.requirement_id, iteration), process),
+        (review_result_name(record.requirement_id, iteration), review),
+    ):
+        node = DocumentNode(
+            id=f"{record.id}-{name[-18:].replace(' ', '-')}",
+            name=name,
+            folder_id=None,
+            entity_public_id=None,
+            secret=f"{record.id}-secret-{name[-18:].replace(' ', '-')}",
+            parent_document_id=root.id,
+        )
+        ws.documents.append(node)
+        ws.content[node.secret] = (
+            render_process_result(body)
+            if name.endswith(f"Process Result {iteration:04d}")
+            else render_review_result(body)
+        )
+    return review
 
 
 def add_process_iteration(
@@ -210,6 +331,7 @@ def review_output(
     question_verifications=(),
     material_unresolved_what=(),
     rework_verifications=(),
+    dependency_verifications=(),
 ):
     """A reviewer response. There is deliberately no verdict field.
 
@@ -217,6 +339,8 @@ def review_output(
     that answered a Rework Brief must verify it (Requirement-Rework-Brief-v0.1).
     """
     body = {"rework_verifications": list(rework_verifications)}
+    if dependency_verifications:
+        body["dependency_verifications"] = list(dependency_verifications)
     if question_verifications:
         body["question_verifications"] = list(question_verifications)
     # Always stated: an absent list is refused (Material-WHAT Gate v0.1 §4).

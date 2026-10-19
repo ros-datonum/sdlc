@@ -22,6 +22,7 @@ decision is due, not that the Requirement is good.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from sdlc.comparison_context import (
@@ -29,6 +30,13 @@ from sdlc.comparison_context import (
     ComparisonContextError,
     assemble_comparison_context,
     require_input_within_budget,
+)
+from sdlc.dependency_evidence import (
+    DependencyEvidenceError,
+    DependencyFailure,
+    DependencyMember,
+    bind,
+    resolve_interpretation_set,
 )
 from sdlc.fibery_workspace import (
     DocumentNode,
@@ -65,6 +73,7 @@ from sdlc.results import StandardReviewResult, StandardReviewResultCode
 from sdlc.review_prompt import build_review_prompt
 from sdlc.review_result import (
     FIRST_ITERATION,
+    DependencyOrigin,
     InvalidReviewResult,
     ReviewResult,
     build_review_result,
@@ -74,10 +83,12 @@ from sdlc.review_result import (
     render_review_result,
     review_result_name,
 )
+from sdlc.standard_analysis import RelationKind
 from sdlc.standard_review import (
     InvalidReviewOutput,
     ReviewOutput,
     ReviewSeverity,
+    VerificationOutcome,
     parse_review_output,
 )
 
@@ -111,6 +122,21 @@ class _Journal:
     @property
     def has_durable_state(self) -> bool:
         return bool(self.created)
+
+
+@dataclass(frozen=True)
+class _Dependencies:
+    """The interpretation set, read once a reviewer call is certain.
+
+    `existing` are the DEPENDS_ON edges the Requirement has; every one must
+    resolve. `bindable` are the DEPENDS_ON proposals whose target could be
+    bound; `unbindable` the others, with why. `members` is every member read.
+    """
+
+    existing: tuple[str, ...]
+    bindable: tuple[str, ...]
+    unbindable: Mapping[str, str]
+    members: Mapping[str, DependencyMember]
 
 
 @dataclass(frozen=True)
@@ -195,8 +221,10 @@ def _already_reviewed(context: _Context, bindings: _Bindings) -> bool:
         latest is not None
         and latest.is_current
         # A pre-0.4 review establishes no WHAT status, so it never makes a
-        # new review redundant (Material-WHAT Gate v0.1 section 10).
+        # new review redundant (Material-WHAT Gate v0.1 section 10); nor does
+        # a pre-0.6 one, which establishes no dependency evidence.
         and latest.what_status is not None
+        and latest.is_dependency_bound
         and latest.reviews(
             bindings.document_fingerprint,
             bindings.process_iteration,
@@ -787,7 +815,7 @@ def _produce_review(
     latest = context.latest_review
     iteration = latest.iteration + 1 if latest else FIRST_ITERATION
     result = _build_result(
-        context, bindings, iteration, _verify(workspace, model, context, journal)
+        context, bindings, iteration, *_verify(workspace, model, context, journal)
     )
     _persist_result(workspace, context, result, journal)
     return result
@@ -810,7 +838,7 @@ def _recover_review(
     """
     shell, iteration = context.shell
     result = _build_result(
-        context, bindings, iteration, _verify(workspace, model, context, journal)
+        context, bindings, iteration, *_verify(workspace, model, context, journal)
     )
     _require_still_eligible(workspace, context)
     current = _current_shell(workspace, context, shell, iteration)
@@ -860,15 +888,16 @@ def _verify(
     model: ModelRuntime,
     context: _Context,
     journal: _Journal,
-) -> ReviewOutput:
+) -> tuple[ReviewOutput, _Dependencies]:
     """One reviewer invocation, validated against the review contract.
 
-    The comparison corpus and the originating RAW source are read here, once
-    a new invocation is certain, so a no-change result never depends on
-    either; every peer the Process claims refer to must be in the corpus with
-    content.
+    The comparison corpus, the originating RAW source and the interpretation
+    set are read here, once a new invocation is certain, so a no-change
+    result never depends on any of them; every peer the Process claims refer
+    to must be in the corpus with content.
     """
     comparison = _comparison_context(workspace, context)
+    dependencies = _interpretation_set(workspace, context)
     prompt, model_context = build_review_prompt(
         requirement=context.requirement,
         project_name=context.project.name,
@@ -878,6 +907,7 @@ def _verify(
         process_result=context.process_result,
         relations=context.relations,
         comparison=comparison,
+        dependencies=_dependency_lines(dependencies),
     )
     try:
         require_input_within_budget("Standard Review", prompt, model_context)
@@ -895,7 +925,7 @@ def _verify(
             (str(error),),
         ) from error
     try:
-        return parse_review_output(
+        output = parse_review_output(
             response.text,
             context.process_result.findings,
             context.process_result.proposed_relations,
@@ -910,6 +940,7 @@ def _verify(
                 if context.process_result.rework_brief is not None
                 else frozenset()
             ),
+            dependencies.existing,
         )
     except InvalidReviewOutput as error:
         raise _StageFailed(
@@ -917,10 +948,119 @@ def _verify(
             "The reviewer's response does not satisfy the review contract.",
             (str(error),),
         ) from error
+    _require_bindable_confirmations(output, dependencies)
+    return output, dependencies
+
+
+def _interpretation_set(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> _Dependencies:
+    """Resolve every existing dependency strictly and each proposal on its own.
+
+    An existing DEPENDS_ON edge that is not admissible authority, or any
+    cycle among the existing edges, refuses the review before the reviewer
+    runs: no verification could be bound to it. A proposal that cannot be
+    bound is only reported to the reviewer, who may then not confirm it.
+    """
+    requirement = context.requirement
+    existing = tuple(sorted(set(context.relations.depends_on)))
+    try:
+        members = dict(resolve_interpretation_set(workspace, requirement, existing))
+    except DependencyEvidenceError as error:
+        raise _StageFailed(
+            {
+                DependencyFailure.CYCLE: StandardReviewResultCode.DEPENDENCY_CYCLE,
+                DependencyFailure.READ_FAILED: (
+                    StandardReviewResultCode.FIBERY_READ_FAILED
+                ),
+            }.get(error.failure, StandardReviewResultCode.DEPENDENCY_EVIDENCE_INVALID),
+            f"{error.message} The reviewer was not invoked and nothing was written.",
+            error.details,
+        ) from error
+    proposed = sorted(
+        {
+            relation.requirement_id
+            for relation in context.process_result.proposed_relations
+            if relation.kind is RelationKind.DEPENDS_ON
+        }
+        - set(existing)
+    )
+    bindable: list[str] = []
+    unbindable: dict[str, str] = {}
+    for target in proposed:
+        try:
+            members.update(
+                resolve_interpretation_set(workspace, requirement, (target,))
+            )
+        except DependencyEvidenceError as error:
+            if error.failure is DependencyFailure.READ_FAILED:
+                raise _StageFailed(
+                    StandardReviewResultCode.FIBERY_READ_FAILED,
+                    f"{error.message} The reviewer was not invoked.",
+                    error.details,
+                ) from error
+            unbindable[target] = error.message
+            continue
+        bindable.append(target)
+    return _Dependencies(
+        existing=existing,
+        bindable=tuple(bindable),
+        unbindable=unbindable,
+        members=members,
+    )
+
+
+def _dependency_lines(dependencies: _Dependencies) -> tuple[str, ...]:
+    """The interpretation set as the reviewer sees it: identities, never ids."""
+    direct = {
+        **{target: "existing DEPENDS_ON edge" for target in dependencies.existing},
+        **{target: "proposed DEPENDS_ON, bindable" for target in dependencies.bindable},
+    }
+    lines = [
+        f"- {target} ({how}; {dependencies.members[target].record.state})"
+        for target, how in sorted(direct.items())
+    ]
+    lines += [
+        f"- {member_id} (transitive dependency; {member.record.state})"
+        for member_id, member in sorted(dependencies.members.items())
+        if member_id not in direct
+    ]
+    lines += [
+        f"- {target} (proposed DEPENDS_ON that cannot be confirmed: {reason})"
+        for target, reason in sorted(dependencies.unbindable.items())
+    ]
+    return tuple(lines)
+
+
+def _require_bindable_confirmations(
+    output: ReviewOutput, dependencies: _Dependencies
+) -> None:
+    confirmed = sorted(
+        {
+            item.requirement_id
+            for item in output.relation_verifications
+            if item.kind is RelationKind.DEPENDS_ON
+            and item.outcome is VerificationOutcome.CONFIRMED
+        }
+        & set(dependencies.unbindable)
+    )
+    if confirmed:
+        raise _StageFailed(
+            StandardReviewResultCode.INVALID_MODEL_OUTPUT,
+            "The reviewer confirmed a DEPENDS_ON proposal whose target cannot be "
+            "bound as a normative dependency; nothing was written.",
+            tuple(
+                f"{target}: {dependencies.unbindable[target]}" for target in confirmed
+            ),
+        )
 
 
 def _build_result(
-    context: _Context, bindings: _Bindings, iteration: int, review: ReviewOutput
+    context: _Context,
+    bindings: _Bindings,
+    iteration: int,
+    review: ReviewOutput,
+    dependencies: _Dependencies,
 ) -> ReviewResult:
     return build_review_result(
         requirement_id=context.requirement.requirement_id or "",
@@ -933,6 +1073,21 @@ def _build_result(
         reviewed_product_questions=context.process_result.product_questions or (),
         reviewed_rework_brief=context.process_result.rework_brief,
         reviewed_rework_responses=context.process_result.rework_responses,
+        dependency_bindings=bind(
+            dependencies.members,
+            {
+                **{
+                    item.requirement_id: DependencyOrigin.PROPOSED
+                    for item in review.relation_verifications
+                    if item.kind is RelationKind.DEPENDS_ON
+                    and item.outcome is VerificationOutcome.CONFIRMED
+                },
+                **{
+                    target: DependencyOrigin.EXISTING
+                    for target in dependencies.existing
+                },
+            },
+        ),
     )
 
 

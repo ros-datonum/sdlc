@@ -121,6 +121,8 @@ REQUIREMENT_READS = frozenset(
         "child_documents",
         "read_document_content",
         "resolve_document",
+        # Dependency Bindings v0.1 check 10: the DEPENDS_ON edges, read only.
+        "requirement_relations",
     }
 )
 PROJECT_READS = frozenset({"find_project_by_code"})

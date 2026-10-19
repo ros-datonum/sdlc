@@ -30,11 +30,17 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
+from sdlc.dependency_evidence import (
+    DependencyEvidenceError,
+    Phase,
+    require_current_dependencies,
+)
 from sdlc.fibery_workspace import (
     DocumentNode,
     DocumentPlacement,
     FiberyError,
     RequirementRecord,
+    RequirementRelations,
     is_valid_child_placement,
 )
 from sdlc.normative_tree import (
@@ -172,6 +178,9 @@ class RequirementEvidenceWorkspace(Protocol):
 
     def read_document_content(self, secret: str) -> str:
         """Read a Document's Markdown content."""
+
+    def requirement_relations(self, entity_id: str) -> RequirementRelations:
+        """The Depends On and Affects edges a Requirement has. Read-only."""
 
 
 @dataclass(frozen=True)
@@ -660,15 +669,64 @@ def _require_what_clearance(
         )
 
 
+def _require_current_dependencies(
+    evidence: RequirementEvidenceWorkspace,
+    record: RequirementRecord,
+    requirement_id: str,
+    review: ReviewResult,
+) -> frozenset[str]:
+    """Check 10 (Dependency Bindings v0.1 section 10): current dependencies.
+
+    The Review Result must be dependency-bound, every bound dependency must
+    still be the version it bound, the Requirement's DEPENDS_ON edges must be
+    exactly the bound ones and each direct dependency Applied. Returns the
+    whole bound interpretation set, which the selection must contain.
+    """
+    try:
+        require_current_dependencies(evidence, record, review, Phase.APPLIED)
+    except DependencyEvidenceError as error:
+        raise _not_admissible(
+            requirement_id,
+            f"its dependency evidence does not hold: {error.message}",
+            error.details,
+        ) from error
+    return frozenset(binding.requirement_id for binding in review.dependency_bindings)
+
+
+def _require_dependency_closure(
+    selection: tuple[str, ...], dependencies: dict[str, frozenset[str]]
+) -> None:
+    """Every bound dependency of a selected Requirement is selected too.
+
+    Only DEPENDS_ON closes the selection; an AFFECTS peer never does. Nothing
+    is added: a missing dependency refuses the whole selection.
+    """
+    selected = set(selection)
+    missing = sorted(
+        f"{requirement_id} -> {dependency}"
+        for requirement_id, closure in dependencies.items()
+        for dependency in closure
+        if dependency not in selected
+    )
+    if missing:
+        raise AdmissionRefused(
+            AdmissionResultCode.REQUIREMENT_NOT_ADMISSIBLE,
+            "The selection is not closed under DEPENDS_ON: a selected Requirement "
+            "depends on one that is not selected. Nothing was added or written.",
+            tuple(missing),
+        )
+
+
 def _admit_requirement(
     evidence: RequirementEvidenceWorkspace,
     context: BootstrapContext,
     requirement_id: str,
-) -> dict[str, object]:
-    """All nine checks for one Requirement; returns its Manifest row (7.2).
+) -> tuple[dict[str, object], frozenset[str]]:
+    """All ten checks for one Requirement; its Manifest row (7.2) and closure.
 
     Checks 1-8 are TSA-C01 contract 2.1; check 9 is the WHAT clearance of the
-    Material-WHAT Gate v0.1.
+    Material-WHAT Gate v0.1; check 10 the dependency evidence of
+    Requirement-Dependency-Bindings-v0.1.
     """
     record = _resolve_exact_identity(evidence, requirement_id)
     _require_admissible_record(record, requirement_id, context)
@@ -681,6 +739,7 @@ def _admit_requirement(
     )
     _require_exact_bindings(requirement_id, tree.manifest, process, review)
     _require_what_clearance(requirement_id, process, review)
+    closure = _require_current_dependencies(evidence, record, requirement_id, review)
     return {
         "requirement_id": requirement_id,
         "entity_id": record.id,
@@ -695,7 +754,7 @@ def _admit_requirement(
             "document_id": review_node.id,
             "payload_digest": document_fingerprint(review_content),
         },
-    }
+    }, closure
 
 
 def _admit_requirements(
@@ -709,10 +768,11 @@ def _admit_requirements(
     Requirement plus one per Document of its tree; the selection is capped at
     `SELECTION_LIMIT` and each tree at the reader's own limits.
     """
-    rows = tuple(
+    admitted = tuple(
         _admit_requirement(evidence, context, requirement_id)
         for requirement_id in selection
     )
+    rows = tuple(row for row, _ in admitted)
     entity_ids = [str(row["entity_id"]) for row in rows]
     duplicates = sorted({item for item in entity_ids if entity_ids.count(item) > 1})
     if duplicates:
@@ -720,6 +780,13 @@ def _admit_requirements(
             AdmissionResultCode.SELECTION_DUPLICATE,
             f"The selection resolves to entity id(s) {duplicates} more than once.",
         )
+    _require_dependency_closure(
+        selection,
+        {
+            requirement_id: closure
+            for requirement_id, (_, closure) in zip(selection, admitted, strict=True)
+        },
+    )
     try:
         requirement_input_digest(list(rows))
     except InvalidTsaArtifact as error:

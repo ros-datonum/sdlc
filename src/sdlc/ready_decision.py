@@ -37,6 +37,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from sdlc.dependency_evidence import (
+    DependencyEvidenceError,
+    DependencyFailure,
+    Phase,
+    require_current_dependencies,
+)
 from sdlc.fibery_workspace import (
     DocumentNode,
     FiberyError,
@@ -153,6 +159,7 @@ def approve_standard_requirement(
         review = history.latest_review
         _check_bindings(requirement, history)
         _check_what(requirement, history)
+        _check_dependencies(workspace, requirement, review)
         _check_acknowledgement(review.verdict, acknowledged_verdict)
         _transition(workspace, requirement, APPLY_STATE)
     except _Refused as refusal:
@@ -569,6 +576,36 @@ def _check_what(requirement: RequirementRecord, history: _History) -> None:
             "Process) and have it reviewed again. Nothing was written.",
             open_material_questions(review),
         )
+
+
+def _check_dependencies(
+    workspace: ReadyDecisionWorkspace,
+    requirement: RequirementRecord,
+    review: ReviewResult,
+) -> None:
+    """Approve only current, dependency-bound evidence (Dependency Bindings §9).
+
+    Every bound dependency, direct and transitive, is read again and must be
+    the version the review bound; the Requirement's DEPENDS_ON edges must be
+    the ones it was reviewed with. No acknowledgement overrides this.
+    """
+    try:
+        require_current_dependencies(workspace, requirement, review, Phase.REVIEWED)
+    except DependencyEvidenceError as error:
+        if not review.is_dependency_bound:
+            code = ReadyDecisionResultCode.DEPENDENCY_EVIDENCE_REQUIRED
+        elif error.failure is DependencyFailure.CYCLE:
+            code = ReadyDecisionResultCode.DEPENDENCY_CYCLE
+        elif error.failure is DependencyFailure.READ_FAILED:
+            code = ReadyDecisionResultCode.FIBERY_READ_FAILED
+        else:
+            code = ReadyDecisionResultCode.DEPENDENCY_EVIDENCE_STALE
+        raise _Refused(
+            code,
+            f"{error.message} Send it for rework (Ready -> Process) for a new "
+            "Process and Review. Nothing was written.",
+            error.details,
+        ) from error
 
 
 def _describe_drift(reviewed: _Bindings, current: _Bindings) -> tuple[str, ...]:

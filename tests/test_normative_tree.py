@@ -694,7 +694,7 @@ def test_a_review_result_binds_the_reviewed_tree():
 
     review_standard_requirement(ws, FakeModelRuntime([review_output()]), requirement.id)
     review = stored_review(ws)
-    assert review.version == "0.5" and review.is_tree_bound and review.is_current
+    assert review.version == "0.6" and review.is_tree_bound and review.is_current
     assert review.reviewed_tree == tree_manifest(ws, root)
     assert review.reviews_tree(tree_manifest(ws, root).fingerprint)
     payload = _process_payload(render_review_result(review))

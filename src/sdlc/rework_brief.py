@@ -43,6 +43,9 @@ class BriefCategory(StrEnum):
     MATERIAL_WHAT = "MATERIAL_WHAT"
     # A rework response of the source Process the Review did not confirm.
     REWORK_CLAIM = "REWORK_CLAIM"
+    # An existing DEPENDS_ON edge the Review did not confirm
+    # (Requirement-Dependency-Bindings-v0.1).
+    EXISTING_DEPENDENCY = "EXISTING_DEPENDENCY"
 
 
 # One letter per category in the deterministic item reference
@@ -54,7 +57,15 @@ REF_LETTERS = {
     BriefCategory.PRODUCT_QUESTION: "Q",
     BriefCategory.MATERIAL_WHAT: "W",
     BriefCategory.REWORK_CLAIM: "C",
+    BriefCategory.EXISTING_DEPENDENCY: "E",
 }
+#: Origins whose item is a relation: its kind and exact target are identity.
+RELATION_LETTERS = frozenset(
+    {
+        REF_LETTERS[BriefCategory.RELATION_PROPOSAL],
+        REF_LETTERS[BriefCategory.EXISTING_DEPENDENCY],
+    }
+)
 REF_PATTERN = re.compile(r"^R(?P<iteration>\d{4,})\.(?P<letter>[A-Z])(?P<index>\d+)$")
 ITERATION_WIDTH = 4
 
@@ -333,7 +344,7 @@ def _has_origin_shape(item: BriefItem, review_iteration: int) -> bool:
     )
     is_finding = item.kind is None or item.kind in {kind.value for kind in FindingKind}
     letter = match.group("letter")
-    if letter == REF_LETTERS[BriefCategory.RELATION_PROPOSAL]:
+    if letter in RELATION_LETTERS:
         return is_relation
     if letter == REF_LETTERS[BriefCategory.REWORK_CLAIM]:
         return is_relation or is_finding
@@ -373,6 +384,15 @@ def _has_category_shape(item: BriefItem) -> bool:
         )
     if item.category is BriefCategory.PRODUCT_QUESTION:
         return verified and item.kind is None and item.severity is None
+    if item.category is BriefCategory.EXISTING_DEPENDENCY:
+        return (
+            verified
+            and item.outcome is not VerificationOutcome.CONFIRMED
+            and item.kind == RelationKind.DEPENDS_ON.value
+            and item.requirement_id is not None
+            and graded_iff_rejected
+            and not item.blocks_what
+        )
     if item.category is BriefCategory.MATERIAL_WHAT:
         return (
             item.outcome is None

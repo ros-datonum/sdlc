@@ -63,7 +63,7 @@ from sdlc.standard_review import (
 )
 from sdlc.standard_reviewer import review_standard_requirement
 from sdlc.tsa_admission import AdmissionResultCode
-from standard_fake import analysis_output
+from standard_fake import REQUIREMENT_ID, analysis_output
 from test_requirement_dispatcher import NOT_PROCESSED, real_workers
 from test_requirement_runner import (
     FAILED_STATUS,
@@ -123,12 +123,20 @@ def reviewed(questions=(), findings=(), **response):
 
 
 def latest_review(ws):
-    [node] = [d for d in ws.documents if "Review Result" in d.name]
+    [node] = [
+        d
+        for d in ws.documents
+        if d.name.startswith(f"{REQUIREMENT_ID} — Review Result")
+    ]
     return node, parse_review_result(ws.content[node.secret])
 
 
 def latest_process(ws):
-    node = [d for d in ws.documents if "Process Result" in d.name][-1]
+    node = [
+        d
+        for d in ws.documents
+        if d.name.startswith(f"{REQUIREMENT_ID} — Process Result")
+    ][-1]
     return node, parse_process_result(ws.content[node.secret])
 
 
@@ -356,7 +364,11 @@ def test_a_review_that_does_not_verify_each_question_once_is_refused(
 def test_the_stage_writes_nothing_for_an_incomplete_question_verification():
     ws, requirement, _, result = reviewed(questions=[MATERIAL])
     assert result.code is ReviewCode.INVALID_MODEL_OUTPUT, result
-    assert [d for d in ws.documents if "Review Result" in d.name] == []
+    assert [
+        d
+        for d in ws.documents
+        if d.name.startswith(f"{REQUIREMENT_ID} — Review Result")
+    ] == []
     assert ws.requirements[requirement.id].state == "Review"
 
 
@@ -370,7 +382,11 @@ def test_review_refuses_process_evidence_without_questions_before_any_model_call
     result = review_standard_requirement(ws, model, requirement.id)
     assert result.code is ReviewCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED, result
     assert model.calls == [] and not result.model_invoked
-    assert [d for d in ws.documents if "Review Result" in d.name] == []
+    assert [
+        d
+        for d in ws.documents
+        if d.name.startswith(f"{REQUIREMENT_ID} — Review Result")
+    ] == []
 
 
 def test_the_prompt_shows_each_question_with_its_claimed_materiality():
@@ -682,7 +698,12 @@ def test_a_legacy_applied_requirement_is_preserved_untouched():
 
 def review_results(ws):
     nodes = sorted(
-        (d for d in ws.documents if "Review Result" in d.name), key=lambda d: d.name
+        (
+            d
+            for d in ws.documents
+            if d.name.startswith(f"{REQUIREMENT_ID} — Review Result")
+        ),
+        key=lambda d: d.name,
     )
     return [parse_review_result(ws.content[node.secret]) for node in nodes]
 
@@ -706,7 +727,7 @@ def requalify(ws, workers, requirement):
     assert run_cycle(ws, workers).outcome is CycleOutcome.SUCCEEDED
     assert ws.requirements[requirement.id].state == "Ready"
     review = review_results(ws)[-1]
-    assert review.version == "0.5" and review.what_status is WhatStatus.CLEAR
+    assert review.version == "0.6" and review.what_status is WhatStatus.CLEAR
 
 
 def test_the_worker_fails_legacy_apply_with_only_its_processing_status():

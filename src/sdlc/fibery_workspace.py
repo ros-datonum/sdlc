@@ -426,6 +426,14 @@ class ReadyDecisionWorkspace(Protocol):
     def read_document_content(self, secret: str) -> str:
         """Read a Document's Markdown content."""
 
+    def find_requirements_by_requirement_id(
+        self, requirement_id: str
+    ) -> list[RequirementRecord]:
+        """Every Requirement carrying this Requirement ID, bounded to two."""
+
+    def requirement_relations(self, entity_id: str) -> RequirementRelations:
+        """The Depends On and Affects edges a Requirement has. Read-only."""
+
     def set_requirement_state(self, entity_id: str, state: str) -> None:
         """Move the Requirement's workflow State."""
 

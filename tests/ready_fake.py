@@ -95,11 +95,19 @@ def document_snapshot(ws):
 
 
 def review_result_nodes(ws):
-    return [d for d in ws.documents if "Review Result" in d.name]
+    return [
+        d
+        for d in ws.documents
+        if d.name.startswith(f"{REQUIREMENT_ID} — Review Result")
+    ]
 
 
 def process_result_nodes(ws):
-    return [d for d in ws.documents if "Process Result" in d.name]
+    return [
+        d
+        for d in ws.documents
+        if d.name.startswith(f"{REQUIREMENT_ID} — Process Result")
+    ]
 
 
 __all__ = [

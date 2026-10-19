@@ -310,8 +310,10 @@ def test_a_target_in_another_project_is_refused():
 
 
 def test_a_self_relation_is_refused():
+    """A self DEPENDS_ON cannot even be confirmed at Review (Dependency
+    Bindings v0.1); a self AFFECTS reaches Apply and is refused there."""
     ws, requirement, _, before = build_apply_workspace(
-        proposals=(proposal(DEPENDS, REQUIREMENT_ID),)
+        proposals=(proposal(AFFECTS, REQUIREMENT_ID),)
     )
     result = refused(ws, requirement, before, Code.INVALID_RELATION_TARGET)
     assert "itself" in result.message

@@ -358,7 +358,7 @@ def test_review_over_current_process_and_0_2_review_history_is_a_fresh_review():
     assert result.code is ReviewCode.REQUIREMENT_REVIEWED, result
     assert result.iteration == 2 and model.was_invoked
     assert ws.content[old_review.secret] == old_body
-    assert stored_review(ws).version == "0.5" and stored_review(ws).is_current
+    assert stored_review(ws).version == "0.6" and stored_review(ws).is_current
 
 
 @pytest.mark.parametrize("entry", ["approve", "apply"])
@@ -542,7 +542,8 @@ def test_recovery_fills_the_shell_with_current_format_evidence(stage):
     result = stage.run(ws, record, model_for(stage), recover=shell.id)
     assert result.code is stage.codes["ok"], result
     parsed = stage.parser(reserialize_like_fibery(ws.content[shell.secret]))
-    assert parsed.version == "0.5" and parsed.is_current
+    current = {"process": "0.5", "review": "0.6"}[stage.name]
+    assert parsed.version == current and parsed.is_current
     assert [d.id for d in ws.documents if d.id == shell.id] == [shell.id]
 
 

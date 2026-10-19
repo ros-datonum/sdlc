@@ -18,6 +18,9 @@ trusted:
   only thing that says CLEAR or BLOCKED_ON_WHAT
   (Requirement-Material-WHAT-Gate-v0.1), and it is a separate axis from the
   quality verdict;
+- **every existing dependency is verified exactly once**
+  (Requirement-Dependency-Bindings-v0.1): a DEPENDS_ON edge the Requirement
+  already has is a claim about its normative meaning like any proposal;
 - **every rework response is verified exactly once**
   (Requirement-Rework-Brief-v0.1). A Process claim to have resolved or
   rebutted a material WHAT item clears nothing: only a CONFIRMED verification
@@ -91,9 +94,10 @@ class WhatStatus(StrEnum):
 class RejectionBasis(StrEnum):
     """Why the reviewer holds that a Process product question is not open.
 
-    ANSWERED_BY_OTHER_REQUIREMENT is recorded but never clears a material
-    question: until dependency evidence is bound (a later work item), a peer's
-    text is not proof that this Requirement's WHAT is settled.
+    ANSWERED_BY_OTHER_REQUIREMENT clears a material question only when the
+    named Requirement is a verified, bound normative dependency of this one
+    (Requirement-Dependency-Bindings-v0.1 section 8); a bare Requirement ID,
+    an AFFECTS peer or a transitive dependency never does.
     """
 
     ANSWERED_IN_THIS_REQUIREMENT = "ANSWERED_IN_THIS_REQUIREMENT"
@@ -126,6 +130,10 @@ QUESTION_VERIFICATION_KEYS = frozenset(
 MATERIAL_WHAT_KEYS = frozenset({"detail"})
 REWORK_VERIFICATION_KEYS = frozenset({"item", "outcome", "severity", "reason"})
 REWORK_VERIFICATIONS_KEY = "rework_verifications"
+DEPENDENCY_VERIFICATION_KEYS = frozenset(
+    {"requirement_id", "outcome", "severity", "reason"}
+)
+DEPENDENCY_VERIFICATIONS_KEY = "dependency_verifications"
 REVIEW_KEYS = frozenset(
     {
         "finding_verifications",
@@ -135,6 +143,7 @@ REVIEW_KEYS = frozenset(
         "question_verifications",
         "material_unresolved_what",
         REWORK_VERIFICATIONS_KEY,
+        DEPENDENCY_VERIFICATIONS_KEY,
     }
 )
 
@@ -219,6 +228,22 @@ class ReworkVerification:
 
 
 @dataclass(frozen=True)
+class DependencyVerification:
+    """The reviewer's conclusion about one DEPENDS_ON edge the Requirement has.
+
+    CONFIRMED: understanding this Requirement needs what the target owns.
+    REJECTED: it does not, so the edge is a false dependency; that is a
+    defect and carries a severity. UNRESOLVED: the context cannot settle it.
+    Only a CONFIRMED edge can answer a material question (section 8).
+    """
+
+    requirement_id: str
+    outcome: VerificationOutcome
+    reason: str
+    severity: ReviewSeverity | None = None
+
+
+@dataclass(frozen=True)
 class ReviewOutput:
     """One validated review response."""
 
@@ -229,6 +254,7 @@ class ReviewOutput:
     question_verifications: tuple[QuestionVerification, ...] = ()
     material_unresolved_what: tuple[MaterialWhat, ...] = ()
     rework_verifications: tuple[ReworkVerification, ...] = ()
+    dependency_verifications: tuple[DependencyVerification, ...] = ()
 
     @property
     def confirmed_relations(self) -> tuple[RelationVerification, ...]:
@@ -244,6 +270,7 @@ def derive_verdict(
     finding_verifications: tuple[FindingVerification, ...],
     new_findings: tuple[NewFinding, ...],
     rework_verifications: tuple[ReworkVerification, ...] = (),
+    dependency_verifications: tuple[DependencyVerification, ...] = (),
 ) -> ReviewVerdict:
     """Derive the overall verdict from the severities of asserted defects.
 
@@ -257,7 +284,8 @@ def derive_verdict(
     every Requirement would make the verdict meaningless. Unresolved items stay
     fully visible in the Review Result for the human at Ready.
 
-    A rejected rework response asserts that a defect remains, so it counts
+    A rejected rework response asserts that a defect remains, and a
+    rejected existing dependency asserts a false dependency, so each counts
     with its own severity, exactly like a confirmed finding.
     """
     severities = (
@@ -269,7 +297,7 @@ def derive_verdict(
         | {finding.severity for finding in new_findings}
         | {
             verification.severity
-            for verification in rework_verifications
+            for verification in (*rework_verifications, *dependency_verifications)
             if verification.outcome is VerificationOutcome.REJECTED
         }
     )
@@ -281,22 +309,28 @@ def derive_verdict(
 
 
 def question_blocks(
-    question: ProductQuestion, verification: QuestionVerification
+    question: ProductQuestion,
+    verification: QuestionVerification,
+    verified_dependencies: frozenset[str] = frozenset(),
 ) -> bool:
     """Whether one verified Process question leaves a material WHAT open.
 
     CONFIRMED follows the reviewer's own materiality judgement. A rejection as
     answered in this Requirement or as technical HOW clears it. A rejection
-    that rests on another Requirement leaves the Process materiality claim
-    standing. UNRESOLVED always blocks: the reviewer could not settle the
-    question, and a Process claim alone never clears one.
+    that rests on another Requirement clears it only when that Requirement is
+    one of `verified_dependencies`: a direct DEPENDS_ON target the review
+    verified and bound to its exact normative version. Otherwise the Process
+    materiality claim stands. UNRESOLVED always blocks: the reviewer could not
+    settle the question, and a Process claim alone never clears one.
     """
     if verification.outcome is VerificationOutcome.CONFIRMED:
         return bool(verification.material)
     if verification.outcome is VerificationOutcome.UNRESOLVED:
         return True
     if verification.basis is RejectionBasis.ANSWERED_BY_OTHER_REQUIREMENT:
-        return question.material
+        return question.material and (
+            verification.requirement_id not in verified_dependencies
+        )
     return False
 
 
@@ -320,11 +354,39 @@ def rework_leaves_what_open(
     )
 
 
+def verified_dependencies(
+    relation_verifications: tuple[RelationVerification, ...],
+    dependency_verifications: tuple[DependencyVerification, ...],
+) -> frozenset[str]:
+    """The direct DEPENDS_ON targets this review verified as necessary.
+
+    A confirmed existing edge or a confirmed proposal; never an AFFECTS edge,
+    a rejected or unresolved one, or a transitive dependency. A proposal that
+    repeats an existing edge decides nothing: that edge's own verification
+    does, so a rejected edge cannot be cleared again as a proposal. Binding
+    them to their exact normative versions is the reviewer stage's job, and
+    only a bound one is admitted (Requirement-Dependency-Bindings-v0.1 §6).
+    """
+    existing = {item.requirement_id for item in dependency_verifications}
+    return frozenset(
+        item.requirement_id
+        for item in dependency_verifications
+        if item.outcome is VerificationOutcome.CONFIRMED
+    ) | frozenset(
+        item.requirement_id
+        for item in relation_verifications
+        if item.kind is RelationKind.DEPENDS_ON
+        and item.outcome is VerificationOutcome.CONFIRMED
+        and item.requirement_id not in existing
+    )
+
+
 def contradictory_escalations(
     product_questions: tuple[ProductQuestion, ...],
     question_verifications: tuple[QuestionVerification, ...],
     escalations: tuple[tuple[str, int], ...],
     rework_verifications: tuple[ReworkVerification, ...],
+    verified_dependencies: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
     """Material WHAT escalations the reviewer both confirmed and contradicted.
 
@@ -347,7 +409,9 @@ def contradictory_escalations(
         if item in confirmed
         and index in by_index
         and index < len(product_questions)
-        and not question_blocks(product_questions[index], by_index[index])
+        and not question_blocks(
+            product_questions[index], by_index[index], verified_dependencies
+        )
     )
 
 
@@ -356,6 +420,7 @@ def derive_what_status(
     question_verifications: tuple[QuestionVerification, ...],
     material_unresolved_what: tuple[MaterialWhat, ...],
     rework_what_open: bool = False,
+    verified_dependencies: frozenset[str] = frozenset(),
 ) -> WhatStatus:
     """CLEAR only when no material product question is left open.
 
@@ -376,7 +441,7 @@ def derive_what_status(
         rework_what_open
         or material_unresolved_what
         or any(
-            question_blocks(question, by_index[index])
+            question_blocks(question, by_index[index], verified_dependencies)
             for index, question in enumerate(product_questions)
         )
     ):
@@ -391,6 +456,7 @@ def parse_review_output(
     product_questions: tuple[ProductQuestion, ...],
     rework_responses: tuple[ReworkResponse, ...] | None = None,
     rework_what_refs: frozenset[str] = frozenset(),
+    existing_dependencies: tuple[str, ...] = (),
 ) -> ReviewOutput:
     """Validate the reviewer's JSON response against the Process claims.
 
@@ -399,7 +465,8 @@ def parse_review_output(
     coverage is part of the contract rather than a later check.
     `rework_responses` are the Process rework claims, None when that Process
     received no Rework Brief; `rework_what_refs` the Brief items among them
-    that are material WHAT questions.
+    that are material WHAT questions. `existing_dependencies` are the DEPENDS_ON
+    targets the Requirement already has, each verified exactly once.
     """
     payload = _load_json(text)
     _reject_unknown(payload, REVIEW_KEYS, "review")
@@ -453,11 +520,13 @@ def parse_review_output(
     )
 
     rework = _read_rework_verifications(payload, rework_responses)
+    dependencies = _read_dependency_verifications(payload, existing_dependencies)
     contradicted = contradictory_escalations(
         product_questions,
         questions,
         material_escalations(rework_responses or (), rework_what_refs),
         rework,
+        verified_dependencies(relations, dependencies),
     )
     if contradicted:
         raise InvalidReviewOutput(
@@ -485,6 +554,54 @@ def parse_review_output(
         ),
         assessment=_read_assessment(payload.get("assessment")),
         rework_verifications=rework,
+        dependency_verifications=dependencies,
+    )
+
+
+def _read_dependency_verifications(
+    payload: dict[str, object], existing: tuple[str, ...]
+) -> tuple[DependencyVerification, ...]:
+    entries = payload.get(DEPENDENCY_VERIFICATIONS_KEY)
+    if existing and DEPENDENCY_VERIFICATIONS_KEY not in payload:
+        raise InvalidReviewOutput(
+            "The Requirement already has DEPENDS_ON edges, so "
+            "dependency_verifications must verify each: its absence verifies none."
+        )
+    verifications = tuple(
+        _read_dependency_verification(entry, index)
+        for index, entry in enumerate(_as_list(entries, DEPENDENCY_VERIFICATIONS_KEY))
+    )
+    _require_exact_coverage(
+        addressed=[item.requirement_id for item in verifications],
+        expected=list(existing),
+        describe=lambda target: f"existing dependency DEPENDS_ON {target}",
+    )
+    return verifications
+
+
+def _read_dependency_verification(entry: object, index: int) -> DependencyVerification:
+    where = f"dependency verification {index}"
+    if not isinstance(entry, dict):
+        raise InvalidReviewOutput(f"{where} must be an object.")
+    _reject_unknown(entry, DEPENDENCY_VERIFICATION_KEYS, where)
+    missing = sorted({"requirement_id", "outcome", "reason"} - set(entry))
+    if missing:
+        raise InvalidReviewOutput(f"{where} is missing: " + ", ".join(missing))
+    outcome = _read_enum(VerificationOutcome, entry["outcome"], where)
+    severity = entry.get("severity")
+    if (outcome is VerificationOutcome.REJECTED) != (severity is not None):
+        raise InvalidReviewOutput(
+            f"{where} carries a severity if and only if it rejects the dependency."
+        )
+    return DependencyVerification(
+        requirement_id=_read_requirement_id(entry["requirement_id"], where),
+        outcome=outcome,
+        reason=_read_text(entry["reason"], f"{where} reason"),
+        severity=(
+            _read_enum(ReviewSeverity, severity, where)
+            if severity is not None
+            else None
+        ),
     )
 
 

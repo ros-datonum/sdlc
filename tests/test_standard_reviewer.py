@@ -180,7 +180,7 @@ def test_a_rejected_proposal_removes_no_existing_relation():
 
 def test_existing_relations_are_read_into_the_review_context():
     ws, requirement, _, _ = build_review_workspace()
-    ws.depends_on_ids[requirement.id] = [requirement.id]
+    ws.affects_ids[requirement.id] = [requirement.id]
     _, model = run(ws, requirement, [review_output()])
     assert "Relations this Requirement already has" in model.calls[0]["context"]
 

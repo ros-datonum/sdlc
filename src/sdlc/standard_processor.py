@@ -47,6 +47,7 @@ from sdlc.fibery_workspace import (
     ProjectRecord,
     RawProcessorWorkspace,
     RequirementRecord,
+    RequirementRelations,
 )
 from sdlc.model_runtime import ModelRuntime, ModelRuntimeError
 from sdlc.normative_tree import (
@@ -1319,6 +1320,7 @@ def _analyze(
         raw_ancestry=context.raw_ancestry,
         comparison=_comparison_context(workspace, context),
         rework_brief=brief,
+        relations=_relations(workspace, context),
     )
     try:
         require_input_within_budget("Standard Process", prompt, model_context)
@@ -1344,6 +1346,20 @@ def _analyze(
         raise _StageFailed(
             StandardProcessResultCode.INVALID_MODEL_OUTPUT,
             "The model's response does not satisfy the analysis contract.",
+            (str(error),),
+        ) from error
+
+
+def _relations(
+    workspace: RawProcessorWorkspace, context: _Context
+) -> RequirementRelations:
+    """The edges the Requirement already has, read once an invocation is certain."""
+    try:
+        return workspace.requirement_relations(context.requirement.id)
+    except FiberyError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.FIBERY_READ_FAILED,
+            f"Could not read the relations of {context.requirement.requirement_id}.",
             (str(error),),
         ) from error
 

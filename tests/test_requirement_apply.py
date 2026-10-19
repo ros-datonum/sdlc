@@ -209,14 +209,16 @@ def test_existing_unrelated_edges_are_preserved():
     assert not any(m.startswith("remove") for m in ws.mutations)
 
 
-def test_targets_in_any_state_are_accepted():
+def test_affects_targets_in_any_state_are_accepted():
+    """An impact target's State is unrestricted. A DEPENDS_ON target must be
+    Applied authority (Dependency Bindings v0.1 section 7), tested there."""
     others = tuple(
         standard(f"SDLC-FR-00{i}", f"std-uuid-{i}", state=state)
         for i, state in enumerate(
             ["Draft", "Process", "Review", "Ready", "Apply", "Applied"], start=10
         )
     )
-    proposals = tuple(proposal(DEPENDS, o.requirement_id) for o in others)
+    proposals = tuple(proposal(AFFECTS, o.requirement_id) for o in others)
     ws, requirement, _, _ = build_apply_workspace(proposals=proposals, others=others)
     result = apply(ws, requirement)
     assert result.code is Code.REQUIREMENT_APPLIED

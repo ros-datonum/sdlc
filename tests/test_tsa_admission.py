@@ -366,10 +366,10 @@ def test_two_requirement_ids_resolving_to_one_entity_are_a_duplicate(monkeypatch
     monkeypatch.setattr(
         tsa_admission,
         "_admit_requirement",
-        lambda evidence, context, requirement_id: {
-            "requirement_id": requirement_id,
-            "entity_id": "std-uuid-1",
-        },
+        lambda evidence, context, requirement_id: (
+            {"requirement_id": requirement_id, "entity_id": "std-uuid-1"},
+            frozenset(),
+        ),
     )
     scene = world()
     error = clean_refusal(scene, requirement_ids=(REQUIREMENT_ID, SECOND_ID))
@@ -750,6 +750,7 @@ def test_the_evidence_protocol_offers_no_write_and_the_module_no_model():
         "find_requirements_by_requirement_id",
         "read_document_content",
         "read_requirement",
+        "requirement_relations",
     }
     source = inspect.getsource(tsa_admission)
     assert "model_runtime" not in source and "set_requirement" not in source

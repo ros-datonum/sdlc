@@ -37,6 +37,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from sdlc.dependency_evidence import (
+    DependencyEvidenceError,
+    DependencyFailure,
+    Phase,
+    require_current_dependencies,
+)
 from sdlc.fibery_workspace import (
     ApplyWorkspace,
     DocumentNode,
@@ -179,9 +185,12 @@ def apply_standard_requirement(
         plan = _plan(workspace, requirement, evidence)
         # Immediately before the first write, never on state read earlier.
         _recheck_bindings(workspace, requirement, structure.root, evidence)
+        _check_dependencies(workspace, requirement, evidence, Phase.APPLYING)
 
         _ensure_edges(workspace, requirement, plan, journal)
         _recheck_bindings(workspace, requirement, structure.root, evidence)
+        # The written graph must be exactly the approved dependency evidence.
+        _check_dependencies(workspace, requirement, evidence, Phase.APPLIED)
         _transition_to_applied(workspace, requirement, journal)
     except _StageFailed as failure:
         return _failure_result(failure, requirement, journal)
@@ -610,6 +619,34 @@ def _check_what(requirement: RequirementRecord, evidence: _Evidence) -> None:
             "to Process for a new Process and Review. Nothing was written.",
             open_material_questions(review),
         )
+
+
+def _check_dependencies(
+    workspace: ApplyWorkspace,
+    requirement: RequirementRecord,
+    evidence: _Evidence,
+    phase: Phase,
+) -> None:
+    """Dependency Bindings v0.1 section 7: current, acyclic, approved authority.
+
+    Before and between writes the Requirement's DEPENDS_ON edges may be the
+    reviewed ones plus any confirmed proposal a partial run wrote; after the
+    writes they must be exactly the bound set. Every direct dependency must
+    be Applied. Nothing is removed or replaced to make them agree.
+    """
+    review = evidence.latest_review
+    try:
+        require_current_dependencies(workspace, requirement, review, phase)
+    except DependencyEvidenceError as error:
+        if not review.is_dependency_bound:
+            code = ApplyResultCode.DEPENDENCY_EVIDENCE_REQUIRED
+        else:
+            code = {
+                DependencyFailure.CYCLE: ApplyResultCode.DEPENDENCY_CYCLE,
+                DependencyFailure.NOT_APPLIED: ApplyResultCode.DEPENDENCY_NOT_APPLIED,
+                DependencyFailure.READ_FAILED: ApplyResultCode.FIBERY_READ_FAILED,
+            }.get(error.failure, ApplyResultCode.DEPENDENCY_EVIDENCE_STALE)
+        raise _StageFailed(code, error.message, error.details) from error
 
 
 def _recheck_bindings(

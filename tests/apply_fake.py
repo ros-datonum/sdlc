@@ -28,7 +28,7 @@ PROJECT_ID = "p-1"
 def standard(
     requirement_id=TARGET_ID,
     entity_id=TARGET_ENTITY,
-    state="Ready",
+    state="Applied",
     type_name="Standard",
     project_id=PROJECT_ID,
     public_id=None,

@@ -17,7 +17,13 @@ from processor_fake import (
     candidate,
     model_output,
 )
-from review_fake import build_review_workspace, finding, relation, review_output
+from review_fake import (
+    build_review_workspace,
+    finding,
+    give_reviewed_evidence,
+    relation,
+    review_output,
+)
 from sdlc.comparison_context import (
     COMPARISON_INPUT_LIMIT_CHARACTERS,
     COMPARISON_RECORD_LIMIT,
@@ -466,6 +472,9 @@ def test_a_relation_targets_actual_text_reaches_the_reviewer():
         [peer(41)], relations=[relation(requirement_id="SDLC-FR-0041")]
     )
     with_root(ws, peer(41))
+    # Confirming DEPENDS_ON needs the target as reviewed authority
+    # (Requirement-Dependency-Bindings-v0.1); its own text is kept.
+    give_reviewed_evidence(ws, peer(41), keep_content=True)
     model = FakeModelRuntime(
         [
             review_output(

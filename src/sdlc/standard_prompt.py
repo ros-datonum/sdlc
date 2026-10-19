@@ -26,7 +26,7 @@ from sdlc.comparison_context import (
     render_comparison_section,
     render_target_metadata,
 )
-from sdlc.fibery_workspace import RequirementRecord
+from sdlc.fibery_workspace import RequirementRecord, RequirementRelations
 from sdlc.rework_brief import BriefItem, ReworkBrief
 from sdlc.standard_analysis import FindingKind, RelationKind, ReworkOutcome
 
@@ -223,6 +223,36 @@ Analysis, at the Requirement level:
   implementation or verification design exists.
 - Clarity and internal consistency are analyzed as before.
 
+Requirement relations:
+
+- DEPENDS_ON (this -> other): understanding or evaluating at least one
+  normative obligation of this Requirement requires a definition, rule,
+  constraint or behavior that the other Requirement owns. The two must be
+  interpreted together; the other keeps owning that definition, and this
+  Requirement refers to it instead of restating it.
+- AFFECTS (this -> other): a change to this Requirement may require
+  re-evaluating the other. It never means the other supplies, or depends on,
+  this Requirement's meaning, and it is never authority for a definition.
+- A shared topic, a similar subject or an AFFECTS edge does not establish
+  DEPENDS_ON. Dependencies have direction: the Requirement that needs the
+  definition depends on the one that owns it.
+
+Dependencies and shared definitions:
+
+- Read this Requirement together with the Requirements it already
+  DEPENDS_ON (listed in the context). A definition one of them owns is not
+  missing here: do not report it as INCOMPLETE and do not copy it into this
+  Requirement.
+- A genuinely missing definition that no Requirement owns is INCOMPLETE,
+  MISSING_CONSTRAINT or MISSING_EDGE_CASE as before.
+- When another Requirement owns a definition this one needs but no
+  DEPENDS_ON exists, propose DEPENDS_ON to it; if this Requirement restates
+  that definition, report POSSIBLE_DUPLICATE: one Requirement should own it.
+- Contradicting definitions are POSSIBLE_CONFLICT. Never choose a winner
+  between authoritative Requirements, and never invent the missing rule.
+- Propose AFFECTS only for change impact, never in place of DEPENDS_ON.
+- You propose relations; you never write them.
+
 Findings and relations:
 
 - Two classes of finding exist, and `requirement_id` separates them:
@@ -302,6 +332,7 @@ def build_analysis_prompt(
     raw_ancestry: str,
     comparison: ComparisonContext,
     rework_brief: ReworkBrief | None = None,
+    relations: RequirementRelations | None = None,
 ) -> tuple[str, str]:
     """Return the instruction prompt and the context sent on stdin.
 
@@ -324,6 +355,8 @@ def build_analysis_prompt(
             "",
             _section("Originating RAW requirement source", raw_ancestry),
             "",
+            _relations_section(relations or RequirementRelations()),
+            "",
             render_comparison_section(comparison),
             "",
             *(_rework_section(rework_brief) if rework_brief is not None else []),
@@ -332,6 +365,14 @@ def build_analysis_prompt(
         ]
     )
     return INSTRUCTIONS, context
+
+
+def _relations_section(relations: RequirementRelations) -> str:
+    """The edges this Requirement already has: dependencies to read with it."""
+    header = "# Relations this Requirement already has"
+    lines = [f"- DEPENDS_ON {value}" for value in relations.depends_on]
+    lines += [f"- AFFECTS {value}" for value in relations.affects]
+    return "\n".join([header, *lines]) if lines else f"{header}\n(none)"
 
 
 def _rework_section(brief: ReworkBrief) -> list[str]:
