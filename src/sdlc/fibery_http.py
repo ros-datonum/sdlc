@@ -1359,49 +1359,90 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
         Both collections are read in one query, and only `fibery/id` is
         selected from each: constraint 18 rejects a sub-select that reaches a
         secured Field, so the Requirement IDs are resolved afterwards.
+
+        A result means both complete collections of exactly this Requirement,
+        every target resolved (Requirement-Dependency-Bindings-v0.1 section
+        3.1). Anything less raises FiberyError instead of shrinking the
+        graph: a missing Field, a missing or foreign row, a collection not in
+        the verified `{"fibery/id": [...]}` shape (constraints 15 and 18), a
+        repeated, unresolvable or ID-less target. A collection read back as
+        `{"fibery/id": []}` is a genuinely empty one.
         """
         schema = self._requirement_schema()
-        collections = [
-            field for field in (schema.depends_on_field, schema.affects_field) if field
-        ]
-        if not collections:
-            return RequirementRelations()
-        rows = (
-            self._client.command(
-                "fibery.entity/query",
-                {
-                    "query": {
-                        "q/from": self.requirement_database,
-                        "q/select": [
-                            ID_FIELD,
-                            *({field: [ID_FIELD]} for field in collections),
-                        ],
-                        "q/where": ["=", [ID_FIELD], "$id"],
-                        "q/limit": SINGLE_ROW_LIMIT,
-                    },
-                    "params": {"$id": entity_id},
-                },
+        missing = [
+            label
+            for label, field in (
+                (FIELD_LABEL_DEPENDS_ON, schema.depends_on_field),
+                (FIELD_LABEL_AFFECTS, schema.affects_field),
             )
-            or []
+            if not field
+        ]
+        if missing:
+            raise FiberyError(
+                f"{self.requirement_database} has no {' or '.join(missing)} Field; "
+                "the relations of a Requirement cannot be read completely."
+            )
+        collections = (schema.depends_on_field, schema.affects_field)
+        rows = self._client.command(
+            "fibery.entity/query",
+            {
+                "query": {
+                    "q/from": self.requirement_database,
+                    "q/select": [
+                        ID_FIELD,
+                        *({field: [ID_FIELD]} for field in collections),
+                    ],
+                    "q/where": ["=", [ID_FIELD], "$id"],
+                    "q/limit": SINGLE_ROW_LIMIT,
+                },
+                "params": {"$id": entity_id},
+            },
         )
-        if not rows:
-            return RequirementRelations()
+        if (
+            not isinstance(rows, list)
+            or len(rows) != 1
+            or not isinstance(rows[0], dict)
+            or rows[0].get(ID_FIELD) != entity_id
+        ):
+            raise FiberyError(
+                f"The relations of Requirement {entity_id} were not returned for "
+                "exactly that Requirement."
+            )
         return RequirementRelations(
             depends_on=self._related_ids(rows[0], schema.depends_on_field),
             affects=self._related_ids(rows[0], schema.affects_field),
         )
 
-    def _related_ids(self, row: dict[str, Any], field: str | None) -> tuple[str, ...]:
-        """Resolve one collection of entity ids to Requirement IDs."""
-        if not field:
-            return ()
-        ids = (row.get(field) or {}).get(ID_FIELD) or []
-        records = (self.read_requirement(value) for value in ids)
-        return tuple(
-            record.requirement_id
-            for record in records
-            if record is not None and record.requirement_id
-        )
+    def _related_ids(self, row: dict[str, Any], field: str) -> tuple[str, ...]:
+        """Resolve one complete collection of entity ids to Requirement IDs."""
+        value = row.get(field)
+        ids = value.get(ID_FIELD) if isinstance(value, dict) else None
+        if (
+            not isinstance(value, dict)
+            or set(value) != {ID_FIELD}
+            or not isinstance(ids, list)
+            or not all(isinstance(item, str) and item for item in ids)
+        ):
+            raise FiberyError(
+                f"{field} of Requirement {row.get(ID_FIELD)} was not read back as a "
+                f"complete collection: {value!r}."
+            )
+        if len(set(ids)) != len(ids):
+            raise FiberyError(f"{field} lists the same Requirement more than once.")
+        requirement_ids = []
+        for target in ids:
+            record = self.read_requirement(target)
+            if record is None or record.id != target or not record.requirement_id:
+                raise FiberyError(
+                    f"{field} target {target} does not resolve to a Requirement "
+                    "with a Requirement ID."
+                )
+            requirement_ids.append(record.requirement_id)
+        if len(set(requirement_ids)) != len(requirement_ids):
+            raise FiberyError(
+                f"{field} targets share a Requirement ID; the edges are ambiguous."
+            )
+        return tuple(requirement_ids)
 
     def add_derived_from(self, entity_id: str, raw_entity_id: str) -> None:
         """Link a Standard Requirement to its RAW.

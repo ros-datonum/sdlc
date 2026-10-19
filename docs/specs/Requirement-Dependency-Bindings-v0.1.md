@@ -43,6 +43,19 @@ Its State is recorded but not restricted here: a Ready or Apply candidate may be
 
 **Bound:** at most `INTERPRETATION_SET_LIMIT` (100, the comparison-corpus record limit) members; more is refused. Every member is also inside the existing full-Project comparison context, whose input budget still applies. The reviewer receives the set in its own section: each direct dependency (existing edge or bindable proposal) and each transitive one, with its State, and each proposal that cannot be confirmed with the reason.
 
+## 3.1 Complete relation reads
+
+Every consumer of a Requirement's DEPENDS_ON and AFFECTS edges (Process context, Review, Ready, Apply, TSA admission and the traversal above) reads them through `requirement_relations`. A result means **both complete collections of exactly that Requirement, every target resolved**; it never means "whatever was available". The reader raises `FiberyError` instead of returning a smaller graph when:
+- the Requirement Database has no Depends On or no Affects Field (the schema itself still loads, so commands that use no relations, such as Requirement add, are unaffected);
+- the entity query returns no row, more than one, or a row for another entity;
+- a collection is absent, `null`, or not exactly the verified shape `{"fibery/id": [<non-empty text id>, ...]}` (an empty object, a bare list or an extra key included);
+- an id appears twice;
+- a target cannot be read back as exactly that entity, has no Requirement ID, or shares its Requirement ID with another target.
+
+**Valid empty** is `{"fibery/id": []}`: the shape constraint 15 verified live for a collection with no members. No other representation is read as empty.
+
+Every consumer turns the failure into its own read-failure refusal, never into "no dependencies": `FIBERY_READ_FAILED` for Process, Review (before the model), Ready, Apply (before any write) and TSA admission (`CycleResultCode.FIBERY_READ_FAILED`, so a TSA input recheck reports a read failure, not stale inputs). Nothing is written, no State moves and no partial graph is bound or accepted. The in-memory test fake refuses the same way.
+
 ## 4. Review: independent verification
 
 The Review response gains `dependency_verifications: [{requirement_id, outcome, severity, reason}]`: exactly one per existing DEPENDS_ON edge of R (required when R has any; missing, duplicate or invented entries are `INVALID_MODEL_OUTPUT`).
@@ -127,7 +140,7 @@ The Rework Brief gains category `EXISTING_DEPENDENCY` (letter `E`): an existing 
 | `DEPENDENCY_EVIDENCE_REQUIRED` (new) | Ready, Apply: pre-0.6 evidence |
 | `DEPENDENCY_EVIDENCE_STALE` (new) | Ready, Apply |
 | `DEPENDENCY_NOT_APPLIED` (new) | Apply |
-| `FIBERY_READ_FAILED` (existing) | any stage, when a dependency read fails |
+| `FIBERY_READ_FAILED` (existing) | any stage, when a relation or dependency read fails or is incomplete (§3.1); TSA admission uses `CycleResultCode.FIBERY_READ_FAILED` |
 | `INVALID_MODEL_OUTPUT` (existing) | Review: `dependency_verifications` breaks §4, or an unconfirmable proposal is confirmed |
 | `REQUIREMENT_NOT_ADMISSIBLE` (existing) | TSA check 10 and closure |
 
@@ -142,5 +155,5 @@ All are deterministic, write nothing beyond what was already durable, and are ne
 - Order of authority: a dependency must be reviewed (0.6, CLEAR) before its dependent can be reviewed, and Applied before its dependent can be Applied.
 - Every check reads each member afresh (a handful of reads per member, at most 100 members); nothing is cached across a mutation.
 - A consistent hand edit of a Review Result and every artifact it binds is not detectable.
-- The existing `requirement_relations` read returns no edges when the entity row or the Depends On field cannot be read, and drops an edge whose target has no Requirement ID. Under this delta an empty answer means "no dependencies", so that behaviour must be part of the live probe before the contract is frozen.
+- §3.1 rests on the live-verified collection shape. Not yet probed live: that a Requirement with no relations returns `{"fibery/id": []}` for both Depends On and Affects in this query (if Fibery returned anything else, the read refuses visibly rather than reading "none"), and whether the collection sub-select ever truncates a large collection.
 - Not live-verified: the 0.6 payload and the TSA path's new use of the existing `requirement_relations` read have not been compared against live Fibery, so they are not frozen under the project rule.

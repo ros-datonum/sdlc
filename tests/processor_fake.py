@@ -207,12 +207,18 @@ class FakeProcessorWorkspace:
         )
 
     def _relation_ids(self, entity_ids):
-        """Entity ids resolved to Requirement IDs, as the real adapter does."""
-        return tuple(
-            self.requirements[value].requirement_id
+        """Entity ids resolved to Requirement IDs, as the real adapter does.
+
+        Fails closed like it: an unresolvable or ID-less target, or a target
+        listed twice, is a read failure, never a smaller graph.
+        """
+        if len(set(entity_ids)) != len(entity_ids) or any(
+            value not in self.requirements
+            or not self.requirements[value].requirement_id
             for value in entity_ids
-            if value in self.requirements and self.requirements[value].requirement_id
-        )
+        ):
+            raise FiberyError("A relation target does not resolve to a Requirement ID.")
+        return tuple(self.requirements[value].requirement_id for value in entity_ids)
 
     def standard_requirements_in_project(self, project_id):
         """Bounded exactly as the live query is: two rows past the corpus limit."""

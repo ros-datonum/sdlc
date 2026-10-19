@@ -32,6 +32,7 @@ from typing import Protocol
 
 from sdlc.dependency_evidence import (
     DependencyEvidenceError,
+    DependencyFailure,
     Phase,
     require_current_dependencies,
 )
@@ -685,6 +686,13 @@ def _require_current_dependencies(
     try:
         require_current_dependencies(evidence, record, review, Phase.APPLIED)
     except DependencyEvidenceError as error:
+        if error.failure is DependencyFailure.READ_FAILED:
+            # A read failure is not a fact about the evidence (spec 3.1).
+            raise AdmissionRefused(
+                CycleResultCode.FIBERY_READ_FAILED,
+                f"Reading the dependencies of {requirement_id} failed: {error.message}",
+                error.details,
+            ) from error
         raise _not_admissible(
             requirement_id,
             f"its dependency evidence does not hold: {error.message}",

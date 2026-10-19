@@ -473,9 +473,23 @@ def test_existing_relations_are_returned_as_requirement_ids():
     assert relations.affects == ("SDLC-FR-0003",)
 
 
+def fail_response():
+    """An unsuccessful Fibery envelope: the client raises FiberyError."""
+    return [{"success": False, "result": {"name": "entity.error/x", "message": "x"}}]
+
+
+def relations_row(depends_on=(), affects=(), entity_id="std-1"):
+    """The verified collection shape (constraints 15 and 18)."""
+    return {
+        "fibery/id": entity_id,
+        "SDLC/Depends On": {"fibery/id": list(depends_on)},
+        "SDLC/Affects": {"fibery/id": list(affects)},
+    }
+
+
 def test_the_collection_sub_select_asks_only_for_ids():
     """Constraint 18: a sub-select reaching a secured Field is rejected."""
-    workspace, opener = build_with_relations([ok([])])
+    workspace, opener = build_with_relations([ok([relations_row()])])
     workspace.requirement_relations("std-1")
 
     query = opener.requests[-1]["body"][0]["args"]["query"]["q/select"]
@@ -486,31 +500,143 @@ def test_the_collection_sub_select_asks_only_for_ids():
     ]
 
 
-def test_a_requirement_with_no_relations_returns_empty_collections():
+def test_genuinely_empty_collections_read_as_no_relations():
+    """`{"fibery/id": []}` is how Fibery returns an empty collection."""
+    workspace, _ = build_with_relations([ok([relations_row()])])
+    relations = workspace.requirement_relations("std-1")
+    assert (relations.depends_on, relations.affects) == ((), ())
+
+
+def test_several_and_mixed_edges_resolve_in_order():
     workspace, _ = build_with_relations(
-        [ok([{"fibery/id": "std-1", "SDLC/Depends On": {}, "SDLC/Affects": {}}])]
+        [
+            ok([relations_row(["dep-1", "dep-2"], ["aff-1"])]),
+            ok([requirement_row("dep-1", "SDLC-FR-0002")]),
+            ok([requirement_row("dep-2", "SDLC-FR-0004")]),
+            ok([requirement_row("aff-1", "SDLC-FR-0003")]),
+        ]
     )
     relations = workspace.requirement_relations("std-1")
-    assert (relations.depends_on, relations.affects) == ((), ())
+    assert relations.depends_on == ("SDLC-FR-0002", "SDLC-FR-0004")
+    assert relations.affects == ("SDLC-FR-0003",)
 
 
-def test_a_database_without_the_relation_fields_reads_no_relations():
-    """Requirement add must keep working against a Database lacking them."""
-    opener = StubOpener([ok(REQUIREMENT_SCHEMA)])
-    workspace = FiberyRawProcessorWorkspace(
-        FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
+def test_a_database_without_a_relation_field_refuses_instead_of_reading_none():
+    """The schema still loads (Requirement add needs no relations), but the
+    relations of a Requirement cannot be read completely: no entity query."""
+    for missing in ("SDLC/Depends On", "SDLC/Affects"):
+        schema = {
+            "fibery/types": [
+                {
+                    **RELATION_SCHEMA["fibery/types"][0],
+                    "fibery/fields": [
+                        field
+                        for field in RELATION_SCHEMA["fibery/types"][0]["fibery/fields"]
+                        if field["fibery/name"] != missing
+                    ],
+                }
+            ]
+        }
+        opener = StubOpener([ok(schema)])
+        workspace = FiberyRawProcessorWorkspace(
+            FiberyClient(SETTINGS, url_opener=opener, **unpaced()), "SDLC"
+        )
+        with pytest.raises(FiberyError, match="cannot be read completely"):
+            workspace.requirement_relations("std-1")
+        assert len(opener.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [relations_row(entity_id="another")],
+        [relations_row(), relations_row()],
+        None,
+    ],
+    ids=["no-row", "foreign-row", "two-rows", "null-result"],
+)
+def test_a_missing_or_foreign_entity_row_refuses(rows):
+    workspace, _ = build_with_relations([ok(rows)])
+    with pytest.raises(FiberyError, match="not returned for exactly that"):
+        workspace.requirement_relations("std-1")
+
+
+@pytest.mark.parametrize(
+    "depends_on",
+    [
+        "absent",
+        None,
+        {},
+        [],
+        {"fibery/id": None},
+        {"fibery/id": "dep-1"},
+        {"fibery/id": [None]},
+        {"fibery/id": [""]},
+        {"fibery/id": ["dep-1"], "extra": 1},
+    ],
+    ids=[
+        "absent",
+        "null",
+        "empty-object",
+        "bare-list",
+        "null-ids",
+        "string-ids",
+        "null-id",
+        "empty-id",
+        "extra-key",
+    ],
+)
+def test_a_collection_not_in_the_verified_shape_refuses(depends_on):
+    """Only `{"fibery/id": [ids]}` is a read; anything else is not "none"."""
+    row = relations_row()
+    if depends_on == "absent":
+        del row["SDLC/Depends On"]
+    else:
+        row["SDLC/Depends On"] = depends_on
+    workspace, _ = build_with_relations([ok([row])])
+    with pytest.raises(FiberyError, match="complete collection"):
+        workspace.requirement_relations("std-1")
+
+
+@pytest.mark.parametrize(
+    "lookups, message",
+    [
+        ([ok([])], "does not resolve"),
+        ([ok([requirement_row("dep-1", None)])], "does not resolve"),
+        ([ok([requirement_row("dep-1", "")])], "does not resolve"),
+        ([ok([requirement_row("someone-else", "SDLC-FR-0002")])], "does not resolve"),
+        (
+            [
+                ok([requirement_row("dep-1", "SDLC-FR-0002")]),
+                ok([requirement_row("dep-2", "SDLC-FR-0002")]),
+            ],
+            "share a Requirement ID",
+        ),
+    ],
+    ids=["unresolved", "no-id", "empty-id", "other-entity", "ambiguous-id"],
+)
+def test_a_target_that_does_not_resolve_cleanly_refuses(lookups, message):
+    depends_on = (
+        ["dep-1", "dep-2"] if message == "share a Requirement ID" else ["dep-1"]
     )
-    relations = workspace.requirement_relations("std-1")
-
-    assert (relations.depends_on, relations.affects) == ((), ())
-    # No entity query was issued at all: there is nothing to ask for.
-    assert len(opener.requests) == 1
+    workspace, _ = build_with_relations([ok([relations_row(depends_on)]), *lookups])
+    with pytest.raises(FiberyError, match=message):
+        workspace.requirement_relations("std-1")
 
 
-def test_a_missing_entity_reads_no_relations():
-    workspace, _ = build_with_relations([ok([])])
-    relations = workspace.requirement_relations("gone")
-    assert (relations.depends_on, relations.affects) == ((), ())
+def test_a_target_listed_twice_refuses():
+    workspace, _ = build_with_relations([ok([relations_row(["dep-1", "dep-1"])])])
+    with pytest.raises(FiberyError, match="more than once"):
+        workspace.requirement_relations("std-1")
+
+
+def test_a_failed_target_lookup_is_a_read_failure_not_a_dropped_edge():
+    workspace, _ = build_with_relations(
+        [ok([relations_row(["dep-1"])]), fail_response()]
+    )
+    with pytest.raises(FiberyError):
+        workspace.requirement_relations("std-1")
 
 
 # -- apply: relation adds and ambiguity-aware lookup -------------------------

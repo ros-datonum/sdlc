@@ -56,6 +56,7 @@ from sdlc.standard_review import (
 )
 from sdlc.standard_reviewer import review_standard_requirement
 from sdlc.tsa_admission import AdmissionResultCode
+from sdlc.tsa_cycle import CycleResultCode
 from standard_fake import REQUIREMENT_ID, analysis_output
 from test_tsa_admission import clean_refusal, start, world
 
@@ -807,6 +808,7 @@ def test_tsa_refuses_a_stale_dependency_with_nothing_written():
 
 def test_tsa_never_requires_an_affects_peer():
     ws = applied_chain()
+    ws.requirements[D3.id] = D3
     ws.affects_ids[ws.requirements["std-uuid-1"].id] = [D3.id]
     result = start(
         tsa_scene(ws),
@@ -1106,3 +1108,117 @@ def test_a_rejected_edge_cannot_be_cleared_again_as_a_proposal():
     _, stored = stored_review(ws)
     assert stored.verified_dependencies == frozenset()
     assert stored.what_status is WhatStatus.BLOCKED_ON_WHAT
+
+
+# -- incomplete relation reads fail closed in every consumer (spec 3.1) ---------
+
+
+def dangle(ws, record):
+    """An edge whose target cannot be resolved: a read failure, not 'none'."""
+    ws.depends_on_ids.setdefault(record.id, []).append("missing-entity")
+
+
+def test_process_refuses_an_incomplete_relation_read_before_the_model():
+    ws, requirement, _ = world_with(peers=(D1,))
+    ws._replace(requirement.id, state="Process")
+    dangle(ws, ws.requirements[requirement.id])
+    before = len(ws.mutations)
+    model = FakeModelRuntime([analysis_output()])
+    result = process_standard_requirement(
+        ws, model, requirement.id, authorized_new_cycle=True
+    )
+    assert result.code is ProcessCode.FIBERY_READ_FAILED, result
+    assert not model.was_invoked and ws.mutations[before:] == []
+
+
+@pytest.mark.parametrize("whose", ["own", "member"])
+def test_review_refuses_an_incomplete_relation_read_before_the_model(whose):
+    ws, requirement, _ = world_with(peers=(D1,), existing=(D1,))
+    dangle(ws, ws.requirements[requirement.id] if whose == "own" else D1)
+    before = len(ws.mutations)
+    result, model = review(ws, requirement, dependency_verifications=[dep(D1)])
+    assert result.code is ReviewCode.FIBERY_READ_FAILED, result
+    assert not model.was_invoked and ws.mutations[before:] == []
+
+
+@pytest.mark.parametrize("whose", ["own", "member"])
+def test_ready_refuses_an_incomplete_relation_read(whose):
+    ws, requirement, _ = reviewed_with()
+    dangle(ws, ws.requirements[requirement.id] if whose == "own" else D1)
+    before = len(ws.mutations)
+    result = approve_standard_requirement(ws, requirement.id)
+    assert result.code is Ready.FIBERY_READ_FAILED, result
+    assert (
+        ws.mutations[before:] == [] and ws.requirements[requirement.id].state == "Ready"
+    )
+
+
+@pytest.mark.parametrize("whose", ["own", "member"])
+def test_apply_refuses_an_incomplete_graph_before_any_write(whose):
+    ws, requirement, _ = world_with(
+        peers=(D1, D2), existing=(D1,), proposals=((DEPENDS, D2),)
+    )
+    review(
+        ws,
+        requirement,
+        dependency_verifications=[dep(D1)],
+        relation_verifications=[verify_relation(requirement_id=D2.requirement_id)],
+    )
+    approved(ws, requirement)
+    dangle(ws, ws.requirements[requirement.id] if whose == "own" else D1)
+    before = len(ws.mutations)
+    result = apply_standard_requirement(ws, requirement.id)
+    assert result.code is Apply.FIBERY_READ_FAILED, result
+    assert ws.mutations[before:] == [], "no edge and no State written"
+    assert ws.requirements[requirement.id].state == "Apply"
+
+
+@pytest.mark.parametrize("whose", ["own", "member"])
+def test_tsa_refuses_an_incomplete_graph_as_a_read_failure(whose):
+    ws = applied_chain()
+    dangle(ws, ws.requirements["std-uuid-1"] if whose == "own" else D2)
+    error = clean_refusal(
+        tsa_scene(ws),
+        requirement_ids=(REQUIREMENT_ID, D1.requirement_id, D2.requirement_id),
+    )
+    assert error.code is CycleResultCode.FIBERY_READ_FAILED, error
+
+
+def test_a_read_failure_is_never_dependency_clearance():
+    """With the relation read failing, the question cannot clear: the review
+    does not even run, rather than running as if there were no edges."""
+    ws, requirement, _ = world_with(existing=(D1,), questions=QUESTION)
+    ws.failures["requirement_relations"] = FiberyError("timed out")
+    result, model = review(
+        ws,
+        requirement,
+        dependency_verifications=[dep(D1)],
+        question_verifications=answered_by(D1),
+    )
+    assert result.code is ReviewCode.FIBERY_READ_FAILED, result
+    assert not model.was_invoked
+    assert not [
+        d for d in ws.documents if d.name.startswith(f"{REQUIREMENT_ID} — Review")
+    ]
+
+
+# -- peer WHAT: a rejected existing edge, with no duplicate proposal ------------
+
+
+@pytest.mark.parametrize("outcome", ["REJECTED", "UNRESOLVED"])
+def test_an_existing_edge_not_confirmed_answers_no_material_question(outcome):
+    ws, requirement, _ = world_with(existing=(D1,), questions=QUESTION)
+    severity = {"severity": "WARNING"} if outcome == "REJECTED" else {}
+    result, _ = review(
+        ws,
+        requirement,
+        dependency_verifications=[dep(D1, outcome, "Not needed.", **severity)],
+        question_verifications=answered_by(D1),
+    )
+    assert result.code is ReviewCode.REQUIREMENT_REVIEWED, result
+    _, stored = stored_review(ws)
+    assert stored.verified_dependencies == frozenset()
+    assert stored.what_status is WhatStatus.BLOCKED_ON_WHAT
+    assert approve_standard_requirement(ws, requirement.id).code is (
+        Ready.MATERIAL_WHAT_UNRESOLVED
+    )

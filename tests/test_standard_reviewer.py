@@ -165,7 +165,9 @@ def test_a_confirmed_proposal_is_persisted_in_the_review_result_only():
 def test_a_rejected_proposal_removes_no_existing_relation():
     """The reason deferring the write matters: rejection cannot destroy state."""
     ws, requirement, _, _ = build_review_workspace(relations=(relation(),))
-    ws.depends_on_ids[requirement.id] = ["other-uuid"]
+    # A real existing edge: an unresolvable one is a read failure, not a
+    # smaller graph (Requirement-Dependency-Bindings-v0.1 section 3.1).
+    ws.affects_ids[requirement.id] = ["std-target-1"]
     before = relation_state(ws)
     run(
         ws,
