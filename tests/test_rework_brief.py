@@ -1269,7 +1269,11 @@ def test_a_resume_refuses_a_persisted_brief_with_an_altered_relation_target():
     rework_standard_requirement(ws, requirement.id)
     root = next(d for d in ws.documents if d.secret == "std-secret")
     failing_root_write(ws, root)
-    partial, _ = rework(ws, requirement, analysis_output(rework=[resolved("R0001.L0")]))
+    output = analysis_output(
+        rework=[resolved("R0001.L0")],
+        normalized_changes={"acceptance_verification": "Dependency checked."},
+    )
+    partial, _ = rework(ws, requirement, output)
     assert partial.code is ProcessCode.PARTIAL_PROCESSING, partial
     node = rewrite_bound_brief(
         ws, lambda item: replace(item, requirement_id="SDLC-FR-0099")
@@ -1279,6 +1283,7 @@ def test_a_resume_refuses_a_persisted_brief_with_an_altered_relation_target():
         ws, model, requirement.id, resume_result=node.id
     )
     assert result.code is ProcessCode.PROCESSING_STATE_CONFLICT, result
+    assert "no longer gives" in result.message, "refused for the Brief, not the tree"
     assert not model.was_invoked
 
 
@@ -1451,3 +1456,216 @@ def test_tsa_never_admits_blocked_or_invalid_rework_evidence(build, corrupt, rea
     assert error.code is AdmissionResultCode.REQUIREMENT_NOT_ADMISSIBLE, error
     if reason is not None:
         assert reason in " ".join([str(error), *error.details])
+
+
+# -- relation provenance across consumers (a consistent hand edit) -----------------
+
+
+def fourth_iteration_with_a_claim_of_a_relation_claim(*, review=True):
+    """Process 4 binds R0003.C0, which re-raises R0002.C0, a DEPENDS_ON claim.
+
+    Its origin letter is C, so read-back alone cannot know a relation sits at
+    the root of the chain: a claim of a product-question claim legitimately
+    has no kind. Only history can tell.
+    """
+    ws, requirement, _ = relation_rejected_twice()
+    rework(ws, requirement, analysis_output(rework=[resolved("R0002.C0", "Restored.")]))
+    review_again(
+        ws,
+        requirement,
+        rework_verifications=[verify("R0002.C0", "UNRESOLVED", "Peer unchecked.")],
+    )
+    rework(
+        ws,
+        requirement,
+        analysis_output(rework=[resolved("R0003.C0", "Peer checked; restored.")]),
+    )
+    if review:
+        reviewed, _ = review_again(
+            ws, requirement, rework_verifications=[verify("R0003.C0")]
+        )
+        assert reviewed.verdict == "PASS", reviewed
+    _, stored = processes(ws)[-1]
+    [claim] = stored.rework_brief.items
+    assert (claim.origin_ref, claim.kind) == ("R0002.C0", "DEPENDS_ON")
+    return ws, requirement
+
+
+def blank_relation_kind(ws):
+    node = rewrite_bound_brief(ws, lambda item: replace(item, kind=None))
+    tampered = parse_process_result(ws.content[node.secret])
+    assert tampered.rework_brief.items[0].kind is None, "read-back alone accepts it"
+    assert tampered.rework_brief.items[0].requirement_id == "SDLC-FR-0002"
+    return node
+
+
+def test_a_blanked_relation_kind_is_refused_by_review():
+    ws, requirement = fourth_iteration_with_a_claim_of_a_relation_claim(review=False)
+    blank_relation_kind(ws)
+    before = len(ws.mutations)
+    result, model = review_again(
+        ws, requirement, rework_verifications=[verify("R0003.C0")]
+    )
+    assert result.code is ReviewCode.INVALID_PROCESS_RESULT, result
+    assert not model.was_invoked and ws.mutations[before:] == []
+
+
+def test_a_blanked_relation_kind_after_review_is_refused_at_ready():
+    ws, requirement = fourth_iteration_with_a_claim_of_a_relation_claim()
+    blank_relation_kind(ws)
+    before = len(ws.mutations)
+    result = approve_standard_requirement(ws, requirement.id)
+    assert result.code is ReadyDecisionResultCode.INVALID_REVIEW_RESULT, result
+    assert "not those of Process Result" in " ".join(result.details)
+    assert ws.mutations[before:] == []
+
+
+def test_a_blanked_relation_kind_after_review_is_refused_by_apply():
+    ws, requirement = fourth_iteration_with_a_claim_of_a_relation_claim()
+    blank_relation_kind(ws)
+    ws.set_requirement_state(requirement.id, "Apply")  # a direct Fibery move
+    before = len(ws.mutations)
+    result = apply_standard_requirement(ws, requirement.id)
+    assert result.code is ApplyResultCode.INVALID_REVIEW_RESULT, result
+    assert ws.mutations[before:] == [], "no relation, Document or State write"
+
+
+def test_a_blanked_relation_kind_after_review_is_refused_by_tsa_admission():
+    ws, requirement = fourth_iteration_with_a_claim_of_a_relation_claim()
+    blank_relation_kind(ws)
+    scene = tsa_scene_after(ws, requirement, applied_by_hand=True)
+    error = clean_refusal(scene)
+    assert error.code is AdmissionResultCode.REQUIREMENT_NOT_ADMISSIBLE, error
+    assert "not those of Process Result" in " ".join([str(error), *error.details])
+
+
+def test_a_blanked_relation_kind_is_refused_by_the_next_rework():
+    ws, requirement = fourth_iteration_with_a_claim_of_a_relation_claim()
+    blank_relation_kind(ws)
+    result, model = rework(ws, requirement, analysis_output())
+    assert result.code is ProcessCode.REVIEW_LINEAGE_INVALID, result
+    assert not model.was_invoked
+
+
+def test_a_blanked_relation_kind_is_refused_on_resume():
+    ws, requirement, _ = relation_rejected_twice()
+    rework(ws, requirement, analysis_output(rework=[resolved("R0002.C0", "Restored.")]))
+    review_again(
+        ws,
+        requirement,
+        rework_verifications=[verify("R0002.C0", "UNRESOLVED", "Peer unchecked.")],
+    )
+    rework_standard_requirement(ws, requirement.id)
+    root = next(d for d in ws.documents if d.secret == "std-secret")
+    failing_root_write(ws, root)
+    output = analysis_output(
+        rework=[resolved("R0003.C0")],
+        normalized_changes={"acceptance_verification": "Peer checked."},
+    )
+    partial, _ = rework(ws, requirement, output)
+    assert partial.code is ProcessCode.PARTIAL_PROCESSING, partial
+    node = blank_relation_kind(ws)
+    before = len(ws.mutations)
+    model = FakeModelRuntime()
+    result = process_standard_requirement(
+        ws, model, requirement.id, resume_result=node.id
+    )
+    assert result.code is ProcessCode.PROCESSING_STATE_CONFLICT, result
+    assert "no longer gives" in result.message, "refused for the Brief, not the tree"
+    assert not model.was_invoked and ws.mutations[before:] == []
+
+
+# -- Review after recovery across an unreviewed partial iteration --------------
+
+
+def history_bodies(ws):
+    return {node.secret: ws.content[node.secret] for node, _ in reviews(ws)}
+
+
+def assert_at_ready_without_a_decision(ws, requirement):
+    """The runner finds no machine work at Ready: nothing decides for the human."""
+    runner = StatusWorkspace(ws, {requirement.id: SUCCEEDED}, default=SUCCEEDED)
+    assert run_cycle(runner, real_workers(runner)).outcome is CycleOutcome.IDLE
+    assert ws.requirements[requirement.id].state == "Ready"
+
+
+def test_review_after_resuming_a_partial_rework_reaches_ready():
+    ws, requirement, node, partial = partially_reworked()
+    earlier_reviews = history_bodies(ws)
+    model = FakeModelRuntime()
+    resumed = process_standard_requirement(
+        ws, model, requirement.id, resume_result=node.id
+    )
+    assert resumed.code is ProcessCode.REQUIREMENT_PROCESSED, resumed
+    assert not model.was_invoked, "the persisted output is replayed"
+
+    reviewed, review_model = review_again(
+        ws, requirement, rework_verifications=[verify("R0001.F0")]
+    )
+
+    assert reviewed.code is ReviewCode.REQUIREMENT_REVIEWED, reviewed
+    assert len(review_model.calls) == 1
+    assert [result.iteration for _, result in processes(ws)] == [1, 2]
+    _, current = processes(ws)[-1]
+    assert current.brief_identity == partial.brief_identity
+    assert current.rework_brief.source.review_iteration == 1
+    _, review = reviews(ws)[-1]
+    assert review.reviewed_process_iteration == 2
+    assert review.reviewed_brief_identity == partial.brief_identity
+    assert review.what_status is WhatStatus.CLEAR
+    assert {s: ws.content[s] for s in earlier_reviews} == earlier_reviews
+    assert_at_ready_without_a_decision(ws, requirement)
+
+
+def test_review_after_a_new_iteration_over_a_partial_rework_reaches_ready():
+    """`--new-iteration-after`: the tree is still the partial iteration's input."""
+    ws, requirement, node, partial = partially_reworked()
+    earlier_reviews = history_bodies(ws)
+    ordinary = FakeModelRuntime([analysis_output(rework=[resolved()])])
+    refused = process_standard_requirement(ws, ordinary, requirement.id)
+    assert refused.code is ProcessCode.PROCESSING_STATE_CONFLICT, "ambiguous: refused"
+    assert not ordinary.was_invoked
+
+    model = FakeModelRuntime([analysis_output(rework=[resolved()])])
+    fresh = process_standard_requirement(
+        ws, model, requirement.id, new_iteration_after=node.id
+    )
+    assert fresh.code is ProcessCode.REQUIREMENT_PROCESSED and fresh.iteration == 3
+    assert len(model.calls) == 1
+    assert "[R0001.F0]" in model.calls[0]["context"]
+
+    reviewed, _ = review_again(
+        ws, requirement, rework_verifications=[verify("R0001.F0")]
+    )
+
+    assert reviewed.code is ReviewCode.REQUIREMENT_REVIEWED, reviewed
+    assert [result.iteration for _, result in processes(ws)] == [1, 2, 3]
+    _, current = processes(ws)[-1]
+    assert current.brief_identity == partial.brief_identity, "same source Review"
+    _, review = reviews(ws)[-1]
+    assert review.reviewed_process_iteration == 3
+    assert {s: ws.content[s] for s in earlier_reviews} == earlier_reviews
+    assert_at_ready_without_a_decision(ws, requirement)
+
+
+def test_review_after_a_failed_state_write_and_a_human_move_reaches_ready():
+    """The Root was rewritten but State stayed Process: recovery is the
+    documented manual move to Review, not a second Process run."""
+    ws, requirement, _ = at_ready()
+    earlier_reviews = history_bodies(ws)
+    rework_standard_requirement(ws, requirement.id)
+    ws.failures["set_requirement_state"] = FiberyError("State write failed")
+    partial, _ = rework(ws, requirement, analysis_output(rework=[resolved()]))
+    assert partial.code is ProcessCode.PARTIAL_PROCESSING, partial
+    again, model = rework(ws, requirement, analysis_output(), authorized=False)
+    assert again.code is ProcessCode.NO_CHANGES_TO_PROCESS and not model.was_invoked
+
+    ws.set_requirement_state(requirement.id, "Review")  # the operator's move
+    reviewed, _ = review_again(
+        ws, requirement, rework_verifications=[verify("R0001.F0")]
+    )
+
+    assert reviewed.code is ReviewCode.REQUIREMENT_REVIEWED, reviewed
+    assert [result.iteration for _, result in processes(ws)] == [1, 2]
+    assert {s: ws.content[s] for s in earlier_reviews} == earlier_reviews
+    assert_at_ready_without_a_decision(ws, requirement)
