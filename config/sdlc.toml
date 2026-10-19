@@ -75,3 +75,18 @@ runtime = "claude"
 #   2. role runtime/model above
 #   3. model_runtime.default
 #   4. local CLI default model when model is omitted
+
+# Delegated decisions (Requirement-Autonomous-Resolution-v0.1 §3).
+#
+# Standard Process may resolve a product question itself from authoritative
+# sources (the originating RAW, the Requirement's own normative input, a
+# DEPENDS_ON dependency) without any policy. A DELEGATED_DEFAULT — a decision
+# no source settles — is authorized only by an approved clause here, and
+# every resolution is independently verified by Review.
+#
+# "disabled" is default deny: no Project has delegated defaults. Enabling
+# needs mode = "enabled" and, per Project code, a policy whose content hashes
+# to the approved_fingerprint the approving human recorded. No policy is
+# approved in this repository.
+[autonomy]
+mode = "disabled"

@@ -16,6 +16,7 @@ import json
 import re
 from dataclasses import dataclass, replace
 
+from sdlc.autonomy_policy import FINGERPRINT_PATTERN, PolicyBinding
 from sdlc.normative_tree import (
     LEGACY_NORMATIVE_TREE_VERSION,
     NORMATIVE_TREE_VERSION,
@@ -25,6 +26,9 @@ from sdlc.normative_tree import (
 )
 from sdlc.rework_brief import InvalidReworkBrief, ReworkBrief, run_input_identity
 from sdlc.standard_analysis import (
+    MIN_ALTERNATIVES,
+    MIN_QUOTE_CHARACTERS,
+    RESOLVABLE_SECTIONS,
     SECTION_KEYS,
     AnalysisResult,
     Finding,
@@ -34,12 +38,21 @@ from sdlc.standard_analysis import (
     ProductQuestion,
     ProposedRelation,
     RelationKind,
+    Resolution,
+    ResolutionClass,
     ReworkExpectation,
     ReworkOutcome,
     ReworkResponse,
+    SourceCitation,
+    SourceKind,
+    require_resolution_shape,
     require_rework_coverage,
 )
 
+# 0.6 is 0.5 plus the autonomous resolutions with their bound citations, the
+# autonomy policy the run had, each product question's authority and
+# alternatives, and each rework response's resolution and evidence
+# (Requirement-Autonomous-Resolution-v0.1).
 # 0.5 is 0.4 plus the Rework Brief the iteration received (null when none),
 # one response per Brief item and the run-input identity
 # (Requirement-Rework-Brief-v0.1). 0.4 is 0.3 plus the structured product
@@ -49,7 +62,8 @@ from sdlc.standard_analysis import (
 # no question evidence. 0.2 bound manifest v1 under the older fingerprint
 # algorithm; 0.1 is the Root-only binding. Older versions stay readable as
 # history under their own semantics and are never written or rewritten.
-PROCESS_RESULT_VERSION = "0.5"
+PROCESS_RESULT_VERSION = "0.6"
+PRE_RESOLUTION_PROCESS_RESULT_VERSION = "0.5"
 PRE_REWORK_PROCESS_RESULT_VERSION = "0.4"
 PRE_QUESTION_PROCESS_RESULT_VERSION = "0.3"
 TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION = "0.2"
@@ -57,6 +71,7 @@ LEGACY_PROCESS_RESULT_VERSION = "0.1"
 SUPPORTED_PROCESS_RESULT_VERSIONS = frozenset(
     {
         PROCESS_RESULT_VERSION,
+        PRE_RESOLUTION_PROCESS_RESULT_VERSION,
         PRE_REWORK_PROCESS_RESULT_VERSION,
         PRE_QUESTION_PROCESS_RESULT_VERSION,
         TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION,
@@ -67,13 +82,22 @@ SUPPORTED_PROCESS_RESULT_VERSIONS = frozenset(
 CURRENT_TREE_PROCESS_RESULT_VERSIONS = frozenset(
     {
         PROCESS_RESULT_VERSION,
+        PRE_RESOLUTION_PROCESS_RESULT_VERSION,
         PRE_REWORK_PROCESS_RESULT_VERSION,
         PRE_QUESTION_PROCESS_RESULT_VERSION,
     }
 )
 #: Versions that record the structured product questions.
 QUESTION_BOUND_PROCESS_RESULT_VERSIONS = frozenset(
-    {PROCESS_RESULT_VERSION, PRE_REWORK_PROCESS_RESULT_VERSION}
+    {
+        PROCESS_RESULT_VERSION,
+        PRE_RESOLUTION_PROCESS_RESULT_VERSION,
+        PRE_REWORK_PROCESS_RESULT_VERSION,
+    }
+)
+#: Versions that record which review feedback they received.
+REWORK_BOUND_PROCESS_RESULT_VERSIONS = frozenset(
+    {PROCESS_RESULT_VERSION, PRE_RESOLUTION_PROCESS_RESULT_VERSION}
 )
 # The manifest version each tree-bound Result version must carry; a payload
 # that mixes them is a contradiction, never a best-effort read.
@@ -81,6 +105,7 @@ MANIFEST_VERSION_BY_RESULT_VERSION = {
     TREE_BOUND_LEGACY_PROCESS_RESULT_VERSION: LEGACY_NORMATIVE_TREE_VERSION,
     PRE_QUESTION_PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
     PRE_REWORK_PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
+    PRE_RESOLUTION_PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
     PROCESS_RESULT_VERSION: NORMATIVE_TREE_VERSION,
 }
 PROCESS_RESULT_SUFFIX = "Process Result"
@@ -108,6 +133,29 @@ REWORK_BRIEF_KEY = "rework_brief"
 REWORK_RESPONSES_KEY = "rework_responses"
 RUN_INPUT_KEY = "run_input_identity"
 REWORK_KEYS = (REWORK_BRIEF_KEY, REWORK_RESPONSES_KEY, RUN_INPUT_KEY)
+RESOLUTIONS_KEY = "resolutions"
+AUTONOMY_POLICY_KEY = "autonomy_policy"
+RESOLUTION_KEYS = (RESOLUTIONS_KEY, AUTONOMY_POLICY_KEY)
+LEGACY_QUESTION_KEYS = frozenset({"detail", "material"})
+QUESTION_KEYS = LEGACY_QUESTION_KEYS | {"authority", "alternatives"}
+LEGACY_RESPONSE_KEYS = frozenset(
+    {"item", "outcome", "explanation", "product_question_index"}
+)
+RESPONSE_KEYS = LEGACY_RESPONSE_KEYS | {"resolution_index", "evidence"}
+PERSISTED_RESOLUTION_KEYS = frozenset(
+    {
+        "class",
+        "issue",
+        "answer",
+        "affected_sections",
+        "sources",
+        "policy_clause",
+        "justification",
+    }
+)
+CITATION_KEYS = frozenset(
+    {"kind", "requirement_id", "entity_id", "fingerprint", "quote"}
+)
 
 
 class InvalidProcessResult(ValueError):
@@ -153,6 +201,10 @@ class ProcessResult:
     # none of which ever received review feedback.
     rework_brief: ReworkBrief | None = None
     rework_responses: tuple[ReworkResponse, ...] = ()
+    # The resolutions and the policy the run had (0.6). () and None on every
+    # older version, which recorded none: never "there were none".
+    resolutions: tuple[Resolution, ...] = ()
+    autonomy_policy: PolicyBinding | None = None
 
     @property
     def name(self) -> str:
@@ -160,7 +212,7 @@ class ProcessResult:
 
     @property
     def has_question_evidence(self) -> bool:
-        """Whether this iteration recorded its product questions (0.4, 0.5)."""
+        """Whether this iteration recorded its product questions (0.4+)."""
         return self.version in QUESTION_BOUND_PROCESS_RESULT_VERSIONS and (
             self.product_questions is not None
         )
@@ -168,7 +220,29 @@ class ProcessResult:
     @property
     def is_rework_bound(self) -> bool:
         """Whether this iteration records which review feedback it received."""
+        return self.version in REWORK_BOUND_PROCESS_RESULT_VERSIONS
+
+    @property
+    def is_resolution_bound(self) -> bool:
+        """Whether this iteration records its resolutions and policy (0.6)."""
         return self.version == PROCESS_RESULT_VERSION
+
+    @property
+    def relies_on_policy(self) -> bool:
+        """Whether a resolution's authority is a delegated policy clause."""
+        return any(
+            resolution.resolution_class is ResolutionClass.DELEGATED_DEFAULT
+            for resolution in self.resolutions
+        )
+
+    @property
+    def citations(self) -> tuple[SourceCitation, ...]:
+        """Every bound citation: the resolutions' sources and rebuttal evidence."""
+        return tuple(
+            source for resolution in self.resolutions for source in resolution.sources
+        ) + tuple(
+            source for response in self.rework_responses for source in response.evidence
+        )
 
     @property
     def brief_identity(self) -> str | None:
@@ -183,7 +257,11 @@ class ProcessResult:
         """
         if self.input_tree is None:
             return None
-        return run_input_identity(self.input_tree.fingerprint, self.brief_identity)
+        return run_input_identity(
+            self.input_tree.fingerprint,
+            self.brief_identity,
+            self.autonomy_policy.fingerprint if self.autonomy_policy else None,
+        )
 
     @property
     def is_tree_bound(self) -> bool:
@@ -213,13 +291,24 @@ def build_process_result(
     analysis: AnalysisResult,
     input_tree: TreeManifest,
     rework_brief: ReworkBrief | None = None,
+    autonomy_policy: PolicyBinding | None = None,
 ) -> ProcessResult:
     """Assemble the artifact, fingerprinting the document it will produce.
 
     The intended output tree is derived here from the deterministic rendering
     of the normalized document, never from anything the model supplied.
-    `rework_brief` is the feedback this iteration received, bound as is.
+    `rework_brief` is the feedback this iteration received, bound as is;
+    `autonomy_policy` the policy the run had. `analysis` carries bound
+    citations (`resolution_evidence.bind_citations`).
     """
+    if any(not source.is_bound for source in _citations(analysis)):
+        raise InvalidProcessResult(
+            "A Process Result binds every citation to the source that was read."
+        )
+    if any(question.authority is None for question in analysis.product_questions):
+        raise InvalidProcessResult(
+            "A Process Result records why each product question stays open."
+        )
     document = analysis.normalized.document(requirement_id)
     output_fingerprint = document_fingerprint(document)
     if not input_tree.is_current:
@@ -245,6 +334,16 @@ def build_process_result(
         product_questions=tuple(analysis.product_questions),
         rework_brief=rework_brief,
         rework_responses=tuple(analysis.rework_responses),
+        resolutions=tuple(analysis.resolutions),
+        autonomy_policy=autonomy_policy,
+    )
+
+
+def _citations(analysis: AnalysisResult) -> tuple[SourceCitation, ...]:
+    return tuple(
+        source for resolution in analysis.resolutions for source in resolution.sources
+    ) + tuple(
+        source for response in analysis.rework_responses for source in response.evidence
     )
 
 
@@ -295,7 +394,7 @@ def render_process_result(result: ProcessResult) -> str:
         **(
             {
                 PRODUCT_QUESTIONS_KEY: [
-                    {"detail": question.detail, "material": question.material}
+                    question_payload(question, result.is_resolution_bound)
                     for question in result.product_questions
                 ]
             }
@@ -303,6 +402,20 @@ def render_process_result(result: ProcessResult) -> str:
             else {}
         ),
         **(_rework_payload(result) if result.is_rework_bound else {}),
+        **(
+            {
+                RESOLUTIONS_KEY: [
+                    resolution_payload(resolution) for resolution in result.resolutions
+                ],
+                AUTONOMY_POLICY_KEY: (
+                    result.autonomy_policy.to_payload()
+                    if result.autonomy_policy
+                    else None
+                ),
+            }
+            if result.is_resolution_bound
+            else {}
+        ),
     }
     body = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False)
     return (
@@ -324,15 +437,62 @@ def _rework_payload(result: ProcessResult) -> dict[str, object]:
             result.rework_brief.to_payload() if result.rework_brief else None
         ),
         REWORK_RESPONSES_KEY: [
-            {
-                "item": response.item,
-                "outcome": response.outcome.value,
-                "explanation": response.explanation,
-                "product_question_index": response.product_question_index,
-            }
+            response_payload(response, result.is_resolution_bound)
             for response in result.rework_responses
         ],
         RUN_INPUT_KEY: result.run_input_identity,
+    }
+
+
+def question_payload(
+    question: ProductQuestion, resolution_bound: bool
+) -> dict[str, object]:
+    """A persisted product question; 0.6 adds its authority and alternatives."""
+    payload: dict[str, object] = {
+        "detail": question.detail,
+        "material": question.material,
+    }
+    if resolution_bound:
+        payload["authority"] = question.authority.value if question.authority else None
+        payload["alternatives"] = list(question.alternatives)
+    return payload
+
+
+def response_payload(
+    response: ReworkResponse, resolution_bound: bool
+) -> dict[str, object]:
+    """A persisted rework response; 0.6 adds its resolution and evidence."""
+    payload: dict[str, object] = {
+        "item": response.item,
+        "outcome": response.outcome.value,
+        "explanation": response.explanation,
+        "product_question_index": response.product_question_index,
+    }
+    if resolution_bound:
+        payload["resolution_index"] = response.resolution_index
+        payload["evidence"] = [citation_payload(item) for item in response.evidence]
+    return payload
+
+
+def citation_payload(citation: SourceCitation) -> dict[str, object]:
+    return {
+        "kind": citation.kind.value,
+        "requirement_id": citation.requirement_id,
+        "entity_id": citation.entity_id,
+        "fingerprint": citation.fingerprint,
+        "quote": citation.quote,
+    }
+
+
+def resolution_payload(resolution: Resolution) -> dict[str, object]:
+    return {
+        "class": resolution.resolution_class.value,
+        "issue": resolution.issue,
+        "answer": resolution.answer,
+        "affected_sections": list(resolution.affected_sections),
+        "sources": [citation_payload(source) for source in resolution.sources],
+        "policy_clause": resolution.policy_clause,
+        "justification": resolution.justification,
     }
 
 
@@ -403,13 +563,124 @@ def parse_process_result(text: str) -> ProcessResult:
         output_tree=output_tree,
         product_questions=_read_product_questions(payload, version),
     )
-    return _with_rework_evidence(result, payload)
+    return _with_rework_evidence(_with_resolutions(result, payload), payload)
+
+
+def _with_resolutions(
+    result: ProcessResult, payload: dict[str, object]
+) -> ProcessResult:
+    """0.6 carries its resolutions and policy binding; no older version may."""
+    if not result.is_resolution_bound:
+        present = [key for key in RESOLUTION_KEYS if key in payload]
+        if present:
+            raise InvalidProcessResult(
+                f"A {result.version} Process Result cannot carry resolution "
+                "evidence: " + ", ".join(present)
+            )
+        return result
+    missing = [key for key in RESOLUTION_KEYS if key not in payload]
+    if missing:
+        raise InvalidProcessResult(
+            f"A {PROCESS_RESULT_VERSION} Process Result is missing its resolution "
+            "evidence: " + ", ".join(missing)
+        )
+    entries = payload[RESOLUTIONS_KEY]
+    if not isinstance(entries, list):
+        raise InvalidProcessResult(f"{RESOLUTIONS_KEY} must be a list.")
+    resolutions = tuple(
+        read_resolution_payload(entry, InvalidProcessResult) for entry in entries
+    )
+    binding = payload[AUTONOMY_POLICY_KEY]
+    try:
+        policy = PolicyBinding.from_payload(binding) if binding is not None else None
+    except ValueError as error:
+        raise InvalidProcessResult(str(error)) from error
+    bound = replace(result, resolutions=resolutions, autonomy_policy=policy)
+    if bound.relies_on_policy and policy is None:
+        raise InvalidProcessResult(
+            "A DELEGATED_DEFAULT resolution needs the autonomy policy it relied on."
+        )
+    return bound
+
+
+def read_resolution_payload(entry: object, error: type[ValueError]) -> Resolution:
+    """A persisted resolution, held to its closed shape and class rules."""
+    if not isinstance(entry, dict) or set(entry) != PERSISTED_RESOLUTION_KEYS:
+        raise error(f"Malformed persisted resolution: {entry!r}")
+    try:
+        resolution_class = ResolutionClass(entry["class"])
+    except ValueError as cause:
+        raise error(f"Malformed persisted resolution: {cause}") from cause
+    sections = entry["affected_sections"]
+    sources = entry["sources"]
+    clause = entry["policy_clause"]
+    if (
+        not all(
+            isinstance(entry[key], str) and entry[key].strip()
+            for key in ("issue", "answer", "justification")
+        )
+        or not isinstance(sections, list)
+        or not sections
+        or not all(
+            isinstance(key, str) and key in RESOLVABLE_SECTIONS for key in sections
+        )
+        or len(set(sections)) != len(sections)
+        or not isinstance(sources, list)
+        or (clause is not None and (not isinstance(clause, str) or not clause.strip()))
+    ):
+        raise error(f"Malformed persisted resolution: {entry!r}")
+    resolution = Resolution(
+        resolution_class=resolution_class,
+        issue=entry["issue"],
+        answer=entry["answer"],
+        affected_sections=tuple(sections),
+        sources=tuple(read_citation_payload(item, error) for item in sources),
+        justification=entry["justification"],
+        policy_clause=clause,
+    )
+    require_resolution_shape(resolution, "A persisted resolution", error)
+    return resolution
+
+
+def read_citation_payload(entry: object, error: type[ValueError]) -> SourceCitation:
+    """A persisted, bound citation: identity and fingerprint present, or refused."""
+    if not isinstance(entry, dict) or set(entry) != CITATION_KEYS:
+        raise error(f"Malformed persisted citation: {entry!r}")
+    try:
+        kind = SourceKind(entry["kind"])
+    except ValueError as cause:
+        raise error(f"Malformed persisted citation: {cause}") from cause
+    quote, requirement_id, entity_id, fingerprint = (
+        entry["quote"],
+        entry["requirement_id"],
+        entry["entity_id"],
+        entry["fingerprint"],
+    )
+    names_entity = kind is not SourceKind.REQUIREMENT
+    if (
+        not isinstance(quote, str)
+        or len(quote.strip()) < MIN_QUOTE_CHARACTERS
+        or not isinstance(fingerprint, str)
+        or not FINGERPRINT_PATTERN.match(fingerprint)
+        or names_entity
+        != (isinstance(requirement_id, str) and bool(requirement_id.strip()))
+        or names_entity != (isinstance(entity_id, str) and bool(entity_id.strip()))
+        or (not names_entity and (requirement_id is not None or entity_id is not None))
+    ):
+        raise error(f"Malformed persisted citation: {entry!r}")
+    return SourceCitation(
+        kind=kind,
+        quote=quote,
+        requirement_id=requirement_id,
+        entity_id=entity_id,
+        fingerprint=fingerprint,
+    )
 
 
 def _with_rework_evidence(
     result: ProcessResult, payload: dict[str, object]
 ) -> ProcessResult:
-    """0.5 carries all three rework keys, re-validated; no older version may."""
+    """0.5+ carries all three rework keys, re-validated; no older version may."""
     if not result.is_rework_bound:
         present = [key for key in REWORK_KEYS if key in payload]
         if present:
@@ -428,7 +699,9 @@ def _with_rework_evidence(
     entries = payload[REWORK_RESPONSES_KEY]
     if not isinstance(entries, list):
         raise InvalidProcessResult(f"{REWORK_RESPONSES_KEY} must be a list.")
-    responses = tuple(_read_rework_response(entry) for entry in entries)
+    responses = tuple(
+        _read_rework_response(entry, result.is_resolution_bound) for entry in entries
+    )
     if brief is None and responses:
         raise InvalidProcessResult(
             "A Process Result that received no Rework Brief cannot answer one."
@@ -437,8 +710,11 @@ def _with_rework_evidence(
         try:
             require_rework_coverage(
                 responses,
-                ReworkExpectation(brief.item_refs, brief.what_refs),
+                ReworkExpectation(
+                    brief.item_refs, brief.what_refs, brief.resolution_refs
+                ),
                 result.product_questions or (),
+                result.resolutions if result.is_resolution_bound else None,
             )
         except InvalidAnalysisOutput as error:
             raise InvalidProcessResult(
@@ -468,13 +744,9 @@ def _read_brief(value: object, requirement_id: str) -> ReworkBrief | None:
     return brief
 
 
-def _read_rework_response(entry: object) -> ReworkResponse:
-    if not isinstance(entry, dict) or set(entry) != {
-        "item",
-        "outcome",
-        "explanation",
-        "product_question_index",
-    }:
+def _read_rework_response(entry: object, resolution_bound: bool) -> ReworkResponse:
+    keys = RESPONSE_KEYS if resolution_bound else LEGACY_RESPONSE_KEYS
+    if not isinstance(entry, dict) or set(entry) != keys:
         raise InvalidProcessResult(f"Malformed persisted rework response: {entry!r}")
     explanation = entry["explanation"]
     index = entry["product_question_index"]
@@ -494,11 +766,22 @@ def _read_rework_response(entry: object) -> ReworkResponse:
         )
     ):
         raise InvalidProcessResult(f"Malformed persisted rework response: {entry!r}")
+    resolution = entry.get("resolution_index")
+    evidence = entry.get("evidence", [])
+    if (
+        resolution is not None
+        and (not isinstance(resolution, int) or isinstance(resolution, bool))
+    ) or not isinstance(evidence, list):
+        raise InvalidProcessResult(f"Malformed persisted rework response: {entry!r}")
     return ReworkResponse(
         item=entry["item"],
         outcome=outcome,
         explanation=explanation,
         product_question_index=index,
+        resolution_index=resolution,
+        evidence=tuple(
+            read_citation_payload(item, InvalidProcessResult) for item in evidence
+        ),
     )
 
 
@@ -517,19 +800,67 @@ def _read_product_questions(
         raise InvalidProcessResult(
             f"A {version} Process Result must carry its {PRODUCT_QUESTIONS_KEY} list."
         )
-    return tuple(_read_product_question(entry) for entry in entries)
+    return tuple(
+        read_question_payload(
+            entry, version == PROCESS_RESULT_VERSION, InvalidProcessResult
+        )
+        for entry in entries
+    )
 
 
-def _read_product_question(entry: object) -> ProductQuestion:
+def read_question_payload(
+    entry: object,
+    resolution_bound: bool,
+    error: type[ValueError],
+    *,
+    copies_older_process: bool = False,
+) -> ProductQuestion:
+    """A persisted product question; 0.6 and Review 0.7 carry its authority.
+
+    `copies_older_process` is for a Review 0.7 reading its copy of the
+    questions: a question copied from a Process Result older than 0.6 never
+    recorded an authority and is copied in that older shape, never with an
+    invented one. `what_clearance` then holds the copy to the bound Process.
+    """
+    keys = QUESTION_KEYS if resolution_bound else LEGACY_QUESTION_KEYS
+    if (
+        copies_older_process
+        and isinstance(entry, dict)
+        and set(entry) == LEGACY_QUESTION_KEYS
+    ):
+        keys, resolution_bound = LEGACY_QUESTION_KEYS, False
     if (
         not isinstance(entry, dict)
-        or set(entry) != {"detail", "material"}
+        or set(entry) != keys
         or not isinstance(entry["detail"], str)
         or not entry["detail"].strip()
         or not isinstance(entry["material"], bool)
     ):
-        raise InvalidProcessResult(f"Malformed persisted product question: {entry!r}")
-    return ProductQuestion(detail=entry["detail"], material=entry["material"])
+        raise error(f"Malformed persisted product question: {entry!r}")
+    if not resolution_bound:
+        return ProductQuestion(detail=entry["detail"], material=entry["material"])
+    alternatives = entry["alternatives"]
+    try:
+        authority = ResolutionClass(entry["authority"])
+    except ValueError as cause:
+        raise error(f"Malformed persisted product question: {cause}") from cause
+    if (
+        authority
+        not in {ResolutionClass.HUMAN_REQUIRED, ResolutionClass.INSUFFICIENT_EVIDENCE}
+        or not isinstance(alternatives, list)
+        or not all(isinstance(item, str) and item.strip() for item in alternatives)
+        or (
+            authority is ResolutionClass.INSUFFICIENT_EVIDENCE
+            and len(alternatives) < MIN_ALTERNATIVES
+        )
+    ):
+        raise error(f"Malformed persisted product question: {entry!r}")
+    return ProductQuestion(
+        detail=entry["detail"],
+        material=entry["material"],
+        authority=authority,
+        alternatives=tuple(alternatives),
+    )
 
 
 def _read_trees(

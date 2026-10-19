@@ -813,7 +813,13 @@ the previous outcome is not shown as the new cycle's result.
                     "requirement": OVERRIDE_REQUIREMENT,
                 },
                 "findings": [],
-                "product_questions": [{"detail": OVERRIDE_QUESTION, "material": True}],
+                "product_questions": [
+                    {
+                        "detail": OVERRIDE_QUESTION,
+                        "material": True,
+                        "authority": "HUMAN_REQUIRED",
+                    }
+                ],
             },
         ),
         review=ReviewScenario(

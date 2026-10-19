@@ -12,6 +12,7 @@ from sdlc.normative_tree import TreeManifest, read_normative_tree
 from sdlc.process_result import (
     build_process_result,
     document_fingerprint,
+    parse_process_result,
     process_result_name,
     render_process_result,
 )
@@ -29,9 +30,11 @@ from sdlc.standard_analysis import (
     NormalizedRequirement,
     ProposedRelation,
     RelationKind,
+    ResolutionClass,
     render_open_questions,
 )
 from sdlc.standard_review import (
+    RESOLUTION_CHECKS,
     DependencyVerification,
     ReviewOutput,
     VerificationOutcome,
@@ -39,6 +42,13 @@ from sdlc.standard_review import (
 from standard_fake import REQUIREMENT_ID, build_standard_workspace, normalized
 
 PROCESS_SECRET = "process-secret"
+
+
+def with_authority(question):
+    """A product question as a 0.6 Process Result records it: with its authority."""
+    if question.authority is not None:
+        return question
+    return replace(question, authority=ResolutionClass.HUMAN_REQUIRED)
 
 
 def tree_manifest(ws, root, requirement_id=REQUIREMENT_ID):
@@ -119,6 +129,7 @@ def build_review_workspace(
         if record is not None and record.id != requirement.id:
             give_reviewed_evidence(ws, record)
     content = normalized(**(normalized_changes or {}))
+    questions = tuple(with_authority(question) for question in questions)
     if questions:
         content["open_questions"] = render_open_questions(tuple(questions))
     document = NormalizedRequirement(**content).document(REQUIREMENT_ID)
@@ -282,6 +293,33 @@ def add_process_iteration(
     return result
 
 
+def downgrade_latest_process(ws, version="0.5", requirement_id=REQUIREMENT_ID):
+    """Rewrite the latest Process Result as an older version, coherently.
+
+    An older Process Result recorded no resolutions, no policy binding and no
+    question authority, so all three go; everything else stays as written.
+    """
+    node = [
+        d
+        for d in ws.documents
+        if d.name.startswith(f"{requirement_id} — Process Result")
+    ][-1]
+    stored = parse_process_result(reserialize_like_fibery(ws.content[node.secret]))
+    ws.content[node.secret] = render_process_result(
+        replace(
+            stored,
+            version=version,
+            resolutions=(),
+            autonomy_policy=None,
+            product_questions=tuple(
+                replace(question, authority=None, alternatives=())
+                for question in stored.product_questions or ()
+            ),
+        )
+    )
+    return node
+
+
 def payload_of(ws, node):
     """The JSON payload of a persisted artifact and where it sits in the text."""
     text = ws.content[node.secret]
@@ -332,6 +370,7 @@ def review_output(
     material_unresolved_what=(),
     rework_verifications=(),
     dependency_verifications=(),
+    resolution_verifications=(),
 ):
     """A reviewer response. There is deliberately no verdict field.
 
@@ -339,6 +378,8 @@ def review_output(
     that answered a Rework Brief must verify it (Requirement-Rework-Brief-v0.1).
     """
     body = {"rework_verifications": list(rework_verifications)}
+    if resolution_verifications:
+        body["resolution_verifications"] = list(resolution_verifications)
     if dependency_verifications:
         body["dependency_verifications"] = list(dependency_verifications)
     if question_verifications:
@@ -354,6 +395,31 @@ def review_output(
     if assessment is not None:
         body["assessment"] = assessment
     return json.dumps(body)
+
+
+def verify_resolution(
+    index=0, outcome="CONFIRMED", delegated=False, failing=(), uncertain=(), **fields
+):
+    """One resolution verification whose ten checks agree with `outcome`.
+
+    `failing` and `uncertain` name the checks answered FAIL and UNCERTAIN;
+    `within_policy_clause` is NOT_APPLICABLE unless the resolution is
+    `delegated`. A REJECTED one is graded WARNING unless told otherwise.
+    """
+    checks = {name: "PASS" for name in RESOLUTION_CHECKS}
+    if not delegated:
+        checks["within_policy_clause"] = "NOT_APPLICABLE"
+    checks.update({name: "FAIL" for name in failing})
+    checks.update({name: "UNCERTAIN" for name in uncertain})
+    body = {
+        "resolution_index": index,
+        "outcome": outcome,
+        "checks": checks,
+        "reason": "Checked against the cited source.",
+    }
+    if outcome == "REJECTED":
+        body["severity"] = "WARNING"
+    return {**body, **fields}
 
 
 def confirm(index=0, severity="WARNING", reason="Independently reproduced."):

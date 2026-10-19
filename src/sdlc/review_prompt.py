@@ -26,10 +26,17 @@ Two exclusions carry the independence of this stage:
 
 The model is asked for structured data only, never for reasoning, never for
 Fibery mechanics, and never for a verdict: deriving that is the code's job.
+
+The resolutions the earlier analysis adopted itself
+(Requirement-Autonomous-Resolution-v0.1) are sent as claims too, each with
+its bound citations, and for a delegated default the clauses of the policy it
+bound with the human-only domains no clause can cover. The reviewer answers
+ten checks per resolution; code holds its outcome to them.
 """
 
 from __future__ import annotations
 
+from sdlc.autonomy_policy import AutonomyPolicy, render_policy_section
 from sdlc.comparison_context import (
     ComparisonContext,
     render_comparison_section,
@@ -39,6 +46,8 @@ from sdlc.fibery_workspace import RequirementRecord, RequirementRelations
 from sdlc.process_result import ProcessResult
 from sdlc.standard_analysis import FindingKind
 from sdlc.standard_review import (
+    RESOLUTION_CHECKS,
+    CheckOutcome,
     RejectionBasis,
     ReviewSeverity,
     VerificationOutcome,
@@ -100,6 +109,23 @@ Shape:
     { "item": "the Brief item reference of one rework response",
       "outcome": "CONFIRMED" | "REJECTED" | "UNRESOLVED",
       "severity": "INFO" | "WARNING" | "BLOCKING",
+      "reason": "concise justification" }
+  ],
+  "resolution_verifications": [
+    { "resolution_index": 0,
+      "outcome": "CONFIRMED" | "REJECTED" | "UNRESOLVED",
+      "severity": "REJECTED only: INFO" | "WARNING" | "BLOCKING",
+      "checks": {
+        "issue_identified": "PASS" | "FAIL" | "UNCERTAIN",
+        "source_supports_answer": "...",
+        "authority_class_correct": "...",
+        "within_policy_clause": "... or NOT_APPLICABLE",
+        "consistent_with_raw": "...",
+        "consistent_with_related": "...",
+        "no_unsupported_obligation": "...",
+        "no_new_contradiction": "...",
+        "no_material_what_open": "...",
+        "testable_at_what_level": "..." },
       "reason": "concise justification" }
   ],
   "assessment": {
@@ -311,6 +337,50 @@ Rules:
   defect a correction introduced as a new finding as well. Do your own full
   review of the current Requirement regardless: the responses are not the
   scope of your review.
+- Resolutions (only when the context lists them): the earlier analysis
+  answered these product questions itself and adopted the answers into the
+  Requirement. Each is a claim about authority and evidence, not a
+  conclusion: a quote that exists in its source proves only that the text
+  exists. Verify every listed resolution exactly once, by its index, against
+  the cited sources, the RAW source, the current document, the related
+  Requirements and, for DELEGATED_DEFAULT, the listed policy clause. Answer
+  each check PASS, FAIL or UNCERTAIN:
+  * issue_identified: the issue it resolved is a real product question here,
+    stated correctly.
+  * source_supports_answer: the cited text actually supports this answer,
+    not merely mentions its topic.
+  * authority_class_correct: the class is right. SOURCE_GROUNDED needs the
+    RAW or this Requirement's own input to establish the answer;
+    DEPENDENCY_GROUNDED needs a necessary DEPENDS_ON dependency that owns
+    the definition (an AFFECTS peer, a merely similar peer, or one that is
+    not approved authority never qualifies); DELEGATED_DEFAULT needs no
+    source to settle it and an approved clause to permit it. Do not accept
+    the class because it is stated.
+  * within_policy_clause: DELEGATED_DEFAULT only; NOT_APPLICABLE for the
+    other two classes. The answer is exactly the clause's permitted decision,
+    its conditions hold, it stays within the boundaries, no exclusion
+    applies, and the evidence the clause requires was cited. A broadened or
+    paraphrased clause FAILS. A decision touching a human-only domain FAILS
+    whatever the clause says.
+  * consistent_with_raw and consistent_with_related: it contradicts neither
+    the RAW source nor a related Requirement.
+  * no_unsupported_obligation: it adds no obligation the source or clause
+    does not establish.
+  * no_new_contradiction: the change creates no contradiction in this
+    Requirement.
+  * no_material_what_open: no material WHAT question about this issue is
+    left open by the adopted answer.
+  * testable_at_what_level: with the answer, the affected obligation can be
+    judged objectively at the WHAT level.
+  This Requirement's current content was written by the earlier analysis
+  and may hold answers an earlier review did not confirm: such an answer is
+  not authority, and a REQUIREMENT citation of it does not pass
+  source_supports_answer or authority_class_correct.
+  CONFIRMED requires every check to PASS (within_policy_clause may be
+  NOT_APPLICABLE as above). Any FAIL is REJECTED, with the severity of the
+  unsupported or unauthorized decision. Otherwise any UNCERTAIN is
+  UNRESOLVED, with no severity. A resolution you do not confirm keeps the
+  Requirement blocked on WHAT; never choose a different answer yourself.
 - Do not state an overall verdict, WHAT status, score or recommendation. There
   is no field for one: code derives them from what you report.
 - Do not propose changes, rewrites, updates, retirement or supersession of any
@@ -335,10 +405,13 @@ def build_review_prompt(
     relations: RequirementRelations,
     comparison: ComparisonContext,
     dependencies: tuple[str, ...] = (),
+    policy: AutonomyPolicy | None = None,
 ) -> tuple[str, str]:
     """Return the instruction prompt and the context sent on stdin.
 
     `dependencies` describes the interpretation set, one line per member.
+    `policy` is the autonomy policy a delegated default bound, already proved
+    current; it is shown only when a resolution relies on it.
     """
     context = "\n".join(
         [
@@ -365,6 +438,16 @@ def build_review_prompt(
             _questions_section(process_result),
             "",
             *(
+                [_resolutions_section(process_result), ""]
+                if process_result.resolutions
+                else []
+            ),
+            *(
+                [render_policy_section(policy), ""]
+                if process_result.relies_on_policy
+                else []
+            ),
+            *(
                 [_rework_section(process_result), ""]
                 if process_result.rework_brief is not None
                 else []
@@ -379,6 +462,7 @@ def build_review_prompt(
             f"# Allowed severities\n{', '.join(s.value for s in ReviewSeverity)}",
             f"# Allowed outcomes\n{', '.join(o.value for o in VerificationOutcome)}",
             f"# Allowed rejection bases\n{', '.join(b.value for b in RejectionBasis)}",
+            *(_check_vocabulary() if process_result.resolutions else []),
         ]
     )
     return INSTRUCTIONS, context
@@ -422,11 +506,52 @@ def _questions_section(result: ProcessResult) -> str:
         "Verify each by its index. Its materiality is a claim, not a conclusion."
     )
     lines = [
-        f"[{index}] material={'true' if question.material else 'false'}: "
-        f"{question.detail}"
+        f"[{index}] material={'true' if question.material else 'false'}"
+        + (f", {question.authority.value}" if question.authority else "")
+        + f": {question.detail}"
+        + (
+            f" (alternatives: {' | '.join(question.alternatives)})"
+            if question.alternatives
+            else ""
+        )
         for index, question in enumerate(result.product_questions or ())
     ]
     return "\n".join([header, *lines]) if lines else f"{header}\n(none)"
+
+
+def _check_vocabulary() -> list[str]:
+    """The resolution checks and their outcomes, only when there is one to check."""
+    return [
+        f"# Resolution checks\n{', '.join(RESOLUTION_CHECKS)}",
+        f"# Allowed check outcomes\n{', '.join(c.value for c in CheckOutcome)}",
+    ]
+
+
+def _resolutions_section(result: ProcessResult) -> str:
+    """The resolutions the analysis adopted, indexed, with their citations."""
+    header = (
+        "# Resolutions adopted by the earlier analysis\n"
+        "Verify each by its index. Each is a claim of authority and evidence; "
+        "its citations were checked only for existence."
+    )
+    blocks = []
+    for index, resolution in enumerate(result.resolutions):
+        lines = [
+            f"[{index}] {resolution.resolution_class.value}: {resolution.issue}",
+            f"  Adopted answer: {resolution.answer}",
+            f"  Affected sections: {', '.join(resolution.affected_sections)}",
+        ]
+        if resolution.policy_clause:
+            lines.append(f"  Policy clause: {resolution.policy_clause}")
+        lines += [
+            f"  Source {source.kind.value}"
+            + (f" {source.requirement_id}" if source.requirement_id else "")
+            + f': "{source.quote}"'
+            for source in resolution.sources
+        ]
+        lines.append(f"  Justification: {resolution.justification}")
+        blocks.append("\n".join(lines))
+    return "\n".join([header, *blocks]) if blocks else f"{header}\n(none)"
 
 
 def _rework_section(result: ProcessResult) -> str:
@@ -449,6 +574,14 @@ def _rework_section(result: ProcessResult) -> str:
         answer = f"  Answer: {response.outcome.value}: {response.explanation}"
         if response.product_question_index is not None:
             answer += f" (kept as product question [{response.product_question_index}])"
+        if response.resolution_index is not None:
+            answer += f" (relies on resolution [{response.resolution_index}])"
+        answer += "".join(
+            f"\n  Evidence {source.kind.value}"
+            + (f" {source.requirement_id}" if source.requirement_id else "")
+            + f': "{source.quote}"'
+            for source in response.evidence
+        )
         blocks.append(f"[{item.ref}] ({', '.join(facts)}) {item.detail}\n{answer}")
     return "\n".join([header, *blocks]) if blocks else f"{header}\n(none)"
 

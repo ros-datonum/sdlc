@@ -27,14 +27,22 @@ latest completed Review as a Rework Brief: non-normative feedback, assembled
 by code from that Review Result and the Process Result it reviewed, supplied
 to the model in its own labelled section and bound into the new Process
 Result. A Review that cannot be read or does not form a coherent lineage
-refuses the run; it is never skipped. Two runs over the same input tree and
-the same Brief never both call the model.
+refuses the run; it is never skipped. Two runs over the same input tree, the
+same Brief and the same autonomy policy never both call the model.
+
+Process may resolve a product question itself under stated authority
+(Requirement-Autonomous-Resolution-v0.1): the originating RAW, its own
+normative input, a DEPENDS_ON dependency, or a clause of the Project's
+approved autonomy policy, read once per invocation. Every citation is bound to
+what this run read before anything is persisted; one that does not hold
+rejects the model's output.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sdlc.autonomy_policy import DISABLED, AutonomyPolicies, AutonomyPolicy
 from sdlc.comparison_context import (
     ComparisonContext,
     ComparisonContextError,
@@ -70,6 +78,14 @@ from sdlc.process_result import (
     render_process_result,
 )
 from sdlc.raw_source import content_equivalent
+from sdlc.resolution_evidence import (
+    ResolutionEvidenceError,
+    SourceCorpus,
+    SourceText,
+    bind_citations,
+    render_raw_ancestry,
+    require_current_policy,
+)
 from sdlc.result_shell import (
     RECOVERY_OPTION,
     document_label,
@@ -88,6 +104,7 @@ from sdlc.rework_brief import ReworkBrief, run_input_identity
 from sdlc.standard_analysis import (
     AnalysisResult,
     InvalidAnalysisOutput,
+    RelationKind,
     ReworkExpectation,
     parse_analysis_output,
 )
@@ -152,6 +169,10 @@ class _Context:
     raw_ancestry: str
     existing_standards: tuple[RequirementRecord, ...]
     results: tuple[tuple[DocumentNode, ProcessResult], ...]
+    # The originating RAWs as read, for binding citations; and the Project's
+    # approved autonomy policy, None when delegated defaults are unavailable.
+    raws: tuple[SourceText, ...] = ()
+    policy: AutonomyPolicy | None = None
     # The Reviewer's own artifacts under the Root: history, never content.
     reviews: tuple[DocumentNode, ...] = ()
     # An empty Process Result shell the operator named for recovery, with the
@@ -169,6 +190,10 @@ class _Context:
     @property
     def input_tree(self) -> TreeManifest:
         return self.tree.manifest
+
+    @property
+    def policy_fingerprint(self) -> str | None:
+        return self.policy.fingerprint if self.policy else None
 
     @property
     def upgrades_older(self) -> bool:
@@ -191,6 +216,7 @@ def process_standard_requirement(
     new_iteration_after: str | None = None,
     *,
     authorized_new_cycle: bool = False,
+    policies: AutonomyPolicies = DISABLED,
 ) -> StandardProcessResult:
     """Normalize and analyze one Standard Requirement in Process.
 
@@ -215,6 +241,9 @@ def process_standard_requirement(
     input-equality ambiguity (audit A11), empty shells and every entry,
     history and fresh-input check behave as in an ordinary call; it takes
     none of the three options, and no command sets it.
+
+    `policies` are the approved autonomy policies, read once by the caller;
+    the default delegates nothing (Autonomous Resolution v0.1 §3).
     """
     journal = _Journal()
     try:
@@ -224,11 +253,13 @@ def process_standard_requirement(
             new_iteration_after,
             authorized_new_cycle=authorized_new_cycle,
         )
-        context = _load_context(workspace, entity_id, recover_empty_result)
+        context = _load_context(workspace, entity_id, recover_empty_result, policies)
 
         resumable = _resumable_result(context)
         if resume_result is not None:
-            result = _select_explicit_resume(workspace, context, resume_result)
+            result = _select_explicit_resume(
+                workspace, context, resume_result, policies
+            )
         elif new_iteration_after is not None:
             _require_new_iteration_anchor(context, new_iteration_after)
             result = _produce_result(
@@ -415,7 +446,10 @@ def _failure_result(failure: _StageFailed, journal: _Journal) -> StandardProcess
 
 
 def _load_context(
-    workspace: RawProcessorWorkspace, entity_id: str, recovering: str | None = None
+    workspace: RawProcessorWorkspace,
+    entity_id: str,
+    recovering: str | None = None,
+    policies: AutonomyPolicies = DISABLED,
 ) -> _Context:
     """Read the Requirement and everything needed to process it."""
     try:
@@ -472,6 +506,7 @@ def _load_context(
     tree = _read_tree(workspace, requirement, root, "loading the Requirement")
     results, reviews, shell = _read_children(workspace, requirement, root, recovering)
     root_content = tree.root.body
+    raws = _read_raws(workspace, requirement)
 
     return _Context(
         requirement=requirement,
@@ -480,13 +515,15 @@ def _load_context(
         root_content=root_content,
         input_fingerprint=document_fingerprint(root_content),
         tree=tree,
-        raw_ancestry=_read_raw_ancestry(workspace, requirement),
+        raw_ancestry=render_raw_ancestry(raws),
         existing_standards=tuple(
             record for record in standards if record.id != requirement.id
         ),
         results=results,
         reviews=reviews,
         shell=shell,
+        raws=raws,
+        policy=policies.for_project(project.code),
     )
 
 
@@ -728,28 +765,26 @@ def _read_result(
     return result
 
 
-def _read_raw_ancestry(
+def _read_raws(
     workspace: RawProcessorWorkspace, requirement: RequirementRecord
-) -> str:
-    """The originating RAW Requirement's document, when it can be resolved.
+) -> tuple[SourceText, ...]:
+    """The originating RAW Requirements' documents, when they can be resolved.
 
     Included so the model can tell "the source never said this" from
-    "decomposition dropped it". Absence is not an error: a Standard Requirement
+    "decomposition dropped it", and kept per RAW so a citation can be bound to
+    the exact content read. Absence is not an error: a Standard Requirement
     need not have come from a RAW.
     """
     try:
-        raws = workspace.derived_from(requirement.id)
-        if not raws:
-            return ""
-        sections = []
-        for raw in raws:
-            documents = workspace.documents_attached_to_requirement(raw.public_id)
-            for document in documents:
-                sections.append(
-                    f"<!-- RAW {raw.requirement_id} -->\n"
-                    + workspace.read_document_content(document.secret or "")
-                )
-        return "\n\n".join(sections)
+        return tuple(
+            SourceText(
+                requirement_id=raw.requirement_id or "",
+                entity_id=raw.id,
+                content=workspace.read_document_content(document.secret or ""),
+            )
+            for raw in workspace.derived_from(requirement.id)
+            for document in workspace.documents_attached_to_requirement(raw.public_id)
+        )
     except FiberyError as error:
         raise _StageFailed(
             StandardProcessResultCode.FIBERY_READ_FAILED,
@@ -798,7 +833,9 @@ def _repeats_latest_run(context: _Context, brief: ReworkBrief | None) -> bool:
         and latest[1].is_current
         and latest[1].run_input_identity
         == run_input_identity(
-            context.input_tree.fingerprint, brief.identity if brief else None
+            context.input_tree.fingerprint,
+            brief.identity if brief else None,
+            context.policy_fingerprint,
         )
     )
 
@@ -883,7 +920,10 @@ def _require_input_state(
 
 
 def _select_explicit_resume(
-    workspace: RawProcessorWorkspace, context: _Context, document_id: str
+    workspace: RawProcessorWorkspace,
+    context: _Context,
+    document_id: str,
+    policies: AutonomyPolicies = DISABLED,
 ) -> ProcessResult:
     """Explicit permission to apply the latest Result's persisted output.
 
@@ -897,7 +937,34 @@ def _select_explicit_resume(
     _require_input_state(context, node, result, RESUME_OPTION)
     _require_unreviewed(workspace, context, node, result.iteration)
     _require_bound_brief(workspace, context, node, result)
+    _require_bound_policy(node, result, policies)
     return result
+
+
+def _require_bound_policy(
+    node: DocumentNode, result: ProcessResult, policies: AutonomyPolicies
+) -> None:
+    """A resumed delegated default replays only under the policy it bound.
+
+    The persisted output is applied exactly as recorded, bindings included;
+    a historical resolution is never reinterpreted under other authority.
+    """
+    try:
+        require_current_policy(
+            result.relies_on_policy,
+            result.autonomy_policy,
+            (item.policy_clause for item in result.resolutions if item.policy_clause),
+            policies,
+        )
+    except ResolutionEvidenceError as error:
+        raise _StageFailed(
+            StandardProcessResultCode.RESOLUTION_EVIDENCE_STALE,
+            f"Process Result Document {document_label(node)} relies on autonomy "
+            "policy that is no longer active as bound; replaying it is not "
+            f"recovery. Use {NEW_ITERATION_OPTION} {node.id} to process the "
+            "current tree under the current policy. Nothing was written.",
+            (error.message, *error.details),
+        ) from error
 
 
 def _require_bound_brief(
@@ -1247,6 +1314,7 @@ def _produce_result(
         analysis=_analyze(workspace, model, context, journal, brief),
         input_tree=context.input_tree,
         rework_brief=brief,
+        autonomy_policy=context.policy.binding if context.policy else None,
     )
     # The model reasoned over the captured input; persist only if it is still
     # the input. A stale output is dropped, never recorded as an iteration.
@@ -1284,6 +1352,7 @@ def _recover_result(
         analysis=_analyze(workspace, model, context, journal, brief),
         input_tree=context.input_tree,
         rework_brief=brief,
+        autonomy_policy=context.policy.binding if context.policy else None,
     )
     _require_unchanged(
         workspace,
@@ -1310,17 +1379,22 @@ def _analyze(
     The comparison corpus is read here, once a new invocation is certain:
     a resume, a no-change result or a refused recovery never loads it.
     `brief` is supplied as non-normative feedback and every one of its items
-    must be answered.
+    must be answered. The citations of the validated output are bound to
+    what this run read; one that does not hold rejects the output.
     """
+    comparison = _comparison_context(workspace, context)
+    relations = _relations(workspace, context)
+    children = render_descendants(context.tree)
     prompt, model_context = build_analysis_prompt(
         requirement=context.requirement,
         project_name=context.project.name,
         root_content=context.root_content,
-        child_content=render_descendants(context.tree),
+        child_content=children,
         raw_ancestry=context.raw_ancestry,
-        comparison=_comparison_context(workspace, context),
+        comparison=comparison,
         rework_brief=brief,
-        relations=_relations(workspace, context),
+        relations=relations,
+        policy=context.policy,
     )
     try:
         require_input_within_budget("Standard Process", prompt, model_context)
@@ -1338,9 +1412,19 @@ def _analyze(
             (str(error),),
         ) from error
     try:
-        return parse_analysis_output(
+        analysis = parse_analysis_output(
             response.text,
-            ReworkExpectation(brief.item_refs, brief.what_refs) if brief else None,
+            (
+                ReworkExpectation(
+                    brief.item_refs, brief.what_refs, brief.resolution_refs
+                )
+                if brief
+                else None
+            ),
+        )
+        return bind_citations(
+            analysis,
+            _source_corpus(context, comparison, relations, children, analysis),
         )
     except InvalidAnalysisOutput as error:
         raise _StageFailed(
@@ -1348,6 +1432,46 @@ def _analyze(
             "The model's response does not satisfy the analysis contract.",
             (str(error),),
         ) from error
+
+
+def _source_corpus(
+    context: _Context,
+    comparison: ComparisonContext,
+    relations: RequirementRelations,
+    children: str,
+    analysis: AnalysisResult,
+) -> SourceCorpus:
+    """What this run may cite: exactly what it read and showed the model.
+
+    Dependencies are the existing DEPENDS_ON edges and the DEPENDS_ON targets
+    this output proposes, as same-Project Standards in the comparison corpus;
+    an AFFECTS-only peer is not among them.
+    """
+    targets = set(relations.depends_on) | {
+        relation.requirement_id
+        for relation in analysis.proposed_relations
+        if relation.kind is RelationKind.DEPENDS_ON
+    }
+    origins = [raw.requirement_id for raw in context.raws]
+    return SourceCorpus(
+        # A RAW with more than one attached Document has no single citable
+        # text; Review would refuse it, so Process does not bind it either.
+        raws={
+            raw.requirement_id: raw
+            for raw in context.raws
+            if origins.count(raw.requirement_id) == 1
+        },
+        requirement_text=f"{context.root_content}\n{children}",
+        input_tree_fingerprint=context.input_tree.fingerprint,
+        dependencies={
+            entry.requirement_id: SourceText(
+                entry.requirement_id, entry.entity_id, entry.root_content
+            )
+            for entry in comparison.entries
+            if entry.requirement_id in targets
+        },
+        policy=context.policy,
+    )
 
 
 def _relations(
@@ -1501,6 +1625,9 @@ def _store_result(
         or read_back.output_tree != result.output_tree
         or read_back.brief_identity != result.brief_identity
         or read_back.rework_responses != result.rework_responses
+        or read_back.product_questions != result.product_questions
+        or read_back.resolutions != result.resolutions
+        or read_back.autonomy_policy != result.autonomy_policy
     ):
         raise _StageFailed(
             StandardProcessResultCode.PROCESS_RESULT_WRITE_FAILED,

@@ -2,11 +2,17 @@
 
 The model returns data only: a normalized requirement in the approved document
 sections, analysis findings, proposed relations, the open product questions
-(Requirement-Material-WHAT-Gate-v0.1) and, during a rework, one response per
-Rework Brief item (Requirement-Rework-Brief-v0.1). Code renders the Open
-Questions section from those structured questions, so the gate never reads
-Markdown prose. It never writes to Fibery,
-never names a Fibery identifier, and is never asked for reasoning traces.
+(Requirement-Material-WHAT-Gate-v0.1), the product questions it resolved
+itself with their cited evidence (Requirement-Autonomous-Resolution-v0.1) and,
+during a rework, one response per Rework Brief item
+(Requirement-Rework-Brief-v0.1). Code renders the Open Questions section from
+the structured questions, so the gate never reads Markdown prose. It never
+writes to Fibery, never names a Fibery identifier, and is never asked for
+reasoning traces.
+
+The shapes here are the model contract. Whether a citation exists in its
+source, which entity and fingerprint it binds, and whether a policy clause
+exists is checked by `resolution_evidence` against what the run read.
 
 Anything the contract does not define is a validation error, which is what keeps
 chain-of-thought and invented mutation instructions out.
@@ -98,6 +104,47 @@ class ReworkOutcome(StrEnum):
     ESCALATED = "ESCALATED"
 
 
+class ResolutionClass(StrEnum):
+    """The closed decision classification (Autonomous Resolution v0.1 §2).
+
+    Only the first three are resolutions. HUMAN_REQUIRED and
+    INSUFFICIENT_EVIDENCE classify an unresolved product question, and
+    TECHNICAL_HOW is recorded nowhere: it belongs to TSA.
+    """
+
+    SOURCE_GROUNDED = "SOURCE_GROUNDED"
+    DEPENDENCY_GROUNDED = "DEPENDENCY_GROUNDED"
+    DELEGATED_DEFAULT = "DELEGATED_DEFAULT"
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    TECHNICAL_HOW = "TECHNICAL_HOW"
+
+
+AUTONOMOUS_CLASSES = frozenset(
+    {
+        ResolutionClass.SOURCE_GROUNDED,
+        ResolutionClass.DEPENDENCY_GROUNDED,
+        ResolutionClass.DELEGATED_DEFAULT,
+    }
+)
+QUESTION_AUTHORITIES = frozenset(
+    {ResolutionClass.HUMAN_REQUIRED, ResolutionClass.INSUFFICIENT_EVIDENCE}
+)
+#: An unanswerable question offers the human at least this many options.
+MIN_ALTERNATIVES = 2
+
+
+class SourceKind(StrEnum):
+    """What a citation quotes."""
+
+    # The originating RAW Requirement's Root Document.
+    RAW = "RAW"
+    # This Requirement's own normative input, as Process consumed it.
+    REQUIREMENT = "REQUIREMENT"
+    # A DEPENDS_ON target's Root Document; never an AFFECTS peer.
+    DEPENDENCY = "DEPENDENCY"
+
+
 class InvalidAnalysisOutput(ValueError):
     """The model's response does not satisfy the contract."""
 
@@ -112,10 +159,25 @@ REQUIRED_NORMALIZED_KEYS = frozenset({"title", "requirement"})
 FINDING_KEYS = frozenset({"kind", "requirement_id", "detail"})
 RELATION_KEYS = frozenset({"kind", "requirement_id", "rationale"})
 PRODUCT_QUESTION_KEYS = frozenset({"detail", "material"})
+PRODUCT_QUESTION_OPTIONAL_KEYS = frozenset({"authority", "alternatives"})
 REWORK_RESPONSE_KEYS = frozenset(
     {"item", "outcome", "explanation", "product_question_index"}
 )
+REWORK_EVIDENCE_KEYS = frozenset({"resolution_index", "evidence"})
 REWORK_RESPONSES_KEY = "rework_responses"
+RESOLUTIONS_KEY = "resolutions"
+RESOLUTION_KEYS = frozenset(
+    {
+        "class",
+        "issue",
+        "answer",
+        "affected_sections",
+        "sources",
+        "policy_clause",
+        "justification",
+    }
+)
+SOURCE_KEYS = frozenset({"kind", "requirement_id", "quote"})
 RESULT_KEYS = frozenset(
     {
         "normalized_requirement",
@@ -123,9 +185,14 @@ RESULT_KEYS = frozenset(
         "findings",
         "proposed_relations",
         "product_questions",
+        RESOLUTIONS_KEY,
         REWORK_RESPONSES_KEY,
     }
 )
+#: The normalized sections a resolution may change (Open Questions is code's).
+RESOLVABLE_SECTIONS = frozenset(SECTION_KEYS) - {OPEN_QUESTIONS_KEY}
+#: A citation shorter than this proves nothing even as a substring.
+MIN_QUOTE_CHARACTERS = 12
 OPEN_QUESTION_TEMPLATE = "- {detail}"
 
 
@@ -155,10 +222,54 @@ class ProductQuestion:
     different observable outcome for some input or situation in this
     Requirement's scope (Material-WHAT Gate v0.1 section 2). Review verifies
     the claim; it is never the deciding evidence on its own.
+
+    `authority` says why it stays open (Autonomous Resolution v0.1 §2:
+    HUMAN_REQUIRED or INSUFFICIENT_EVIDENCE) and `alternatives` are the
+    decision options for the human. Both are None and () on questions
+    recorded before that contract.
     """
 
     detail: str
     material: bool
+    authority: ResolutionClass | None = None
+    alternatives: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SourceCitation:
+    """One quoted piece of authoritative evidence.
+
+    The model supplies `kind`, `requirement_id` (a RAW or a dependency, never
+    for REQUIREMENT) and `quote`. `entity_id` and `fingerprint` are bound by
+    code from what the run actually read; the model never supplies either.
+    """
+
+    kind: SourceKind
+    quote: str
+    requirement_id: str | None = None
+    entity_id: str | None = None
+    fingerprint: str | None = None
+
+    @property
+    def is_bound(self) -> bool:
+        return self.fingerprint is not None
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """A product question Process answered under stated authority.
+
+    A claim like any other Process output: the independent Reviewer verifies
+    it, and only a CONFIRMED verification stops it blocking WHAT clearance.
+    """
+
+    resolution_class: ResolutionClass
+    issue: str
+    answer: str
+    affected_sections: tuple[str, ...]
+    sources: tuple[SourceCitation, ...]
+    justification: str
+    policy_clause: str | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +284,10 @@ class ReworkResponse:
     outcome: ReworkOutcome
     explanation: str
     product_question_index: int | None = None
+    # Autonomous Resolution v0.1 §7: the resolution a RESOLVED answer relies
+    # on, and the evidence a REBUTTED answer cites. None and () before it.
+    resolution_index: int | None = None
+    evidence: tuple[SourceCitation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -185,6 +300,8 @@ class ReworkExpectation:
 
     item_refs: tuple[str, ...]
     what_refs: frozenset[str]
+    # Items re-raising an unconfirmed resolution (ReworkBrief.resolution_refs).
+    resolution_refs: frozenset[str] = frozenset()
 
 
 def render_open_questions(questions: tuple[ProductQuestion, ...]) -> str:
@@ -227,6 +344,7 @@ class AnalysisResult:
     proposed_relations: tuple[ProposedRelation, ...]
     product_questions: tuple[ProductQuestion, ...] = ()
     rework_responses: tuple[ReworkResponse, ...] = ()
+    resolutions: tuple[Resolution, ...] = ()
 
 
 def parse_analysis_output(
@@ -249,6 +367,12 @@ def parse_analysis_output(
             _as_list(payload.get("product_questions"), "product_questions")
         )
     )
+    resolutions = tuple(
+        _read_resolution(entry, index)
+        for index, entry in enumerate(
+            _as_list(payload.get(RESOLUTIONS_KEY), RESOLUTIONS_KEY)
+        )
+    )
     return AnalysisResult(
         normalized=_read_normalized(normalized, questions),
         analysis=_read_analysis(payload.get("analysis")),
@@ -263,7 +387,10 @@ def parse_analysis_output(
             )
         ),
         product_questions=questions,
-        rework_responses=_read_rework_responses(payload, rework, questions),
+        rework_responses=_read_rework_responses(
+            payload, rework, questions, resolutions
+        ),
+        resolutions=resolutions,
     )
 
 
@@ -271,6 +398,7 @@ def _read_rework_responses(
     payload: dict[str, object],
     rework: ReworkExpectation | None,
     questions: tuple[ProductQuestion, ...],
+    resolutions: tuple[Resolution, ...],
 ) -> tuple[ReworkResponse, ...]:
     entries = payload.get(REWORK_RESPONSES_KEY)
     if rework is None:
@@ -289,7 +417,7 @@ def _read_rework_responses(
         _read_rework_response(entry, index)
         for index, entry in enumerate(_as_list(entries, REWORK_RESPONSES_KEY))
     )
-    require_rework_coverage(responses, rework, questions)
+    require_rework_coverage(responses, rework, questions, resolutions)
     return responses
 
 
@@ -297,11 +425,14 @@ def require_rework_coverage(
     responses: tuple[ReworkResponse, ...],
     rework: ReworkExpectation,
     questions: tuple[ProductQuestion, ...],
+    resolutions: tuple[Resolution, ...] | None = (),
 ) -> None:
     """Exactly one response per Brief item; escalations stay recorded.
 
     Shared with the Process Result reader, so a persisted iteration is held to
-    the same contract as the model's response.
+    the same contract as the model's response. `resolutions` are the output's
+    resolutions; None for a Result written before Autonomous Resolution v0.1,
+    whose responses carry no evidence binding and are not held to its rules.
     """
     seen: set[str] = set()
     for response in responses:
@@ -315,6 +446,8 @@ def require_rework_coverage(
             )
         seen.add(response.item)
         _require_escalation_recorded(response, rework, questions)
+        if resolutions is not None:
+            _require_evidence_bound(response, rework, resolutions)
     missing = [ref for ref in rework.item_refs if ref not in seen]
     if missing:
         raise InvalidAnalysisOutput(
@@ -354,11 +487,87 @@ def _require_escalation_recorded(
         )
 
 
+def _require_evidence_bound(
+    response: ReworkResponse,
+    rework: ReworkExpectation,
+    resolutions: tuple[Resolution, ...],
+) -> None:
+    """Autonomous Resolution v0.1 §7: a claim cites what makes it so.
+
+    RESOLVED of a material WHAT item names the resolution that answers it;
+    only RESOLVED names one. REBUTTED cites evidence; nothing else does.
+    """
+    index = response.resolution_index
+    if index is not None:
+        if response.outcome is not ReworkOutcome.RESOLVED:
+            raise InvalidAnalysisOutput(
+                f"rework response for {response.item} is {response.outcome.value}; "
+                "only RESOLVED names a resolution."
+            )
+        if not 0 <= index < len(resolutions):
+            raise InvalidAnalysisOutput(
+                f"rework response for {response.item} names resolution {index}, "
+                f"but the output has {len(resolutions)}."
+            )
+    elif (
+        response.outcome is ReworkOutcome.RESOLVED and response.item in rework.what_refs
+    ):
+        raise InvalidAnalysisOutput(
+            f"Brief item {response.item} is a material WHAT question; resolving it "
+            "must name the resolution that answers it, with its evidence."
+        )
+    is_rebuttal = response.outcome is ReworkOutcome.REBUTTED
+    if is_rebuttal != bool(response.evidence):
+        raise InvalidAnalysisOutput(
+            f"rework response for {response.item} is {response.outcome.value}; "
+            "a REBUTTED response cites evidence and no other response does."
+        )
+    if response.item in rework.resolution_refs:
+        _require_outside_authority(response, resolutions)
+
+
+def _require_outside_authority(
+    response: ReworkResponse, resolutions: tuple[Resolution, ...]
+) -> None:
+    """An unconfirmed resolution cannot become its own source on rework.
+
+    Its answer was written into the Requirement, so that text is the earlier
+    model's output, not authority. Resolving or rebutting the item needs the
+    RAW, a dependency or a policy clause (Autonomous Resolution v0.1 §7).
+    """
+    outcome = response.outcome
+    if outcome is ReworkOutcome.RESOLVED:
+        if response.resolution_index is None:
+            raise InvalidAnalysisOutput(
+                f"Brief item {response.item} carries an unconfirmed resolution; "
+                "resolving it must name the resolution that answers it."
+            )
+        resolution = resolutions[response.resolution_index]
+        cited = {source.kind for source in resolution.sources}
+        if (
+            resolution.resolution_class is not ResolutionClass.DELEGATED_DEFAULT
+            and cited <= {SourceKind.REQUIREMENT}
+        ):
+            raise InvalidAnalysisOutput(
+                f"Brief item {response.item} carries an unconfirmed resolution whose "
+                "answer is now in this Requirement's text; that text is not "
+                "authority for it. Cite the RAW or a dependency, or apply a clause."
+            )
+    elif outcome is ReworkOutcome.REBUTTED and {
+        source.kind for source in response.evidence
+    } <= {SourceKind.REQUIREMENT}:
+        raise InvalidAnalysisOutput(
+            f"Brief item {response.item} carries an unconfirmed resolution; a "
+            "rebuttal must cite the RAW or a dependency, not this Requirement's "
+            "own text, which holds the unconfirmed answer."
+        )
+
+
 def _read_rework_response(entry: object, index: int) -> ReworkResponse:
     where = f"rework response {index}"
     if not isinstance(entry, dict):
         raise InvalidAnalysisOutput(f"{where} must be an object.")
-    _reject_unknown(entry, REWORK_RESPONSE_KEYS, where)
+    _reject_unknown(entry, REWORK_RESPONSE_KEYS | REWORK_EVIDENCE_KEYS, where)
     missing = sorted({"item", "outcome", "explanation"} - set(entry))
     if missing:
         raise InvalidAnalysisOutput(f"{where} is missing: " + ", ".join(missing))
@@ -369,11 +578,23 @@ def _read_rework_response(entry: object, index: int) -> ReworkResponse:
         raise InvalidAnalysisOutput(
             f"{where} product_question_index must be an integer."
         )
+    resolution = entry.get("resolution_index")
+    if resolution is not None and (
+        not isinstance(resolution, int) or isinstance(resolution, bool)
+    ):
+        raise InvalidAnalysisOutput(f"{where} resolution_index must be an integer.")
     return ReworkResponse(
         item=_read_text(entry["item"], f"{where} item"),
         outcome=_read_enum(ReworkOutcome, entry["outcome"], where),
         explanation=_read_text(entry["explanation"], f"{where} explanation"),
         product_question_index=question,
+        resolution_index=resolution,
+        evidence=tuple(
+            _read_source(source, f"{where} evidence {position}")
+            for position, source in enumerate(
+                _as_list(entry.get("evidence"), f"{where} evidence")
+            )
+        ),
     )
 
 
@@ -510,16 +731,157 @@ def _read_product_question(entry: object, index: int) -> ProductQuestion:
     where = f"product question {index}"
     if not isinstance(entry, dict):
         raise InvalidAnalysisOutput(f"{where} must be an object.")
-    _reject_unknown(entry, PRODUCT_QUESTION_KEYS, where)
-    missing = sorted(PRODUCT_QUESTION_KEYS - set(entry))
+    _reject_unknown(
+        entry, PRODUCT_QUESTION_KEYS | PRODUCT_QUESTION_OPTIONAL_KEYS, where
+    )
+    missing = sorted((PRODUCT_QUESTION_KEYS | {"authority"}) - set(entry))
     if missing:
         raise InvalidAnalysisOutput(f"{where} is missing: " + ", ".join(missing))
     if not isinstance(entry["material"], bool):
         raise InvalidAnalysisOutput(f"{where} material must be true or false.")
-    detail = _read_text(entry["detail"], f"{where} detail")
-    if not is_single_line(detail):
-        raise InvalidAnalysisOutput(f"{where} detail must be a single line.")
-    return ProductQuestion(detail=detail, material=entry["material"])
+    detail = _read_single_line(entry["detail"], f"{where} detail")
+    authority = _read_enum(ResolutionClass, entry["authority"], f"{where} authority")
+    if authority not in QUESTION_AUTHORITIES:
+        raise InvalidAnalysisOutput(
+            f"{where} authority is {authority.value}; an unresolved product "
+            "question is HUMAN_REQUIRED or INSUFFICIENT_EVIDENCE. A resolved one "
+            "belongs in resolutions, and technical HOW is not a product question."
+        )
+    alternatives = tuple(
+        _read_single_line(option, f"{where} alternative {position}")
+        for position, option in enumerate(
+            _as_list(entry.get("alternatives"), f"{where} alternatives")
+        )
+    )
+    if (
+        authority is ResolutionClass.INSUFFICIENT_EVIDENCE
+        and len(alternatives) < MIN_ALTERNATIVES
+    ):
+        raise InvalidAnalysisOutput(
+            f"{where} is INSUFFICIENT_EVIDENCE and must offer at least "
+            f"{MIN_ALTERNATIVES} alternatives for the human to decide between."
+        )
+    return ProductQuestion(
+        detail=detail,
+        material=entry["material"],
+        authority=authority,
+        alternatives=alternatives,
+    )
+
+
+def _read_single_line(value: object, where: str) -> str:
+    text = _read_text(value, where)
+    if not is_single_line(text):
+        raise InvalidAnalysisOutput(f"{where} must be a single line.")
+    return text
+
+
+def _read_resolution(entry: object, index: int) -> Resolution:
+    """One resolution's closed shape and its class rules (§4).
+
+    Whether each quote exists in its source, and whether a clause exists in
+    the active policy, is `resolution_evidence`'s check against what was read.
+    """
+    where = f"resolution {index}"
+    if not isinstance(entry, dict):
+        raise InvalidAnalysisOutput(f"{where} must be an object.")
+    _reject_unknown(entry, RESOLUTION_KEYS, where)
+    missing = sorted((RESOLUTION_KEYS - {"policy_clause"}) - set(entry))
+    if missing:
+        raise InvalidAnalysisOutput(f"{where} is missing: " + ", ".join(missing))
+    resolution_class = _read_enum(ResolutionClass, entry["class"], f"{where} class")
+    if resolution_class not in AUTONOMOUS_CLASSES:
+        raise InvalidAnalysisOutput(
+            f"{where} has class {resolution_class.value}, which is not a "
+            "resolution: an open question stays in product_questions."
+        )
+    sections = _as_list(entry["affected_sections"], f"{where} affected_sections")
+    if (
+        not sections
+        or not all(isinstance(key, str) for key in sections)
+        or len(set(sections)) != len(sections)
+        or not set(sections) <= RESOLVABLE_SECTIONS
+    ):
+        raise InvalidAnalysisOutput(
+            f"{where} affected_sections must name normalized sections, each once: "
+            + ", ".join(sorted(RESOLVABLE_SECTIONS))
+        )
+    sources = tuple(
+        _read_source(source, f"{where} source {position}")
+        for position, source in enumerate(
+            _as_list(entry["sources"], f"{where} sources")
+        )
+    )
+    clause = entry.get("policy_clause")
+    resolution = Resolution(
+        resolution_class=resolution_class,
+        issue=_read_single_line(entry["issue"], f"{where} issue"),
+        answer=_read_text(entry["answer"], f"{where} answer"),
+        affected_sections=tuple(sections),
+        sources=sources,
+        justification=_read_text(entry["justification"], f"{where} justification"),
+        policy_clause=(
+            _read_text(clause, f"{where} policy_clause") if clause is not None else None
+        ),
+    )
+    require_resolution_shape(resolution, where, InvalidAnalysisOutput)
+    return resolution
+
+
+def require_resolution_shape(
+    resolution: Resolution, where: str, error: type[ValueError]
+) -> None:
+    """The class rules of section 4, shared with the Process Result reader."""
+    kinds = {source.kind for source in resolution.sources}
+    resolution_class = resolution.resolution_class
+    if not resolution.sources:
+        raise error(f"{where} cites no source.")
+    if resolution_class is ResolutionClass.SOURCE_GROUNDED and not kinds <= {
+        SourceKind.RAW,
+        SourceKind.REQUIREMENT,
+    }:
+        raise error(
+            f"{where} is SOURCE_GROUNDED and may cite only the RAW and this "
+            "Requirement; a dependency is DEPENDENCY_GROUNDED."
+        )
+    if (
+        resolution_class is ResolutionClass.DEPENDENCY_GROUNDED
+        and SourceKind.DEPENDENCY not in kinds
+    ):
+        raise error(f"{where} is DEPENDENCY_GROUNDED but cites no dependency.")
+    is_delegated = resolution_class is ResolutionClass.DELEGATED_DEFAULT
+    if is_delegated != (resolution.policy_clause is not None):
+        raise error(
+            f"{where}: a policy_clause is named by DELEGATED_DEFAULT and by no "
+            "other class."
+        )
+
+
+def _read_source(entry: object, where: str) -> SourceCitation:
+    if not isinstance(entry, dict):
+        raise InvalidAnalysisOutput(f"{where} must be an object.")
+    _reject_unknown(entry, SOURCE_KEYS, where)
+    if "kind" not in entry or "quote" not in entry:
+        raise InvalidAnalysisOutput(f"{where} needs a kind and a quote.")
+    kind = _read_enum(SourceKind, entry["kind"], f"{where} kind")
+    quote = _read_text(entry["quote"], f"{where} quote")
+    if len(quote) < MIN_QUOTE_CHARACTERS:
+        raise InvalidAnalysisOutput(
+            f"{where} quote is shorter than {MIN_QUOTE_CHARACTERS} characters."
+        )
+    requirement_id = entry.get("requirement_id")
+    if kind is SourceKind.REQUIREMENT:
+        if requirement_id is not None:
+            raise InvalidAnalysisOutput(
+                f"{where} quotes this Requirement and must not name one."
+            )
+    else:
+        if requirement_id is None:
+            raise InvalidAnalysisOutput(
+                f"{where} quotes a {kind.value} and must name its Requirement ID."
+            )
+        requirement_id = _read_requirement_id(requirement_id, where)
+    return SourceCitation(kind=kind, quote=quote, requirement_id=requirement_id)
 
 
 def _read_relation(entry: object, index: int) -> ProposedRelation:

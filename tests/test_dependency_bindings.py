@@ -17,6 +17,7 @@ import pytest
 from processor_fake import FakeModelRuntime, reserialize_like_fibery
 from review_fake import (
     build_review_workspace,
+    downgrade_latest_process,
     give_reviewed_evidence,
     relation,
     review_output,
@@ -57,7 +58,7 @@ from sdlc.standard_review import (
 from sdlc.standard_reviewer import review_standard_requirement
 from sdlc.tsa_admission import AdmissionResultCode
 from sdlc.tsa_cycle import CycleResultCode
-from standard_fake import REQUIREMENT_ID, analysis_output
+from standard_fake import REQUIREMENT_ID, analysis_output, citation
 from test_tsa_admission import clean_refusal, start, world
 
 FR_0124_EVIDENCE = (
@@ -261,7 +262,7 @@ def test_no_dependencies_bind_nothing():
     result, _ = review(ws, requirement)
     assert result.code is ReviewCode.REQUIREMENT_REVIEWED, result
     _, stored = stored_review(ws)
-    assert stored.version == "0.6" and stored.dependency_bindings == ()
+    assert stored.version == "0.7" and stored.dependency_bindings == ()
 
 
 def test_one_direct_dependency_is_bound_to_its_exact_version():
@@ -644,6 +645,7 @@ def test_the_interpretation_set_is_bounded_not_truncated(monkeypatch):
 
 def test_legacy_evidence_without_bindings_is_not_dependency_verified():
     ws, requirement, _ = reviewed_with()
+    downgrade_latest_process(ws)
     node, stored = stored_review(ws)
     ws.content[node.secret] = render_review_result(
         replace(
@@ -851,6 +853,13 @@ def test_a_rejected_existing_dependency_reaches_the_rework_with_its_identity():
                         "item": item.ref,
                         "outcome": "REBUTTED",
                         "explanation": "It is needed: it owns the rule.",
+                        "evidence": [
+                            citation(
+                                "DEPENDENCY",
+                                "must refuse to execute a model without login",
+                                D1.requirement_id,
+                            )
+                        ],
                     }
                 ]
             )
@@ -1027,6 +1036,7 @@ def test_a_confirmed_affects_proposal_answers_nothing():
 
 def test_a_pre_dependency_review_never_makes_a_new_review_redundant():
     ws, requirement, _ = reviewed_with()
+    downgrade_latest_process(ws)
     node, stored = stored_review(ws)
     ws.content[node.secret] = render_review_result(
         replace(
@@ -1036,7 +1046,9 @@ def test_a_pre_dependency_review_never_makes_a_new_review_redundant():
     ws.set_requirement_state(requirement.id, "Review")
     result, model = review(ws, requirement, dependency_verifications=[dep(D1)])
     assert result.code is ReviewCode.REQUIREMENT_REVIEWED, result
-    assert model.was_invoked and stored_review(ws)[1].version == "0.6"
+    reviewed = stored_review(ws)[1]
+    assert model.was_invoked and reviewed.version == "0.7"
+    assert reviewed.reviewed_resolutions == (), "the 0.5 Process resolved nothing"
 
 
 def test_an_edge_written_concurrently_during_apply_stops_before_applied():
@@ -1075,6 +1087,7 @@ def test_an_older_review_keeps_the_what_rule_it_was_written_under():
     )
     node, stored = stored_review(ws)
     assert stored.what_status is WhatStatus.CLEAR
+    downgrade_latest_process(ws)
     older = replace(
         stored,
         version="0.5",

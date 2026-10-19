@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
+from sdlc.autonomy_policy import DISABLED, AutonomyPolicies, load_autonomy_policies
 from sdlc.config import ConfigurationError, FiberySettings, load_fibery_settings
 from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_http import (
@@ -80,6 +81,7 @@ from sdlc.standard_processor import (
 from sdlc.standard_review import ReviewVerdict
 from sdlc.standard_reviewer import review_standard_requirement
 from sdlc.tsa_admission import (
+    PolicyBoundEvidence,
     RequirementEvidenceWorkspace,
     StartInputs,
     UxApplicable,
@@ -806,6 +808,7 @@ def _run_standard_process(
 ) -> int:
     try:
         settings = load_fibery_settings()
+        policies = load_autonomy_policies()
         model: ModelRuntime
         if arguments.resume_result is not None:
             model = _ResumeWithoutModel()
@@ -830,6 +833,7 @@ def _run_standard_process(
         recover_empty_result=arguments.recover_empty_result,
         resume_result=arguments.resume_result,
         new_iteration_after=arguments.new_iteration_after,
+        policies=policies,
     )
     render_standard_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
@@ -840,6 +844,7 @@ def _run_standard_review(
 ) -> int:
     try:
         settings = load_fibery_settings()
+        policies = load_autonomy_policies()
         selection = select_runtime(
             load_model_runtime_config(),
             STANDARD_REQUIREMENT_REVIEWER_ROLE,
@@ -857,6 +862,7 @@ def _run_standard_review(
         LocalCliModelRuntime(selection),
         arguments.requirement,
         recover_empty_result=arguments.recover_empty_result,
+        policies=policies,
     )
     render_review_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
@@ -868,6 +874,7 @@ def _run_requirement_approve(
     """The admin/compatibility approval. No model runtime is configured or invoked."""
     try:
         settings = load_fibery_settings()
+        policies = load_autonomy_policies()
     except ConfigurationError as error:
         print(str(error), file=error_out)
         return EXIT_FAILURE
@@ -878,7 +885,10 @@ def _run_requirement_approve(
         else None
     )
     result = approve_standard_requirement(
-        _ready_workspace(settings), arguments.requirement, acknowledged
+        _ready_workspace(settings),
+        arguments.requirement,
+        acknowledged,
+        policies=policies,
     )
     render_ready_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
@@ -907,12 +917,13 @@ def _run_requirement_apply(
     """Deterministic application. No model runtime is configured or invoked."""
     try:
         settings = load_fibery_settings()
+        policies = load_autonomy_policies()
     except ConfigurationError as error:
         print(str(error), file=error_out)
         return EXIT_FAILURE
 
     result = apply_standard_requirement(
-        _ready_workspace(settings), arguments.requirement
+        _ready_workspace(settings), arguments.requirement, policies=policies
     )
     render_apply_result(result, out if result.is_normal else error_out)
     return EXIT_SUCCESS if result.is_normal else EXIT_FAILURE
@@ -925,13 +936,20 @@ def _architecture_workspaces(
 
     All three share one client, so one invocation reads one Fibery workspace
     under one workspace identity, the one the guard is scoped by. The Space id
-    is resolved here, before the guard, and nothing else is read.
+    is resolved here, before the guard, and nothing else is read. The autonomy
+    policies are read first: a broken `[autonomy]` table refuses before any
+    Fibery read.
     """
+    policies = load_autonomy_policies()
     client = _client_with_space_id(settings)
     return (
         FiberyHttpWorkspace(client=client, space=settings.space),
         FiberyArchitectureWorkspace(client=client, space=settings.space),
-        FiberyRawProcessorWorkspace(client=client, space=settings.space),
+        # Admission checks delegated defaults against the policies active now.
+        PolicyBoundEvidence(
+            FiberyRawProcessorWorkspace(client=client, space=settings.space),
+            policies,
+        ),
     )
 
 
@@ -1102,7 +1120,9 @@ def _run_worker(arguments: argparse.Namespace, out: TextIO, error_out: TextIO) -
     try:
         settings = load_fibery_settings()
         workspace = _runner_workspace(settings)
-        workers = _runner_workers(workspace, load_model_runtime_config())
+        workers = _runner_workers(
+            workspace, load_model_runtime_config(), load_autonomy_policies()
+        )
     except (ConfigurationError, ModelRuntimeConfigError) as error:
         _render_runner_code(
             RunnerCode.WORKER_RUNNER_CONFIGURATION_INVALID, str(error), error_out
@@ -1166,11 +1186,15 @@ def _runner_workers(
     workspace: FiberyRawProcessorWorkspace,
     # The parsed [model_runtime] table, as load_model_runtime_config returns it.
     runtime_config: dict[str, Any],
+    policies: AutonomyPolicies = DISABLED,
 ) -> RequirementWorkers:
     """The four existing workers, bound to the configured roles; Apply is model-free.
 
     Every role resolves here, before the runner starts, so a configuration
     error stops it before any Requirement is claimed. Nothing overrides a role.
+    The autonomy policies are read once, here, and hold for the runner's whole
+    life: a changed policy needs a restart, and evidence bound to the old one
+    is refused at Ready (Requirement-Autonomous-Resolution-v0.1 §3.2).
     """
     raw, standard, reviewer = (
         LocalCliModelRuntime(select_runtime(runtime_config, role))
@@ -1183,12 +1207,14 @@ def _runner_workers(
     return RequirementWorkers(
         process_raw=functools.partial(process_raw_requirement, workspace, raw),
         process_standard=functools.partial(
-            process_standard_requirement, workspace, standard
+            process_standard_requirement, workspace, standard, policies=policies
         ),
         review_standard=functools.partial(
-            review_standard_requirement, workspace, reviewer
+            review_standard_requirement, workspace, reviewer, policies=policies
         ),
-        apply_standard=functools.partial(apply_standard_requirement, workspace),
+        apply_standard=functools.partial(
+            apply_standard_requirement, workspace, policies=policies
+        ),
     )
 
 

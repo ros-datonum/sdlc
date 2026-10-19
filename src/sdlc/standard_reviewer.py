@@ -18,6 +18,12 @@ Two invariants shape the code:
 Every completed review reaches Ready regardless of its verdict, including
 BLOCKING: Ready means the independent agent review is complete and the human
 decision is due, not that the Requirement is good.
+
+Before the reviewer runs, every resolution the Process Result made is
+re-established against current Fibery and the current autonomy policy
+(Requirement-Autonomous-Resolution-v0.1 §6): a changed source or policy, or a
+citation that does not hold, refuses the review. The reviewer then verifies
+each resolution check by check; Review never confirms a resolution itself.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from sdlc.autonomy_policy import DISABLED, AutonomyPolicies, AutonomyPolicy
 from sdlc.comparison_context import (
     ComparisonContext,
     ComparisonContextError,
@@ -61,6 +68,14 @@ from sdlc.process_result import (
     document_fingerprint,
     parse_process_result,
     parse_process_result_name,
+)
+from sdlc.resolution_evidence import (
+    ResolutionEvidenceError,
+    ResolutionFailure,
+    SourceText,
+    render_raw_ancestry,
+    require_current_citations,
+    require_current_policy,
 )
 from sdlc.result_shell import (
     RECOVERY_OPTION,
@@ -185,6 +200,8 @@ def review_standard_requirement(
     model: ModelRuntime,
     entity_id: str,
     recover_empty_result: str | None = None,
+    *,
+    policies: AutonomyPolicies = DISABLED,
 ) -> StandardReviewResult:
     """Independently review one Standard Requirement in Review.
 
@@ -193,6 +210,9 @@ def review_standard_requirement(
     the reviewer again and complete that exact Document in place, keeping its
     reserved iteration; it never creates another artifact and never
     overwrites a non-empty one.
+
+    `policies` are the approved autonomy policies, read once by the caller;
+    a delegated default is verified only against the policy it bound.
     """
     journal = _Journal()
     try:
@@ -203,9 +223,13 @@ def review_standard_requirement(
             return _no_changes_result(context)
 
         if context.shell is not None:
-            result = _recover_review(workspace, model, context, bindings, journal)
+            result = _recover_review(
+                workspace, model, context, bindings, journal, policies
+            )
         else:
-            result = _produce_review(workspace, model, context, bindings, journal)
+            result = _produce_review(
+                workspace, model, context, bindings, journal, policies
+            )
         _recheck_bindings(workspace, context, bindings)
         _transition_to_ready(workspace, context, journal)
     except _StageFailed as failure:
@@ -225,6 +249,11 @@ def _already_reviewed(context: _Context, bindings: _Bindings) -> bool:
         # a pre-0.6 one, which establishes no dependency evidence.
         and latest.what_status is not None
         and latest.is_dependency_bound
+        # A Process Result with resolution evidence needs a review that
+        # verified it (Autonomous Resolution v0.1 §9).
+        and (
+            latest.is_resolution_bound or not context.process_result.is_resolution_bound
+        )
         and latest.reviews(
             bindings.document_fingerprint,
             bindings.process_iteration,
@@ -810,12 +839,16 @@ def _produce_review(
     context: _Context,
     bindings: _Bindings,
     journal: _Journal,
+    policies: AutonomyPolicies = DISABLED,
 ) -> ReviewResult:
     """Invoke the reviewer once and persist the iteration before mutating."""
     latest = context.latest_review
     iteration = latest.iteration + 1 if latest else FIRST_ITERATION
     result = _build_result(
-        context, bindings, iteration, *_verify(workspace, model, context, journal)
+        context,
+        bindings,
+        iteration,
+        *_verify(workspace, model, context, journal, policies),
     )
     _persist_result(workspace, context, result, journal)
     return result
@@ -827,6 +860,7 @@ def _recover_review(
     context: _Context,
     bindings: _Bindings,
     journal: _Journal,
+    policies: AutonomyPolicies = DISABLED,
 ) -> ReviewResult:
     """Run the reviewer once and complete the named empty shell in place.
 
@@ -838,7 +872,10 @@ def _recover_review(
     """
     shell, iteration = context.shell
     result = _build_result(
-        context, bindings, iteration, *_verify(workspace, model, context, journal)
+        context,
+        bindings,
+        iteration,
+        *_verify(workspace, model, context, journal, policies),
     )
     _require_still_eligible(workspace, context)
     current = _current_shell(workspace, context, shell, iteration)
@@ -888,26 +925,31 @@ def _verify(
     model: ModelRuntime,
     context: _Context,
     journal: _Journal,
+    policies: AutonomyPolicies = DISABLED,
 ) -> tuple[ReviewOutput, _Dependencies]:
     """One reviewer invocation, validated against the review contract.
 
     The comparison corpus, the originating RAW source and the interpretation
     set are read here, once a new invocation is certain, so a no-change
     result never depends on any of them; every peer the Process claims refer
-    to must be in the corpus with content.
+    to must be in the corpus with content. Every resolution's citations and
+    policy are re-established before the reviewer runs.
     """
     comparison = _comparison_context(workspace, context)
     dependencies = _interpretation_set(workspace, context)
+    raws = _raws(workspace, context.requirement)
+    policy = _current_resolution_evidence(workspace, context, raws, policies)
     prompt, model_context = build_review_prompt(
         requirement=context.requirement,
         project_name=context.project.name,
         root_content=context.root_content,
         child_content=render_descendants(context.tree),
-        raw_ancestry=_raw_ancestry(workspace, context.requirement),
+        raw_ancestry=render_raw_ancestry(raws),
         process_result=context.process_result,
         relations=context.relations,
         comparison=comparison,
         dependencies=_dependency_lines(dependencies),
+        policy=policy,
     )
     try:
         require_input_within_budget("Standard Review", prompt, model_context)
@@ -941,6 +983,11 @@ def _verify(
                 else frozenset()
             ),
             dependencies.existing,
+            (
+                context.process_result.resolutions
+                if context.process_result.is_resolution_bound
+                else None
+            ),
         )
     except InvalidReviewOutput as error:
         raise _StageFailed(
@@ -950,6 +997,58 @@ def _verify(
         ) from error
     _require_bindable_confirmations(output, dependencies)
     return output, dependencies
+
+
+def _current_resolution_evidence(
+    workspace: RawProcessorWorkspace,
+    context: _Context,
+    raws: tuple[SourceText, ...],
+    policies: AutonomyPolicies,
+) -> AutonomyPolicy | None:
+    """Re-establish every citation and the bound policy; the policy, if relied on.
+
+    Section 6: each RAW is still an originating RAW and each DEPENDENCY still
+    an existing or proposed DEPENDS_ON target, each the same entity with the
+    same Root fingerprint and the quote present; a REQUIREMENT citation
+    carries the Result's own input tree. Nothing is checked for a Process
+    Result that predates resolutions.
+    """
+    process = context.process_result
+    if not process.is_resolution_bound:
+        return None
+    try:
+        policy = require_current_policy(
+            process.relies_on_policy,
+            process.autonomy_policy,
+            (item.policy_clause for item in process.resolutions if item.policy_clause),
+            policies,
+        )
+        require_current_citations(
+            workspace,
+            process.citations,
+            process.input_tree.fingerprint,
+            raw_entity_ids=frozenset(raw.entity_id for raw in raws),
+            dependency_ids=frozenset(context.relations.depends_on)
+            | {
+                relation.requirement_id
+                for relation in process.proposed_relations
+                if relation.kind is RelationKind.DEPENDS_ON
+            },
+        )
+    except ResolutionEvidenceError as error:
+        raise _StageFailed(
+            {
+                ResolutionFailure.STALE: (
+                    StandardReviewResultCode.RESOLUTION_EVIDENCE_STALE
+                ),
+                ResolutionFailure.READ_FAILED: (
+                    StandardReviewResultCode.FIBERY_READ_FAILED
+                ),
+            }.get(error.failure, StandardReviewResultCode.RESOLUTION_EVIDENCE_INVALID),
+            f"{error.message} The reviewer was not invoked and nothing was written.",
+            error.details,
+        ) from error
+    return policy
 
 
 def _interpretation_set(
@@ -1073,6 +1172,8 @@ def _build_result(
         reviewed_product_questions=context.process_result.product_questions or (),
         reviewed_rework_brief=context.process_result.rework_brief,
         reviewed_rework_responses=context.process_result.rework_responses,
+        reviewed_resolutions=context.process_result.resolutions,
+        reviewed_autonomy_policy=context.process_result.autonomy_policy,
         dependency_bindings=bind(
             dependencies.members,
             {
@@ -1130,23 +1231,27 @@ def _comparison_context(
     return comparison
 
 
-def _raw_ancestry(
+def _raws(
     workspace: RawProcessorWorkspace, requirement: RequirementRecord
-) -> str:
+) -> tuple[SourceText, ...]:
     """The originating RAW source: read-only evidence, never reviewed input.
 
     The boundary Standard Process reads: every `Derived From` RAW
-    Requirement's attached Root Document, each behind an identity marker. A
-    Requirement need not come from a RAW, so none is an empty section rather
-    than an error. A failed read refuses the run before the reviewer runs.
+    Requirement's attached Root Document, rendered behind an identity marker.
+    A Requirement need not come from a RAW, so none is an empty section
+    rather than an error. A failed read refuses the run before the reviewer
+    runs.
     """
     try:
-        sections = [
-            f"<!-- RAW {raw.requirement_id} -->\n"
-            + workspace.read_document_content(document.secret or "")
+        return tuple(
+            SourceText(
+                requirement_id=raw.requirement_id or "",
+                entity_id=raw.id,
+                content=workspace.read_document_content(document.secret or ""),
+            )
             for raw in workspace.derived_from(requirement.id)
             for document in workspace.documents_attached_to_requirement(raw.public_id)
-        ]
+        )
     except FiberyError as error:
         raise _StageFailed(
             StandardReviewResultCode.FIBERY_READ_FAILED,
@@ -1154,7 +1259,6 @@ def _raw_ancestry(
             "invoked and nothing was written.",
             (str(error),),
         ) from error
-    return "\n\n".join(sections)
 
 
 def _read_body(workspace: RawProcessorWorkspace, node: DocumentNode) -> str:

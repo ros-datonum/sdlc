@@ -27,6 +27,7 @@ from review_fake import (
     review_output,
     rewrite_payload,
     verify_relation,
+    verify_resolution,
 )
 from sdlc.fibery_workspace import DocumentNode, FiberyError
 from sdlc.process_result import (
@@ -84,7 +85,9 @@ from standard_fake import (
     REQUIREMENT_ID,
     analysis_output,
     build_standard_workspace,
+    citation,
     rendered_document,
+    resolution,
     resolved,
 )
 from test_requirement_dispatcher import NOT_PROCESSED, real_workers
@@ -178,7 +181,7 @@ def test_a_first_process_has_no_brief_and_no_feedback_section():
     assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
     assert REWORK_HEADING not in model.calls[0]["context"]
     _, stored = processes(ws)[-1]
-    assert stored.version == "0.5" and stored.rework_brief is None
+    assert stored.version == "0.6" and stored.rework_brief is None
     assert stored.rework_responses == ()
 
 
@@ -250,6 +253,7 @@ def test_the_brief_keeps_every_actionable_item_with_its_source():
     assert {item.category for item in brief.items} == set(BriefCategory) - {
         BriefCategory.REWORK_CLAIM,
         BriefCategory.EXISTING_DEPENDENCY,
+        BriefCategory.RESOLUTION,
     }
     assert brief == build_rework_brief(review, process), "deterministic"
 
@@ -282,7 +286,10 @@ TWO_ITEMS = {
 
 def test_every_item_is_answered_exactly_once_and_persisted():
     ws, requirement, _ = at_ready(**TWO_ITEMS)
-    responses = [answer("R0001.F1", "REBUTTED", "The RAW keeps it."), resolved()]
+    responses = [
+        answer("R0001.F1", "REBUTTED", "The RAW keeps it.", evidence=[citation()]),
+        resolved(),
+    ]
     result, _ = rework(ws, requirement, analysis_output(rework=responses))
     assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
     _, stored = processes(ws)[-1]
@@ -382,7 +389,7 @@ def test_the_reviewer_rejects_an_incorrect_resolved_claim():
     context = model.calls[0]["context"]
     assert "[R0001.F0]" in context and "Answer: RESOLVED" in context
     _, review = reviews(ws)[-1]
-    assert review.version == "0.6" and review.what_status is WhatStatus.CLEAR
+    assert review.version == "0.7" and review.what_status is WhatStatus.CLEAR
 
 
 def test_a_rejected_claim_is_carried_into_the_next_brief():
@@ -399,7 +406,9 @@ def test_a_rejected_claim_is_carried_into_the_next_brief():
 
 
 def test_the_reviewer_confirms_a_justified_rebuttal():
-    ws, requirement, _ = reworked(answer("R0001.F0", "REBUTTED", "The RAW says so."))
+    ws, requirement, _ = reworked(
+        answer("R0001.F0", "REBUTTED", "The RAW says so.", evidence=[citation()])
+    )
     result, _ = review_again(ws, requirement, rework_verifications=[verify("R0001.F0")])
     assert result.verdict == "PASS", result
     _, review = reviews(ws)[-1]
@@ -433,16 +442,28 @@ def test_a_review_that_does_not_verify_each_response_once_is_refused(
     assert ws.mutations[before:] == []
 
 
-def what_reworked(*responses, questions=()):
+def what_reworked(*responses, questions=(), resolutions=()):
     """Review 1 found one material WHAT question; Process 2 answered it."""
     ws, requirement, _ = at_ready(
         findings=(), material_unresolved_what=[{"detail": "Maximum length?"}]
     )
     result, _ = rework(
-        ws, requirement, analysis_output(rework=list(responses), questions=questions)
+        ws,
+        requirement,
+        analysis_output(
+            rework=list(responses), questions=questions, resolutions=resolutions
+        ),
     )
     assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
     return ws, requirement
+
+
+def what_resolved():
+    """Process 2 RESOLVED the material WHAT item through a cited resolution."""
+    return what_reworked(
+        answer("R0001.W0", "RESOLVED", "Now stated.", resolution_index=0),
+        resolutions=[resolution(issue="Maximum length?")],
+    )
 
 
 def test_an_escalated_material_what_stays_blocked():
@@ -465,10 +486,13 @@ def test_an_escalated_material_what_stays_blocked():
 @pytest.mark.parametrize("outcome", ["REJECTED", "UNRESOLVED"])
 def test_a_resolved_claim_cannot_clear_a_material_what(outcome):
     """Q: only a confirmed resolution clears it; WI-1 gates keep authority."""
-    ws, requirement = what_reworked(answer("R0001.W0", "RESOLVED", "Now stated."))
+    ws, requirement = what_resolved()
     severity = {"severity": "BLOCKING"} if outcome == "REJECTED" else {}
     review_again(
-        ws, requirement, rework_verifications=[verify("R0001.W0", outcome, **severity)]
+        ws,
+        requirement,
+        rework_verifications=[verify("R0001.W0", outcome, **severity)],
+        resolution_verifications=[verify_resolution()],
     )
     (_, process), (_, review) = processes(ws)[-1], reviews(ws)[-1]
     assert review.what_status is WhatStatus.BLOCKED_ON_WHAT
@@ -482,8 +506,13 @@ def test_a_resolved_claim_cannot_clear_a_material_what(outcome):
 
 
 def test_only_a_confirmed_resolution_clears_a_material_what():
-    ws, requirement = what_reworked(answer("R0001.W0", "RESOLVED", "Now stated."))
-    review_again(ws, requirement, rework_verifications=[verify("R0001.W0")])
+    ws, requirement = what_resolved()
+    review_again(
+        ws,
+        requirement,
+        rework_verifications=[verify("R0001.W0")],
+        resolution_verifications=[verify_resolution()],
+    )
     _, review = reviews(ws)[-1]
     assert review.what_status is WhatStatus.CLEAR
     assert approve_standard_requirement(ws, requirement.id).is_normal
@@ -552,7 +581,7 @@ def test_a_historical_review_is_feedback_but_never_what_clearance():
     assert stored.has_question_evidence, "the new iteration is WI-1 evidence"
     review_again(ws, requirement, rework_verifications=[verify("R0001.F0")])
     _, review = reviews(ws)[-1]
-    assert review.version == "0.6" and review.what_status is WhatStatus.CLEAR
+    assert review.version == "0.7" and review.what_status is WhatStatus.CLEAR
 
 
 # -- L. lineage refusals --------------------------------------------------------
@@ -859,7 +888,17 @@ def test_persisted_responses_are_held_to_the_same_coverage():
 def test_an_older_process_result_cannot_carry_rework_evidence():
     ws, _, _ = reworked()
     node, _ = processes(ws)[-1]
-    rewrite_payload(ws, node, process_result_version="0.4")
+    payload, _, _ = payload_of(ws, node)
+    for key in ("resolutions", "autonomy_policy"):
+        del payload[key]
+    for item in payload["product_questions"]:
+        del item["authority"], item["alternatives"]
+    text = ws.content[node.secret]
+    start = text.index("```json\n") + len("```json\n")
+    payload["process_result_version"] = "0.4"
+    ws.content[node.secret] = (
+        text[:start] + json.dumps(payload) + text[text.index("\n```", start) :]
+    )
     with pytest.raises(InvalidProcessResult, match="cannot carry rework evidence"):
         parse_process_result(ws.content[node.secret])
 
@@ -903,11 +942,12 @@ def test_a_review_of_other_rework_responses_is_incoherent():
 
 
 def test_a_forged_clear_over_an_open_what_item_is_refused_on_read():
-    ws, requirement = what_reworked(answer("R0001.W0", "RESOLVED", "Now stated."))
+    ws, requirement = what_resolved()
     review_again(
         ws,
         requirement,
         rework_verifications=[verify("R0001.W0", "UNRESOLVED")],
+        resolution_verifications=[verify_resolution()],
     )
     node, _ = reviews(ws)[-1]
     rewrite_payload(ws, node, derived_what_status="CLEAR")
@@ -1341,7 +1381,7 @@ def test_the_brief_and_its_source_identity_are_deterministic():
     assert again.identity == brief.identity and again.source == brief.source
 
 
-# -- TSA admission over rework-bound 0.5 evidence (I05) -------------------------
+# -- TSA admission over rework-bound evidence (I05) -----------------------------
 
 
 def tsa_scene_after(ws, requirement, *, applied_by_hand=False):
@@ -1361,12 +1401,12 @@ def admitted_rework():
     ws, requirement, _ = reworked()
     review_again(ws, requirement, rework_verifications=[verify("R0001.F0")])
     (_, process), (_, review) = processes(ws)[-1], reviews(ws)[-1]
-    assert (process.version, review.version) == ("0.5", "0.6") and process.rework_brief
+    assert (process.version, review.version) == ("0.6", "0.7") and process.rework_brief
     assert review.what_status is WhatStatus.CLEAR
     return ws, requirement
 
 
-def test_tsa_admits_a_reworked_requirement_with_clear_0_5_evidence():
+def test_tsa_admits_a_reworked_requirement_with_clear_rework_evidence():
     ws, requirement = admitted_rework()
     scene = tsa_scene_after(ws, requirement)
     result = start(scene)
@@ -1376,9 +1416,12 @@ def test_tsa_admits_a_reworked_requirement_with_clear_0_5_evidence():
 
 
 def blocked_by_resolved_claim():
-    ws, requirement = what_reworked(answer("R0001.W0", "RESOLVED", "Now stated."))
+    ws, requirement = what_resolved()
     review_again(
-        ws, requirement, rework_verifications=[verify("R0001.W0", "UNRESOLVED")]
+        ws,
+        requirement,
+        rework_verifications=[verify("R0001.W0", "UNRESOLVED")],
+        resolution_verifications=[verify_resolution()],
     )
     return ws, requirement
 

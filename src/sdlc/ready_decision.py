@@ -37,6 +37,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from sdlc.autonomy_policy import DISABLED, AutonomyPolicies
 from sdlc.dependency_evidence import (
     DependencyEvidenceError,
     DependencyFailure,
@@ -56,6 +57,11 @@ from sdlc.process_result import (
     document_fingerprint,
     parse_process_result,
     parse_process_result_name,
+)
+from sdlc.resolution_evidence import (
+    ResolutionEvidenceError,
+    ResolutionFailure,
+    require_current_resolutions,
 )
 from sdlc.results import ReadyDecisionResult, ReadyDecisionResultCode
 from sdlc.review_result import (
@@ -139,8 +145,13 @@ def approve_standard_requirement(
     workspace: ReadyDecisionWorkspace,
     entity_id: str,
     acknowledged_verdict: ReviewVerdict | None = None,
+    *,
+    policies: AutonomyPolicies = DISABLED,
 ) -> ReadyDecisionResult:
-    """Record a human approval: `Ready -> Apply`, only for what was reviewed."""
+    """Record a human approval: `Ready -> Apply`, only for what was reviewed.
+
+    `policies` are the approved autonomy policies, read once by the caller.
+    """
     requirement: RequirementRecord | None = None
     review: ReviewResult | None = None
     try:
@@ -160,6 +171,7 @@ def approve_standard_requirement(
         _check_bindings(requirement, history)
         _check_what(requirement, history)
         _check_dependencies(workspace, requirement, review)
+        _check_resolutions(workspace, requirement, history, policies)
         _check_acknowledgement(review.verdict, acknowledged_verdict)
         _transition(workspace, requirement, APPLY_STATE)
     except _Refused as refusal:
@@ -600,6 +612,34 @@ def _check_dependencies(
             code = ReadyDecisionResultCode.FIBERY_READ_FAILED
         else:
             code = ReadyDecisionResultCode.DEPENDENCY_EVIDENCE_STALE
+        raise _Refused(
+            code,
+            f"{error.message} Send it for rework (Ready -> Process) for a new "
+            "Process and Review. Nothing was written.",
+            error.details,
+        ) from error
+
+
+def _check_resolutions(
+    workspace: ReadyDecisionWorkspace,
+    requirement: RequirementRecord,
+    history: _History,
+    policies: AutonomyPolicies,
+) -> None:
+    """Approve only resolutions whose policy and sources are what was reviewed.
+
+    Autonomous Resolution v0.1 §8: a changed, removed or disabled policy, or a
+    changed cited source, refuses; no acknowledgement overrides it.
+    """
+    try:
+        require_current_resolutions(
+            workspace, history.latest_process, history.latest_review, policies
+        )
+    except ResolutionEvidenceError as error:
+        code = {
+            ResolutionFailure.READ_FAILED: ReadyDecisionResultCode.FIBERY_READ_FAILED,
+            ResolutionFailure.INVALID: ReadyDecisionResultCode.INVALID_REVIEW_RESULT,
+        }.get(error.failure, ReadyDecisionResultCode.RESOLUTION_EVIDENCE_STALE)
         raise _Refused(
             code,
             f"{error.message} Send it for rework (Ready -> Process) for a new "

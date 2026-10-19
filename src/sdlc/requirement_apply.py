@@ -37,6 +37,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from sdlc.autonomy_policy import DISABLED, AutonomyPolicies
 from sdlc.dependency_evidence import (
     DependencyEvidenceError,
     DependencyFailure,
@@ -62,6 +63,11 @@ from sdlc.process_result import (
     document_fingerprint,
     parse_process_result,
     parse_process_result_name,
+)
+from sdlc.resolution_evidence import (
+    ResolutionEvidenceError,
+    ResolutionFailure,
+    require_current_resolutions,
 )
 from sdlc.results import ApplyResult, ApplyResultCode
 from sdlc.review_result import (
@@ -168,9 +174,17 @@ class _Plan:
 
 
 def apply_standard_requirement(
-    workspace: ApplyWorkspace, entity_id: str
+    workspace: ApplyWorkspace,
+    entity_id: str,
+    *,
+    policies: AutonomyPolicies = DISABLED,
 ) -> ApplyResult:
-    """Apply one approved Standard Requirement in Apply."""
+    """Apply one approved Standard Requirement in Apply.
+
+    `policies` are the approved autonomy policies, read once by the caller: a
+    delegated default applies only while the policy it bound is still active
+    (Requirement-Autonomous-Resolution-v0.1 §8).
+    """
     journal = _Journal()
     requirement: RequirementRecord | None = None
     try:
@@ -186,11 +200,13 @@ def apply_standard_requirement(
         # Immediately before the first write, never on state read earlier.
         _recheck_bindings(workspace, requirement, structure.root, evidence)
         _check_dependencies(workspace, requirement, evidence, Phase.APPLYING)
+        _check_resolutions(workspace, requirement, evidence, policies)
 
         _ensure_edges(workspace, requirement, plan, journal)
         _recheck_bindings(workspace, requirement, structure.root, evidence)
         # The written graph must be exactly the approved dependency evidence.
         _check_dependencies(workspace, requirement, evidence, Phase.APPLIED)
+        _check_resolutions(workspace, requirement, evidence, policies)
         _transition_to_applied(workspace, requirement, journal)
     except _StageFailed as failure:
         return _failure_result(failure, requirement, journal)
@@ -647,6 +663,35 @@ def _check_dependencies(
                 DependencyFailure.READ_FAILED: ApplyResultCode.FIBERY_READ_FAILED,
             }.get(error.failure, ApplyResultCode.DEPENDENCY_EVIDENCE_STALE)
         raise _StageFailed(code, error.message, error.details) from error
+
+
+def _check_resolutions(
+    workspace: ApplyWorkspace,
+    requirement: RequirementRecord,
+    evidence: _Evidence,
+    policies: AutonomyPolicies,
+) -> None:
+    """Autonomous Resolution v0.1 §8: the resolutions still rest on what bound them.
+
+    A delegated default needs its bound policy still active and unchanged;
+    every cited RAW and dependency must be the same entity with the same
+    content. Nothing is reinterpreted under a newer policy or source.
+    """
+    try:
+        require_current_resolutions(
+            workspace, evidence.latest_process, evidence.latest_review, policies
+        )
+    except ResolutionEvidenceError as error:
+        code = {
+            ResolutionFailure.READ_FAILED: ApplyResultCode.FIBERY_READ_FAILED,
+            ResolutionFailure.INVALID: ApplyResultCode.INVALID_REVIEW_RESULT,
+        }.get(error.failure, ApplyResultCode.RESOLUTION_EVIDENCE_STALE)
+        raise _StageFailed(
+            code,
+            f"{error.message} {requirement.requirement_id} must not become "
+            "Applied on it; move it to Process for a new Process and Review.",
+            error.details,
+        ) from error
 
 
 def _recheck_bindings(

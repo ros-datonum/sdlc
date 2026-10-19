@@ -25,6 +25,11 @@ edge the Requirement already has and binds every normative dependency, direct
 and transitive, to its entity, normative-tree fingerprint and Review Result;
 only a verified, bound direct dependency can answer a material question.
 
+Version 0.7 (Requirement-Autonomous-Resolution-v0.1) verifies every
+resolution the bound Process Result made, check by check, and copies the
+resolutions and the policy binding it verified; a resolution it does not
+confirm keeps the WHAT status BLOCKED_ON_WHAT.
+
 `build_rework_brief` turns one completed Review Result and the Process Result
 it reviewed into the Rework Brief the next Process iteration receives.
 """
@@ -36,13 +41,22 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from sdlc.autonomy_policy import PolicyBinding
 from sdlc.normative_tree import (
     LEGACY_NORMATIVE_TREE_VERSION,
     NORMATIVE_TREE_VERSION,
     InvalidTreeManifest,
     TreeManifest,
 )
-from sdlc.process_result import ProcessResult
+from sdlc.process_result import (
+    ProcessResult,
+    question_payload,
+    read_citation_payload,
+    read_question_payload,
+    read_resolution_payload,
+    resolution_payload,
+    response_payload,
+)
 from sdlc.rework_brief import (
     BriefCategory,
     BriefItem,
@@ -55,10 +69,15 @@ from sdlc.standard_analysis import (
     FindingKind,
     ProductQuestion,
     RelationKind,
+    Resolution,
+    ResolutionClass,
     ReworkOutcome,
     ReworkResponse,
+    SourceCitation,
 )
 from sdlc.standard_review import (
+    RESOLUTION_CHECKS,
+    CheckOutcome,
     DependencyVerification,
     FindingVerification,
     InvalidReviewOutput,
@@ -67,6 +86,7 @@ from sdlc.standard_review import (
     QuestionVerification,
     RejectionBasis,
     RelationVerification,
+    ResolutionVerification,
     ReviewOutput,
     ReviewSeverity,
     ReviewVerdict,
@@ -78,6 +98,8 @@ from sdlc.standard_review import (
     derive_what_status,
     material_escalations,
     question_blocks,
+    require_coherent_checks,
+    resolutions_leave_what_open,
     rework_leaves_what_open,
     verified_dependencies,
 )
@@ -96,7 +118,12 @@ from sdlc.standard_review import (
 # 0.6 is 0.5 plus the verified existing dependencies and the dependency
 # bindings of Requirement-Dependency-Bindings-v0.1. A 0.4 or 0.5 Review Result
 # keeps its WHAT and rework evidence but establishes no dependency evidence.
-REVIEW_RESULT_VERSION = "0.6"
+# 0.7 is 0.6 plus the verified resolutions of Requirement-Autonomous-
+# Resolution-v0.1. A 0.6 Review Result keeps its evidence; it reviewed a
+# Process Result that resolved nothing itself, and is never read as one that
+# verified resolutions.
+REVIEW_RESULT_VERSION = "0.7"
+PRE_RESOLUTION_REVIEW_RESULT_VERSION = "0.6"
 PRE_DEPENDENCY_REVIEW_RESULT_VERSION = "0.5"
 PRE_REWORK_REVIEW_RESULT_VERSION = "0.4"
 PRE_WHAT_REVIEW_RESULT_VERSION = "0.3"
@@ -105,6 +132,7 @@ LEGACY_REVIEW_RESULT_VERSION = "0.1"
 SUPPORTED_REVIEW_RESULT_VERSIONS = frozenset(
     {
         REVIEW_RESULT_VERSION,
+        PRE_RESOLUTION_REVIEW_RESULT_VERSION,
         PRE_DEPENDENCY_REVIEW_RESULT_VERSION,
         PRE_REWORK_REVIEW_RESULT_VERSION,
         PRE_WHAT_REVIEW_RESULT_VERSION,
@@ -115,6 +143,7 @@ SUPPORTED_REVIEW_RESULT_VERSIONS = frozenset(
 CURRENT_TREE_REVIEW_RESULT_VERSIONS = frozenset(
     {
         REVIEW_RESULT_VERSION,
+        PRE_RESOLUTION_REVIEW_RESULT_VERSION,
         PRE_DEPENDENCY_REVIEW_RESULT_VERSION,
         PRE_REWORK_REVIEW_RESULT_VERSION,
         PRE_WHAT_REVIEW_RESULT_VERSION,
@@ -124,19 +153,29 @@ CURRENT_TREE_REVIEW_RESULT_VERSIONS = frozenset(
 WHAT_BOUND_REVIEW_RESULT_VERSIONS = frozenset(
     {
         REVIEW_RESULT_VERSION,
+        PRE_RESOLUTION_REVIEW_RESULT_VERSION,
         PRE_DEPENDENCY_REVIEW_RESULT_VERSION,
         PRE_REWORK_REVIEW_RESULT_VERSION,
     }
 )
 #: Versions that carry the verified rework responses.
 REWORK_BOUND_REVIEW_RESULT_VERSIONS = frozenset(
-    {REVIEW_RESULT_VERSION, PRE_DEPENDENCY_REVIEW_RESULT_VERSION}
+    {
+        REVIEW_RESULT_VERSION,
+        PRE_RESOLUTION_REVIEW_RESULT_VERSION,
+        PRE_DEPENDENCY_REVIEW_RESULT_VERSION,
+    }
+)
+#: Versions that carry dependency evidence.
+DEPENDENCY_BOUND_REVIEW_RESULT_VERSIONS = frozenset(
+    {REVIEW_RESULT_VERSION, PRE_RESOLUTION_REVIEW_RESULT_VERSION}
 )
 MANIFEST_VERSION_BY_RESULT_VERSION = {
     TREE_BOUND_LEGACY_REVIEW_RESULT_VERSION: LEGACY_NORMATIVE_TREE_VERSION,
     PRE_WHAT_REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
     PRE_REWORK_REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
     PRE_DEPENDENCY_REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
+    PRE_RESOLUTION_REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
     REVIEW_RESULT_VERSION: NORMATIVE_TREE_VERSION,
 }
 REVIEW_RESULT_SUFFIX = "Review Result"
@@ -178,6 +217,21 @@ REWORK_VERIFICATIONS_KEY = "rework_verifications"
 REWORK_KEYS = (REVIEWED_BRIEF_KEY, REVIEWED_RESPONSES_KEY, REWORK_VERIFICATIONS_KEY)
 REVIEWED_RESPONSE_KEYS = frozenset(
     {"item", "outcome", "explanation", "product_question_index", "blocks_what"}
+)
+RESOLUTION_REVIEWED_RESPONSE_KEYS = REVIEWED_RESPONSE_KEYS | {
+    "resolution_index",
+    "evidence",
+}
+REVIEWED_RESOLUTIONS_KEY = "reviewed_resolutions"
+REVIEWED_POLICY_KEY = "reviewed_autonomy_policy"
+RESOLUTION_VERIFICATIONS_KEY = "resolution_verifications"
+RESOLUTION_KEYS = (
+    REVIEWED_RESOLUTIONS_KEY,
+    REVIEWED_POLICY_KEY,
+    RESOLUTION_VERIFICATIONS_KEY,
+)
+RESOLUTION_VERIFICATION_KEYS = frozenset(
+    {"resolution_index", "outcome", "severity", "checks", "reason"}
 )
 DEPENDENCY_VERIFICATIONS_KEY = "dependency_verifications"
 DEPENDENCY_BINDINGS_KEY = "dependency_bindings"
@@ -312,10 +366,50 @@ class ReviewResult:
     # dependency evidence at all (not "no dependencies").
     dependency_verifications: tuple[DependencyVerification, ...] = ()
     dependency_bindings: tuple[DependencyBinding, ...] = ()
+    # 0.7 only: the resolutions and policy binding of the bound Process
+    # Result, as verified, and one verification per resolution. Empty on older
+    # versions, which verified no resolution (not "there were none").
+    reviewed_resolutions: tuple[Resolution, ...] = ()
+    reviewed_autonomy_policy: PolicyBinding | None = None
+    resolution_verifications: tuple[ResolutionVerification, ...] = ()
 
     @property
     def name(self) -> str:
         return review_result_name(self.requirement_id, self.iteration)
+
+    @property
+    def is_resolution_bound(self) -> bool:
+        """Whether this review verified resolutions (0.7)."""
+        return self.version == REVIEW_RESULT_VERSION
+
+    @property
+    def relies_on_policy(self) -> bool:
+        return any(
+            resolution.resolution_class is ResolutionClass.DELEGATED_DEFAULT
+            for resolution in self.reviewed_resolutions
+        )
+
+    @property
+    def citations(self) -> tuple[SourceCitation, ...]:
+        """Every citation this review verified: resolution sources and evidence."""
+        return tuple(
+            source
+            for resolution in self.reviewed_resolutions
+            for source in resolution.sources
+        ) + tuple(
+            source
+            for reviewed in self.reviewed_rework_responses
+            for source in reviewed.response.evidence
+        )
+
+    @property
+    def unconfirmed_resolutions(self) -> tuple[int, ...]:
+        """Indexes of resolutions this review did not confirm."""
+        return tuple(
+            item.resolution_index
+            for item in self.resolution_verifications
+            if item.outcome is not VerificationOutcome.CONFIRMED
+        )
 
     @property
     def is_tree_bound(self) -> bool:
@@ -328,8 +422,8 @@ class ReviewResult:
 
     @property
     def is_dependency_bound(self) -> bool:
-        """Whether this review establishes dependency evidence (0.6)."""
-        return self.version == REVIEW_RESULT_VERSION
+        """Whether this review establishes dependency evidence (0.6+)."""
+        return self.version in DEPENDENCY_BOUND_REVIEW_RESULT_VERSIONS
 
     @property
     def verified_dependencies(self) -> frozenset[str]:
@@ -409,13 +503,17 @@ def build_review_result(
     reviewed_rework_brief: ReworkBrief | None = None,
     reviewed_rework_responses: tuple[ReworkResponse, ...] = (),
     dependency_bindings: tuple[DependencyBinding, ...] = (),
+    reviewed_resolutions: tuple[Resolution, ...] = (),
+    reviewed_autonomy_policy: PolicyBinding | None = None,
 ) -> ReviewResult:
     """Assemble the artifact, deriving verdict and WHAT status, never accepting.
 
     `reviewed_product_questions` are the bound Process Result's questions, the
     ones the review verified; `reviewed_rework_brief` and
     `reviewed_rework_responses` its Rework Brief and the responses verified;
-    `dependency_bindings` the dependencies the reviewer stage bound.
+    `dependency_bindings` the dependencies the reviewer stage bound;
+    `reviewed_resolutions` and `reviewed_autonomy_policy` the bound Process
+    Result's resolutions and policy binding, the ones the review verified.
     """
     if not reviewed_tree.is_current:
         raise InvalidReviewResult(
@@ -443,6 +541,9 @@ def build_review_result(
         for reviewed in reviewed_responses
         if reviewed.blocks_what
     )
+    dependencies = verified_dependencies(
+        review.relation_verifications, review.dependency_verifications
+    )
     return ReviewResult(
         requirement_id=requirement_id,
         iteration=iteration,
@@ -454,6 +555,7 @@ def build_review_result(
             review.new_findings,
             review.rework_verifications,
             review.dependency_verifications,
+            review.resolution_verifications,
         ),
         finding_verifications=review.finding_verifications,
         relation_verifications=review.relation_verifications,
@@ -472,8 +574,11 @@ def build_review_result(
                 _escalated_refs(reviewed_responses),
                 review.rework_verifications,
             ),
-            verified_dependencies(
-                review.relation_verifications, review.dependency_verifications
+            dependencies,
+            resolutions_leave_what_open(
+                tuple(reviewed_resolutions),
+                review.resolution_verifications,
+                dependencies,
             ),
         ),
         reviewed_brief_identity=(
@@ -485,6 +590,9 @@ def build_review_result(
         dependency_bindings=tuple(
             sorted(dependency_bindings, key=lambda binding: binding.requirement_id)
         ),
+        reviewed_resolutions=tuple(reviewed_resolutions),
+        reviewed_autonomy_policy=reviewed_autonomy_policy,
+        resolution_verifications=review.resolution_verifications,
     )
 
 
@@ -494,10 +602,16 @@ def _derive_what_status(
     material: tuple[MaterialWhat, ...],
     rework_what_open: bool = False,
     dependencies: frozenset[str] = frozenset(),
+    resolution_what_open: bool = False,
 ) -> WhatStatus:
     try:
         return derive_what_status(
-            questions, verifications, material, rework_what_open, dependencies
+            questions,
+            verifications,
+            material,
+            rework_what_open,
+            dependencies,
+            resolution_what_open,
         )
     except InvalidReviewOutput as error:
         raise InvalidReviewResult(str(error)) from error
@@ -555,6 +669,7 @@ def render_review_result(result: ReviewResult) -> str:
         ),
         **(_rework_payload(result) if result.is_rework_bound else {}),
         **(_dependency_payload(result) if result.is_dependency_bound else {}),
+        **(_resolution_payload(result) if result.is_resolution_bound else {}),
     }
     body = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False)
     return (
@@ -577,7 +692,11 @@ def _what_payload(result: ReviewResult) -> dict[str, object]:
         )
     return {
         REVIEWED_QUESTIONS_KEY: [
-            {"detail": question.detail, "material": question.material}
+            # A question copied from a Process Result older than 0.6 keeps
+            # the shape it was recorded in: it never had an authority.
+            question_payload(
+                question, result.is_resolution_bound and question.authority is not None
+            )
             for question in result.reviewed_product_questions
         ],
         QUESTION_VERIFICATIONS_KEY: [
@@ -603,10 +722,7 @@ def _rework_payload(result: ReviewResult) -> dict[str, object]:
         REVIEWED_BRIEF_KEY: result.reviewed_brief_identity,
         REVIEWED_RESPONSES_KEY: [
             {
-                "item": reviewed.response.item,
-                "outcome": reviewed.response.outcome.value,
-                "explanation": reviewed.response.explanation,
-                "product_question_index": reviewed.response.product_question_index,
+                **response_payload(reviewed.response, result.is_resolution_bound),
                 "blocks_what": reviewed.blocks_what,
             }
             for reviewed in result.reviewed_rework_responses
@@ -636,6 +752,29 @@ def _dependency_payload(result: ReviewResult) -> dict[str, object]:
         ],
         DEPENDENCY_BINDINGS_KEY: [
             binding.to_payload() for binding in result.dependency_bindings
+        ],
+    }
+
+
+def _resolution_payload(result: ReviewResult) -> dict[str, object]:
+    return {
+        REVIEWED_RESOLUTIONS_KEY: [
+            resolution_payload(resolution) for resolution in result.reviewed_resolutions
+        ],
+        REVIEWED_POLICY_KEY: (
+            result.reviewed_autonomy_policy.to_payload()
+            if result.reviewed_autonomy_policy
+            else None
+        ),
+        RESOLUTION_VERIFICATIONS_KEY: [
+            {
+                "resolution_index": item.resolution_index,
+                "outcome": item.outcome.value,
+                "severity": item.severity.value if item.severity else None,
+                "checks": {name: outcome.value for name, outcome in item.checks},
+                "reason": item.reason,
+            }
+            for item in result.resolution_verifications
         ],
     }
 
@@ -674,12 +813,14 @@ def parse_review_result(text: str) -> ReviewResult:
         for entry in _as_list(payload.get(RELATION_VERIFICATIONS_KEY))
     )
     dependency = _read_dependency_evidence(payload, version, relations)
+    resolution = _read_resolution_evidence(payload, version)
     verdict = _read_verdict(payload.get(VERDICT_KEY))
     recalculated = derive_verdict(
         verifications,
         new_findings,
         rework.get("rework_verifications", ()),
         dependency.get("dependency_verifications", ()),
+        resolution.get("resolution_verifications", ()),
     )
     if verdict is not recalculated:
         # The artifact grades itself. If the stored verdict and the findings it
@@ -703,8 +844,9 @@ def parse_review_result(text: str) -> ReviewResult:
         # Only a dependency-bound review has verified dependencies; an older
         # one is read under the rules it was written with.
         verified_dependencies(relations, dependency["dependency_verifications"])
-        if version == REVIEW_RESULT_VERSION
+        if version in DEPENDENCY_BOUND_REVIEW_RESULT_VERSIONS
         else frozenset(),
+        resolution,
     )
     return ReviewResult(
         requirement_id=requirement_id,
@@ -726,7 +868,103 @@ def parse_review_result(text: str) -> ReviewResult:
         **what,
         **rework,
         **dependency,
+        **resolution,
     )
+
+
+def _read_resolution_evidence(payload: dict[str, object], version: str) -> dict:
+    """The 0.7 resolution evidence, closed, covered and coherent; none before."""
+    if version != REVIEW_RESULT_VERSION:
+        present = [key for key in RESOLUTION_KEYS if key in payload]
+        if present:
+            raise InvalidReviewResult(
+                f"A {version} Review Result cannot carry resolution evidence: "
+                + ", ".join(present)
+            )
+        return {}
+    missing = [key for key in RESOLUTION_KEYS if key not in payload]
+    if missing:
+        raise InvalidReviewResult(
+            f"A {REVIEW_RESULT_VERSION} Review Result is missing its resolution "
+            "evidence: " + ", ".join(missing)
+        )
+    for key in (REVIEWED_RESOLUTIONS_KEY, RESOLUTION_VERIFICATIONS_KEY):
+        if not isinstance(payload[key], list):
+            raise InvalidReviewResult(f"{key} must be a list.")
+    resolutions = tuple(
+        read_resolution_payload(entry, InvalidReviewResult)
+        for entry in payload[REVIEWED_RESOLUTIONS_KEY]
+    )
+    binding = payload[REVIEWED_POLICY_KEY]
+    try:
+        policy = PolicyBinding.from_payload(binding) if binding is not None else None
+    except ValueError as error:
+        raise InvalidReviewResult(str(error)) from error
+    if policy is None and any(
+        item.resolution_class is ResolutionClass.DELEGATED_DEFAULT
+        for item in resolutions
+    ):
+        raise InvalidReviewResult(
+            "A verified DELEGATED_DEFAULT resolution needs its policy binding."
+        )
+    verifications = tuple(
+        _read_resolution_verification(entry, resolutions)
+        for entry in payload[RESOLUTION_VERIFICATIONS_KEY]
+    )
+    addressed = sorted(item.resolution_index for item in verifications)
+    if addressed != list(range(len(resolutions))):
+        raise InvalidReviewResult(
+            "The persisted resolution verifications do not cover each reviewed "
+            "resolution exactly once."
+        )
+    return {
+        "reviewed_resolutions": resolutions,
+        "reviewed_autonomy_policy": policy,
+        "resolution_verifications": verifications,
+    }
+
+
+def _read_resolution_verification(
+    entry: object, resolutions: tuple[Resolution, ...]
+) -> ResolutionVerification:
+    if not isinstance(entry, dict) or set(entry) != RESOLUTION_VERIFICATION_KEYS:
+        raise InvalidReviewResult(f"Malformed resolution verification: {entry!r}")
+    index, checks, severity = (
+        entry["resolution_index"],
+        entry["checks"],
+        entry["severity"],
+    )
+    if (
+        not isinstance(index, int)
+        or isinstance(index, bool)
+        or not 0 <= index < len(resolutions)
+        or not isinstance(checks, dict)
+        or set(checks) != set(RESOLUTION_CHECKS)
+        or not isinstance(entry["reason"], str)
+        or not entry["reason"].strip()
+    ):
+        raise InvalidReviewResult(f"Malformed resolution verification: {entry!r}")
+    try:
+        verification = ResolutionVerification(
+            resolution_index=index,
+            outcome=VerificationOutcome(entry["outcome"]),
+            checks=tuple(
+                (name, CheckOutcome(checks[name])) for name in RESOLUTION_CHECKS
+            ),
+            reason=entry["reason"],
+            severity=ReviewSeverity(severity) if severity is not None else None,
+        )
+    except ValueError as error:
+        raise InvalidReviewResult(
+            f"Malformed resolution verification: {error}"
+        ) from error
+    require_coherent_checks(
+        verification,
+        resolutions[index],
+        "A persisted resolution verification",
+        InvalidReviewResult,
+    )
+    return verification
 
 
 def _read_dependency_evidence(
@@ -740,7 +978,7 @@ def _read_dependency_evidence(
     PROPOSED ones exactly the confirmed DEPENDS_ON proposals that were not
     already edges, and a TRANSITIVE one is neither.
     """
-    if version != REVIEW_RESULT_VERSION:
+    if version not in DEPENDENCY_BOUND_REVIEW_RESULT_VERSIONS:
         present = [key for key in DEPENDENCY_KEYS if key in payload]
         if present:
             raise InvalidReviewResult(
@@ -751,8 +989,8 @@ def _read_dependency_evidence(
     missing = [key for key in DEPENDENCY_KEYS if key not in payload]
     if missing:
         raise InvalidReviewResult(
-            f"A {REVIEW_RESULT_VERSION} Review Result is missing its dependency "
-            "evidence: " + ", ".join(missing)
+            f"A {version} Review Result is missing its dependency evidence: "
+            + ", ".join(missing)
         )
     for key in DEPENDENCY_KEYS:
         if not isinstance(payload[key], list):
@@ -872,7 +1110,8 @@ def _read_rework_evidence(payload: dict[str, object], version: str) -> dict:
         if not isinstance(payload[key], list):
             raise InvalidReviewResult(f"{key} must be a list.")
     responses = tuple(
-        _read_reviewed_response(entry) for entry in payload[REVIEWED_RESPONSES_KEY]
+        _read_reviewed_response(entry, version == REVIEW_RESULT_VERSION)
+        for entry in payload[REVIEWED_RESPONSES_KEY]
     )
     verifications = tuple(
         _read_rework_verification(entry) for entry in payload[REWORK_VERIFICATIONS_KEY]
@@ -896,8 +1135,22 @@ def _read_rework_evidence(payload: dict[str, object], version: str) -> dict:
     }
 
 
-def _read_reviewed_response(entry: object) -> ReviewedReworkResponse:
-    if not isinstance(entry, dict) or set(entry) != REVIEWED_RESPONSE_KEYS:
+def _read_reviewed_response(
+    entry: object, resolution_bound: bool
+) -> ReviewedReworkResponse:
+    keys = (
+        RESOLUTION_REVIEWED_RESPONSE_KEYS
+        if resolution_bound
+        else REVIEWED_RESPONSE_KEYS
+    )
+    if not isinstance(entry, dict) or set(entry) != keys:
+        raise InvalidReviewResult(f"Malformed reviewed rework response: {entry!r}")
+    resolution = entry.get("resolution_index")
+    evidence = entry.get("evidence", [])
+    if (
+        resolution is not None
+        and (not isinstance(resolution, int) or isinstance(resolution, bool))
+    ) or not isinstance(evidence, list):
         raise InvalidReviewResult(f"Malformed reviewed rework response: {entry!r}")
     index = entry["product_question_index"]
     try:
@@ -924,6 +1177,10 @@ def _read_reviewed_response(entry: object) -> ReviewedReworkResponse:
             outcome=outcome,
             explanation=entry["explanation"],
             product_question_index=index,
+            resolution_index=resolution,
+            evidence=tuple(
+                read_citation_payload(item, InvalidReviewResult) for item in evidence
+            ),
         ),
         blocks_what=entry["blocks_what"],
     )
@@ -977,6 +1234,7 @@ def _read_what_evidence(
     version: str,
     rework: dict,
     dependencies: frozenset[str] = frozenset(),
+    resolution: dict | None = None,
 ) -> dict:
     """The 0.4+ WHAT evidence, its status recomputed; none for older versions.
 
@@ -995,7 +1253,12 @@ def _read_what_evidence(
         if not isinstance(payload[key], list):
             raise InvalidReviewResult(f"{key} must be a list.")
     questions = tuple(
-        _read_product_question(entry)
+        read_question_payload(
+            entry,
+            version == REVIEW_RESULT_VERSION,
+            InvalidReviewResult,
+            copies_older_process=version == REVIEW_RESULT_VERSION,
+        )
         for entry in _as_list(payload.get(REVIEWED_QUESTIONS_KEY))
     )
     verifications = tuple(
@@ -1038,6 +1301,11 @@ def _read_what_evidence(
             what_refs, _escalated_refs(responses), rework_verifications
         ),
         dependencies,
+        resolutions_leave_what_open(
+            (resolution or {}).get("reviewed_resolutions", ()),
+            (resolution or {}).get("resolution_verifications", ()),
+            dependencies,
+        ),
     )
     if stored is not recalculated:
         raise InvalidReviewResult(
@@ -1078,7 +1346,31 @@ def what_clearance(review: ReviewResult, process: ProcessResult) -> WhatStatus |
             f"not the questions of Process Result {process.iteration}."
         )
     _require_rework_coherence(review, process)
+    _require_resolution_coherence(review, process)
     return review.what_status
+
+
+def _require_resolution_coherence(review: ReviewResult, process: ProcessResult) -> None:
+    """The review verified exactly the resolutions and policy the Process bound.
+
+    The reviewer of a 0.6 Process Result always writes 0.7. A 0.7 review of
+    an older Process Result verified no resolution, because that Process
+    recorded none, and must say so: nothing is read into it either way.
+    """
+    if process.is_resolution_bound and not review.is_resolution_bound:
+        raise InvalidReviewResult(
+            f"Review Result {review.iteration} (version {review.version}) does not "
+            f"match the resolution evidence of Process Result {process.iteration} "
+            f"(version {process.version})."
+        )
+    if (
+        review.reviewed_resolutions != process.resolutions
+        or review.reviewed_autonomy_policy != process.autonomy_policy
+    ):
+        raise InvalidReviewResult(
+            f"Review Result {review.iteration} verified resolutions that are not "
+            f"those of Process Result {process.iteration}."
+        )
 
 
 def _require_rework_coherence(review: ReviewResult, process: ProcessResult) -> None:
@@ -1142,10 +1434,15 @@ def open_material_questions(review: ReviewResult) -> tuple[str, ...]:
             item.item in escalated or item.outcome is not VerificationOutcome.CONFIRMED
         )
     ]
+    open_resolutions = [
+        f"unconfirmed resolution [{index}]: {review.reviewed_resolutions[index].issue}"
+        for index in review.unconfirmed_resolutions
+    ]
     return (
         *open_questions,
         *(item.detail for item in review.material_unresolved_what),
         *open_rework,
+        *open_resolutions,
     )
 
 
@@ -1187,6 +1484,7 @@ def build_rework_brief(review: ReviewResult, process: ProcessResult) -> ReworkBr
             *_question_items(review),
             *_material_what_items(review),
             *_dependency_items(review),
+            *_resolution_items(review),
             *_rework_claim_items(review, process),
         ),
         assessment=dict(review.assessment),
@@ -1318,6 +1616,28 @@ def _dependency_items(review: ReviewResult) -> tuple[BriefItem, ...]:
     )
 
 
+def _resolution_items(review: ReviewResult) -> tuple[BriefItem, ...]:
+    """Resolutions the review did not confirm: product decisions still open."""
+    return tuple(
+        BriefItem(
+            ref=_ref(review, BriefCategory.RESOLUTION, item.resolution_index),
+            category=BriefCategory.RESOLUTION,
+            detail=(
+                f"{resolution.issue} (adopted "
+                f"{resolution.resolution_class.value}: {resolution.answer})"
+            ),
+            blocks_what=True,
+            feedback=item.reason,
+            outcome=item.outcome,
+            kind=resolution.resolution_class.value,
+            severity=item.severity,
+        )
+        for item in review.resolution_verifications
+        if item.outcome is not VerificationOutcome.CONFIRMED
+        for resolution in (review.reviewed_resolutions[item.resolution_index],)
+    )
+
+
 def _material_what_items(review: ReviewResult) -> tuple[BriefItem, ...]:
     return tuple(
         BriefItem(
@@ -1368,18 +1688,6 @@ def _rework_claim_items(
             )
         )
     return tuple(items)
-
-
-def _read_product_question(entry: object) -> ProductQuestion:
-    if (
-        not isinstance(entry, dict)
-        or set(entry) != {"detail", "material"}
-        or not isinstance(entry["detail"], str)
-        or not entry["detail"].strip()
-        or not isinstance(entry["material"], bool)
-    ):
-        raise InvalidReviewResult(f"Malformed reviewed product question: {entry!r}")
-    return ProductQuestion(detail=entry["detail"], material=entry["material"])
 
 
 def _read_question_verification(entry: object) -> QuestionVerification:

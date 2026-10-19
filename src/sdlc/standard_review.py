@@ -24,7 +24,11 @@ trusted:
 - **every rework response is verified exactly once**
   (Requirement-Rework-Brief-v0.1). A Process claim to have resolved or
   rebutted a material WHAT item clears nothing: only a CONFIRMED verification
-  does, and an escalation stays a product question under the gate above.
+  does, and an escalation stays a product question under the gate above;
+- **every autonomous resolution is verified exactly once, check by check**
+  (Requirement-Autonomous-Resolution-v0.1 §6). The outcome must agree with
+  the reviewer's own ten checks, so a resolution cannot be confirmed by
+  assertion, and one that is not confirmed keeps WHAT blocked.
 
 Anything the contract does not define is a validation error, which is what
 keeps chain-of-thought and invented mutation instructions out: no key outside
@@ -46,8 +50,11 @@ from sdlc.standard_analysis import (
     ProductQuestion,
     ProposedRelation,
     RelationKind,
+    Resolution,
+    ResolutionClass,
     ReworkOutcome,
     ReworkResponse,
+    SourceKind,
 )
 
 
@@ -105,6 +112,33 @@ class RejectionBasis(StrEnum):
     ANSWERED_BY_OTHER_REQUIREMENT = "ANSWERED_BY_OTHER_REQUIREMENT"
 
 
+class CheckOutcome(StrEnum):
+    """The reviewer's answer to one resolution check."""
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    UNCERTAIN = "UNCERTAIN"
+    # Only `within_policy_clause`, and only for a resolution that cites no
+    # policy (SOURCE_GROUNDED, DEPENDENCY_GROUNDED).
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+#: Autonomous Resolution v0.1 §6, A to J, in order.
+RESOLUTION_CHECKS = (
+    "issue_identified",
+    "source_supports_answer",
+    "authority_class_correct",
+    "within_policy_clause",
+    "consistent_with_raw",
+    "consistent_with_related",
+    "no_unsupported_obligation",
+    "no_new_contradiction",
+    "no_material_what_open",
+    "testable_at_what_level",
+)
+POLICY_CHECK = "within_policy_clause"
+
+
 class InvalidReviewOutput(ValueError):
     """The reviewer's response does not satisfy the contract."""
 
@@ -134,6 +168,10 @@ DEPENDENCY_VERIFICATION_KEYS = frozenset(
     {"requirement_id", "outcome", "severity", "reason"}
 )
 DEPENDENCY_VERIFICATIONS_KEY = "dependency_verifications"
+RESOLUTION_VERIFICATION_KEYS = frozenset(
+    {"resolution_index", "outcome", "severity", "checks", "reason"}
+)
+RESOLUTION_VERIFICATIONS_KEY = "resolution_verifications"
 REVIEW_KEYS = frozenset(
     {
         "finding_verifications",
@@ -144,6 +182,7 @@ REVIEW_KEYS = frozenset(
         "material_unresolved_what",
         REWORK_VERIFICATIONS_KEY,
         DEPENDENCY_VERIFICATIONS_KEY,
+        RESOLUTION_VERIFICATIONS_KEY,
     }
 )
 
@@ -244,6 +283,103 @@ class DependencyVerification:
 
 
 @dataclass(frozen=True)
+class ResolutionVerification:
+    """The reviewer's conclusion about one Process resolution, check by check.
+
+    `checks` holds an outcome for every name in RESOLUTION_CHECKS, in that
+    order. CONFIRMED: every check passes. REJECTED: at least one fails, so
+    a defect remains and carries a severity. UNRESOLVED: none fails and at
+    least one is uncertain; no severity.
+    """
+
+    resolution_index: int
+    outcome: VerificationOutcome
+    checks: tuple[tuple[str, CheckOutcome], ...]
+    reason: str
+    severity: ReviewSeverity | None = None
+
+
+def require_coherent_checks(
+    verification: ResolutionVerification,
+    resolution: Resolution,
+    where: str,
+    error: type[ValueError],
+) -> None:
+    """The outcome agrees with the checks; shared with the Review Result reader."""
+    if tuple(name for name, _ in verification.checks) != RESOLUTION_CHECKS:
+        raise error(
+            f"{where} must answer exactly these checks, in order: "
+            + ", ".join(RESOLUTION_CHECKS)
+        )
+    checks = dict(verification.checks)
+    cites_policy = resolution.resolution_class is ResolutionClass.DELEGATED_DEFAULT
+    if (checks[POLICY_CHECK] is CheckOutcome.NOT_APPLICABLE) == cites_policy:
+        raise error(
+            f"{where}: {POLICY_CHECK} is NOT_APPLICABLE exactly when the "
+            "resolution cites no policy clause."
+        )
+    if any(
+        outcome is CheckOutcome.NOT_APPLICABLE
+        for name, outcome in verification.checks
+        if name != POLICY_CHECK
+    ):
+        raise error(f"{where}: only {POLICY_CHECK} may be NOT_APPLICABLE.")
+    outcomes = set(checks.values()) - {CheckOutcome.NOT_APPLICABLE}
+    expected = (
+        VerificationOutcome.REJECTED
+        if CheckOutcome.FAIL in outcomes
+        else VerificationOutcome.UNRESOLVED
+        if CheckOutcome.UNCERTAIN in outcomes
+        else VerificationOutcome.CONFIRMED
+    )
+    if verification.outcome is not expected:
+        raise error(
+            f"{where} is {verification.outcome.value}, but its checks derive "
+            f"{expected.value}: a confirmation needs every check to pass."
+        )
+    if (verification.outcome is VerificationOutcome.REJECTED) != (
+        verification.severity is not None
+    ):
+        raise error(
+            f"{where} carries a severity if and only if it rejects the resolution."
+        )
+
+
+def resolutions_leave_what_open(
+    resolutions: tuple[Resolution, ...],
+    verifications: tuple[ResolutionVerification, ...],
+    verified_dependencies: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether a resolution fails to settle the product question it answered.
+
+    Only CONFIRMED stops a resolution from blocking. A confirmed
+    DEPENDENCY_GROUNDED resolution also needs every dependency it cites to be
+    a verified, bound direct DEPENDS_ON of this review (Dependency Bindings
+    v0.1 §8): an AFFECTS peer, an unbindable proposal or a transitive
+    dependency is not authority here.
+    """
+    by_index = {item.resolution_index: item for item in verifications}
+    for index, resolution in enumerate(resolutions):
+        verification = by_index.get(index)
+        if (
+            verification is None
+            or verification.outcome is not VerificationOutcome.CONFIRMED
+        ):
+            return True
+        if (
+            resolution.resolution_class is ResolutionClass.DEPENDENCY_GROUNDED
+            and not {
+                source.requirement_id
+                for source in resolution.sources
+                if source.kind is SourceKind.DEPENDENCY
+            }
+            <= verified_dependencies
+        ):
+            return True
+    return False
+
+
+@dataclass(frozen=True)
 class ReviewOutput:
     """One validated review response."""
 
@@ -255,6 +391,7 @@ class ReviewOutput:
     material_unresolved_what: tuple[MaterialWhat, ...] = ()
     rework_verifications: tuple[ReworkVerification, ...] = ()
     dependency_verifications: tuple[DependencyVerification, ...] = ()
+    resolution_verifications: tuple[ResolutionVerification, ...] = ()
 
     @property
     def confirmed_relations(self) -> tuple[RelationVerification, ...]:
@@ -271,6 +408,7 @@ def derive_verdict(
     new_findings: tuple[NewFinding, ...],
     rework_verifications: tuple[ReworkVerification, ...] = (),
     dependency_verifications: tuple[DependencyVerification, ...] = (),
+    resolution_verifications: tuple[ResolutionVerification, ...] = (),
 ) -> ReviewVerdict:
     """Derive the overall verdict from the severities of asserted defects.
 
@@ -284,8 +422,9 @@ def derive_verdict(
     every Requirement would make the verdict meaningless. Unresolved items stay
     fully visible in the Review Result for the human at Ready.
 
-    A rejected rework response asserts that a defect remains, and a
-    rejected existing dependency asserts a false dependency, so each counts
+    A rejected rework response asserts that a defect remains, a rejected
+    existing dependency asserts a false dependency, and a rejected resolution
+    asserts an unsupported or unauthorized product decision, so each counts
     with its own severity, exactly like a confirmed finding.
     """
     severities = (
@@ -297,7 +436,11 @@ def derive_verdict(
         | {finding.severity for finding in new_findings}
         | {
             verification.severity
-            for verification in (*rework_verifications, *dependency_verifications)
+            for verification in (
+                *rework_verifications,
+                *dependency_verifications,
+                *resolution_verifications,
+            )
             if verification.outcome is VerificationOutcome.REJECTED
         }
     )
@@ -421,13 +564,15 @@ def derive_what_status(
     material_unresolved_what: tuple[MaterialWhat, ...],
     rework_what_open: bool = False,
     verified_dependencies: frozenset[str] = frozenset(),
+    resolution_what_open: bool = False,
 ) -> WhatStatus:
     """CLEAR only when no material product question is left open.
 
     Requires exactly one verification per question; anything else is a
     contract violation the caller has already refused. `rework_what_open`
-    is `rework_leaves_what_open` for the reviewed rework responses: it can
-    only block, never clear.
+    is `rework_leaves_what_open` for the reviewed rework responses and
+    `resolution_what_open` is `resolutions_leave_what_open`: either can only
+    block, never clear.
     """
     by_index = {item.question_index: item for item in question_verifications}
     if sorted(by_index) != list(range(len(product_questions))) or len(by_index) != len(
@@ -439,6 +584,7 @@ def derive_what_status(
         )
     if (
         rework_what_open
+        or resolution_what_open
         or material_unresolved_what
         or any(
             question_blocks(question, by_index[index], verified_dependencies)
@@ -457,6 +603,7 @@ def parse_review_output(
     rework_responses: tuple[ReworkResponse, ...] | None = None,
     rework_what_refs: frozenset[str] = frozenset(),
     existing_dependencies: tuple[str, ...] = (),
+    resolutions: tuple[Resolution, ...] | None = None,
 ) -> ReviewOutput:
     """Validate the reviewer's JSON response against the Process claims.
 
@@ -467,6 +614,8 @@ def parse_review_output(
     received no Rework Brief; `rework_what_refs` the Brief items among them
     that are material WHAT questions. `existing_dependencies` are the DEPENDS_ON
     targets the Requirement already has, each verified exactly once.
+    `resolutions` are the Process resolutions, each verified exactly once;
+    None for a Process Result that predates them, which none may verify.
     """
     payload = _load_json(text)
     _reject_unknown(payload, REVIEW_KEYS, "review")
@@ -521,6 +670,7 @@ def parse_review_output(
 
     rework = _read_rework_verifications(payload, rework_responses)
     dependencies = _read_dependency_verifications(payload, existing_dependencies)
+    resolution_verifications = _read_resolution_verifications(payload, resolutions)
     contradicted = contradictory_escalations(
         product_questions,
         questions,
@@ -555,7 +705,82 @@ def parse_review_output(
         assessment=_read_assessment(payload.get("assessment")),
         rework_verifications=rework,
         dependency_verifications=dependencies,
+        resolution_verifications=resolution_verifications,
     )
+
+
+def _read_resolution_verifications(
+    payload: dict[str, object], resolutions: tuple[Resolution, ...] | None
+) -> tuple[ResolutionVerification, ...]:
+    entries = payload.get(RESOLUTION_VERIFICATIONS_KEY)
+    if resolutions is None:
+        if entries:
+            raise InvalidReviewOutput(
+                "resolution_verifications verifies resolutions, but the Process "
+                "Result predates them."
+            )
+        return ()
+    if resolutions and RESOLUTION_VERIFICATIONS_KEY not in payload:
+        raise InvalidReviewOutput(
+            "The Process Result resolved product questions itself, so "
+            "resolution_verifications must verify each: its absence verifies none."
+        )
+    verifications = tuple(
+        _read_resolution_verification(entry, index, resolutions)
+        for index, entry in enumerate(_as_list(entries, RESOLUTION_VERIFICATIONS_KEY))
+    )
+    _require_exact_coverage(
+        addressed=[item.resolution_index for item in verifications],
+        expected=list(range(len(resolutions))),
+        describe=lambda index: f"Process resolution {index}",
+    )
+    return verifications
+
+
+def _read_resolution_verification(
+    entry: object, index: int, resolutions: tuple[Resolution, ...]
+) -> ResolutionVerification:
+    where = f"resolution verification {index}"
+    if not isinstance(entry, dict):
+        raise InvalidReviewOutput(f"{where} must be an object.")
+    _reject_unknown(entry, RESOLUTION_VERIFICATION_KEYS, where)
+    missing = sorted({"resolution_index", "outcome", "checks", "reason"} - set(entry))
+    if missing:
+        raise InvalidReviewOutput(f"{where} is missing: " + ", ".join(missing))
+    target = entry["resolution_index"]
+    if not isinstance(target, int) or isinstance(target, bool):
+        raise InvalidReviewOutput(
+            f"{where} has resolution_index {target!r}, which is not an integer."
+        )
+    if not 0 <= target < len(resolutions):
+        raise InvalidReviewOutput(
+            f"{where} addresses resolution {target}, but the Process Result has "
+            f"{len(resolutions)}."
+        )
+    checks = entry["checks"]
+    if not isinstance(checks, dict) or set(checks) != set(RESOLUTION_CHECKS):
+        raise InvalidReviewOutput(
+            f"{where} checks must answer exactly: " + ", ".join(RESOLUTION_CHECKS)
+        )
+    severity = entry.get("severity")
+    verification = ResolutionVerification(
+        resolution_index=target,
+        outcome=_read_enum(VerificationOutcome, entry["outcome"], where),
+        checks=tuple(
+            (name, _read_enum(CheckOutcome, checks[name], f"{where} check {name}"))
+            for name in RESOLUTION_CHECKS
+        ),
+        reason=_read_text(entry["reason"], f"{where} reason"),
+        severity=(
+            _read_enum(ReviewSeverity, severity, where)
+            if severity is not None
+            else None
+        ),
+    )
+    require_coherent_checks(
+        verification, resolutions[target], where, InvalidReviewOutput
+    )
+    return verification
 
 
 def _read_dependency_verifications(

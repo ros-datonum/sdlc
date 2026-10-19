@@ -17,10 +17,15 @@ structure.
 During a rework the context also carries the Rework Brief
 (Requirement-Rework-Brief-v0.1) in its own section, labelled non-normative:
 the previous independent Review's actionable items, as claims to examine.
+
+The context always carries the Project's delegated decision policy section
+(Requirement-Autonomous-Resolution-v0.1): the approved clauses, or a statement
+that none is approved and DELEGATED_DEFAULT is unavailable.
 """
 
 from __future__ import annotations
 
+from sdlc.autonomy_policy import AutonomyPolicy, render_policy_section
 from sdlc.comparison_context import (
     ComparisonContext,
     render_comparison_section,
@@ -28,7 +33,14 @@ from sdlc.comparison_context import (
 )
 from sdlc.fibery_workspace import RequirementRecord, RequirementRelations
 from sdlc.rework_brief import BriefItem, ReworkBrief
-from sdlc.standard_analysis import FindingKind, RelationKind, ReworkOutcome
+from sdlc.standard_analysis import (
+    AUTONOMOUS_CLASSES,
+    QUESTION_AUTHORITIES,
+    FindingKind,
+    RelationKind,
+    ReworkOutcome,
+    SourceKind,
+)
 
 REWORK_HEADING = "PREVIOUS REVIEW FEEDBACK — NON-NORMATIVE"
 
@@ -65,13 +77,30 @@ Shape:
   ],
   "product_questions": [
     { "detail": "one unanswered product question, on a single line",
-      "material": true | false }
+      "material": true | false,
+      "authority": "HUMAN_REQUIRED" | "INSUFFICIENT_EVIDENCE",
+      "alternatives": ["one decision option per line", "..."] }
+  ],
+  "resolutions": [
+    { "class": "SOURCE_GROUNDED" | "DEPENDENCY_GROUNDED" | "DELEGATED_DEFAULT",
+      "issue": "the question or gap you resolved, on a single line",
+      "answer": "the answer you adopted into the normalized requirement",
+      "affected_sections": ["requirement", "detailed_behavior", "..."],
+      "sources": [
+        { "kind": "RAW" | "REQUIREMENT" | "DEPENDENCY",
+          "requirement_id": "the RAW or dependency Requirement ID; omit for REQUIREMENT",
+          "quote": "verbatim text from that source" }
+      ],
+      "policy_clause": "DELEGATED_DEFAULT only: the clause id",
+      "justification": "why the cited evidence or clause settles it" }
   ],
   "rework_responses": [
     { "item": "the Brief item reference, e.g. R0001.F0",
       "outcome": "RESOLVED" | "REBUTTED" | "ESCALATED",
       "explanation": "the correction, rebuttal or what remains open, and why",
-      "product_question_index": "ESCALATED only: see the rework rules below" }
+      "product_question_index": "ESCALATED only: see the rework rules below",
+      "resolution_index": "RESOLVED only: see the rework rules below",
+      "evidence": ["REBUTTED only: sources, same shape as resolution sources"] }
   ]
 }
 
@@ -161,7 +190,9 @@ Sections:
 - There is no open_questions field: code renders the Requirement's Open
   Questions section from product_questions, one line per question.
 - product_questions: unresolved product decisions that affect WHAT must be
-  true. Preserve each as a question and never answer it. Every question the
+  true. Preserve each as a question and never answer it here: a question you
+  answer under authority leaves this list and is recorded in resolutions
+  (see below). Every question the
   current document's Open Questions section still holds belongs here unless
   the Requirement's own normative content now answers it. A missing architecture
   decision is not a product gap unless the source makes that decision part of
@@ -204,6 +235,45 @@ Sections:
   content must not contain a level-1 or level-2 Markdown heading (a # or ##
   line, or text directly underlined with = or -) outside a fenced code block.
   Such output is rejected.
+
+Resolving product questions yourself:
+
+- You may answer a product question, instead of leaving it open, only under
+  one of three authorities, and you must record each answer you adopt in
+  resolutions. An answer in the normalized sections without a resolution is
+  an invented obligation.
+  * SOURCE_GROUNDED: the originating RAW source, or this Requirement's
+    current document and normative children as given to you, already
+    establishes the answer. Cite it (kind RAW with the RAW's Requirement ID,
+    or kind REQUIREMENT). Never cite your own normalized output.
+  * DEPENDENCY_GROUNDED: a Requirement this one DEPENDS_ON, or one you
+    propose DEPENDS_ON to in this output, owns the definition. Cite it (kind
+    DEPENDENCY with its Requirement ID) and refer to it instead of copying
+    the definition. An AFFECTS peer, a merely similar peer, or a peer that is
+    not Applied is never authority.
+  * DELEGATED_DEFAULT: no source settles it, but a clause of the DELEGATED
+    DECISION POLICY section explicitly permits exactly this outcome. Name the
+    clause and cite the evidence its "evidence required" asks for. Apply a
+    clause only within its stated conditions and boundaries; never broaden or
+    paraphrase it. Without an approved policy this class is unavailable.
+- Quotes are verbatim and checked against the source text; a quote that does
+  not occur there rejects the whole output. A quote proves only that the
+  text exists: the justification must say why it settles the answer.
+- Never resolve, under any authority, a decision affecting security
+  guarantees, privacy or personal data, legal or regulatory obligations,
+  financial commitments, irreversible data loss or major product scope, nor
+  a conflict between authoritative sources that has no established
+  resolution: never choose a silent winner. Keep it as a product question
+  with authority HUMAN_REQUIRED.
+- A question no source and no clause settles stays a product question with
+  authority INSUFFICIENT_EVIDENCE and at least two alternatives a human could
+  choose between.
+- A purely technical HOW question is neither a resolution nor a product
+  question: leave it to architecture.
+- Do not resolve something to empty product_questions. Every material
+  question that remains unresolved stays in product_questions.
+- An independent reviewer verifies every resolution against its sources and
+  authority. A resolution it does not confirm keeps the Requirement blocked.
 
 Analysis, at the Requirement level:
 
@@ -306,11 +376,20 @@ Rework (only when the context has a section headed
   "everything resolved" is not an answer.
   * RESOLVED: you corrected it in this output, or the Requirement's
     authoritative content already settles it. Say what changed, or where it
-    is settled.
-  * REBUTTED: the item does not establish a real defect. Cite the evidence
-    that shows the review was mistaken.
+    is settled. When the item is a material WHAT question, or the
+    correction adopts a product answer, record that answer in resolutions and
+    give its position in your resolutions list (from 0) as resolution_index.
+  * REBUTTED: the item does not establish a real defect. Cite, in evidence,
+    the source text that shows the review was mistaken (same shape as
+    resolution sources).
   * ESCALATED: it stays unresolved because the evidence and your authority
     cannot settle it. Say what remains open and why.
+- An item of category RESOLUTION is an earlier resolution the review did not
+  confirm. Its adopted answer is now in this Requirement's text, but that
+  text is the earlier analysis's output, not authority: never cite it (kind
+  REQUIREMENT) for this item. Resolve it again only from the RAW source, a
+  dependency or a correctly applied clause, otherwise ESCALATE it as a
+  product question.
 - An item marked "material WHAT question" is a product decision the review
   found open. RESOLVED means the Requirement's normative content now answers
   it from the evidence, not that you chose an answer. When no evidence
@@ -320,6 +399,9 @@ Rework (only when the context has a section headed
 - product_question_index is allowed only on ESCALATED, and required there for
   a material WHAT item. It is the position of the question in your own
   product_questions list, counting from 0.
+- resolution_index is allowed only on RESOLVED, and required there for a
+  material WHAT item. evidence is required on REBUTTED and allowed nowhere
+  else.
 - Without that section, return no rework_responses.
 """
 
@@ -333,11 +415,14 @@ def build_analysis_prompt(
     comparison: ComparisonContext,
     rework_brief: ReworkBrief | None = None,
     relations: RequirementRelations | None = None,
+    policy: AutonomyPolicy | None = None,
 ) -> tuple[str, str]:
     """Return the instruction prompt and the context sent on stdin.
 
     `rework_brief` is rendered in its own non-normative section, after every
     normative and source section; without one there is no such section.
+    `policy` is the Project's approved autonomy policy, None when there is
+    none: the section then says DELEGATED_DEFAULT is unavailable.
     """
     context = "\n".join(
         [
@@ -359,9 +444,16 @@ def build_analysis_prompt(
             "",
             render_comparison_section(comparison),
             "",
+            render_policy_section(policy),
+            "",
             *(_rework_section(rework_brief) if rework_brief is not None else []),
             f"# Allowed finding kinds\n{', '.join(k.value for k in FindingKind)}",
             f"# Allowed relation kinds\n{', '.join(k.value for k in RelationKind)}",
+            "# Allowed resolution classes\n"
+            + ", ".join(sorted(k.value for k in AUTONOMOUS_CLASSES)),
+            "# Allowed question authorities\n"
+            + ", ".join(sorted(k.value for k in QUESTION_AUTHORITIES)),
+            f"# Allowed source kinds\n{', '.join(k.value for k in SourceKind)}",
         ]
     )
     return INSTRUCTIONS, context

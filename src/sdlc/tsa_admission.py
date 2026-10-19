@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
+from sdlc.autonomy_policy import DISABLED, AutonomyPolicies
 from sdlc.dependency_evidence import (
     DependencyEvidenceError,
     DependencyFailure,
@@ -57,6 +58,11 @@ from sdlc.process_result import (
     ProcessResult,
     parse_process_result,
     parse_process_result_name,
+)
+from sdlc.resolution_evidence import (
+    ResolutionEvidenceError,
+    ResolutionFailure,
+    require_current_resolutions,
 )
 from sdlc.review_result import (
     InvalidReviewResult,
@@ -182,6 +188,47 @@ class RequirementEvidenceWorkspace(Protocol):
 
     def requirement_relations(self, entity_id: str) -> RequirementRelations:
         """The Depends On and Affects edges a Requirement has. Read-only."""
+
+
+@dataclass(frozen=True)
+class PolicyBoundEvidence:
+    """The Requirement evidence reader with the invocation's approved policies.
+
+    Admission checks a delegated default against the autonomy policy active
+    now (Requirement-Autonomous-Resolution-v0.1 §8). The policies travel with
+    the evidence reader, which already reaches every admission and every
+    readmission of a recorded selection; a plain reader carries none, which
+    delegates nothing. The reads are the reader's own, unchanged.
+    """
+
+    reader: RequirementEvidenceWorkspace
+    policies: AutonomyPolicies
+
+    def find_requirements_by_requirement_id(
+        self, requirement_id: str
+    ) -> list[RequirementRecord]:
+        return self.reader.find_requirements_by_requirement_id(requirement_id)
+
+    def read_requirement(self, entity_id: str) -> RequirementRecord | None:
+        return self.reader.read_requirement(entity_id)
+
+    def documents_attached_to_requirement(self, public_id: str) -> list[DocumentNode]:
+        return self.reader.documents_attached_to_requirement(public_id)
+
+    def child_documents(self, parent_document_id: str) -> list[DocumentNode]:
+        return self.reader.child_documents(parent_document_id)
+
+    def read_document_content(self, secret: str) -> str:
+        return self.reader.read_document_content(secret)
+
+    def requirement_relations(self, entity_id: str) -> RequirementRelations:
+        return self.reader.requirement_relations(entity_id)
+
+
+def _approved_policies(evidence: RequirementEvidenceWorkspace) -> AutonomyPolicies:
+    if isinstance(evidence, PolicyBoundEvidence):
+        return evidence.policies
+    return DISABLED
 
 
 @dataclass(frozen=True)
@@ -701,6 +748,37 @@ def _require_current_dependencies(
     return frozenset(binding.requirement_id for binding in review.dependency_bindings)
 
 
+def _require_current_resolutions(
+    evidence: RequirementEvidenceWorkspace,
+    requirement_id: str,
+    process: ProcessResult,
+    review: ReviewResult,
+) -> None:
+    """Check 9, continued (Autonomous Resolution v0.1 §8): current resolutions.
+
+    A delegated default admits only while the policy it bound is active and
+    unchanged; every cited RAW and dependency must still be the same entity
+    with the same content.
+    """
+    try:
+        require_current_resolutions(
+            evidence, process, review, _approved_policies(evidence)
+        )
+    except ResolutionEvidenceError as error:
+        if error.failure is ResolutionFailure.READ_FAILED:
+            raise AdmissionRefused(
+                CycleResultCode.FIBERY_READ_FAILED,
+                f"Reading the resolution evidence of {requirement_id} failed: "
+                f"{error.message}",
+                error.details,
+            ) from error
+        raise _not_admissible(
+            requirement_id,
+            f"its resolution evidence does not hold: {error.message}",
+            error.details,
+        ) from error
+
+
 def _require_dependency_closure(
     selection: tuple[str, ...], dependencies: dict[str, frozenset[str]]
 ) -> None:
@@ -747,6 +825,7 @@ def _admit_requirement(
     )
     _require_exact_bindings(requirement_id, tree.manifest, process, review)
     _require_what_clearance(requirement_id, process, review)
+    _require_current_resolutions(evidence, requirement_id, process, review)
     closure = _require_current_dependencies(evidence, record, requirement_id, review)
     return {
         "requirement_id": requirement_id,

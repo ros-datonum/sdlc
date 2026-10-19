@@ -97,6 +97,9 @@ def test_apply_takes_no_verdict_acknowledgement():
     assert list(inspect.signature(apply_standard_requirement).parameters) == [
         "workspace",
         "entity_id",
+        # The approved autonomy policies, read once by the caller: a context,
+        # never a decision (Requirement-Autonomous-Resolution-v0.1 §8).
+        "policies",
     ]
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(

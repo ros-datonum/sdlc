@@ -1728,7 +1728,9 @@ def test_the_live_adapters_share_one_client(monkeypatch):
     )
 
     assert len(clients) == 1
-    assert projects._client is workspace._client is evidence._client is clients[0]
+    assert (
+        projects._client is workspace._client is evidence.reader._client is clients[0]
+    )
 
 
 # --------------------------------------------------------------------------

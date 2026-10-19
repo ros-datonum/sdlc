@@ -123,7 +123,7 @@ def test_process_persists_a_tree_bound_result_over_the_tree_it_read():
     result, _ = run_process(ws, requirement)
     assert result.code is ProcessCode.REQUIREMENT_PROCESSED
     stored = stored_process(ws)
-    assert stored.is_tree_bound and stored.version == "0.5"
+    assert stored.is_tree_bound and stored.version == "0.6"
     assert stored.input_tree == before
     assert stored.output_tree == tree_manifest(ws, root)
     assert stored.output_tree.document_ids == before.document_ids

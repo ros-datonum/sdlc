@@ -63,7 +63,9 @@ def process(
         "analysis": ANALYSIS,
         "findings": list(findings),
         "proposed_relations": list(relations),
-        "product_questions": list(questions),
+        "product_questions": [
+            {"authority": "HUMAN_REQUIRED", **question} for question in questions
+        ],
     }
     model = FakeModelRuntime([json.dumps(body)])
 
@@ -374,7 +376,7 @@ def test_an_open_product_decision_stays_open_and_unanswered():
     assert section(run.root, "Open Questions") == f"- {OVERRIDE_QUESTION}"
     answered = run.root.split("## Open Questions", 1)[0]
     assert "override" not in answered, "no answer elsewhere in the document"
-    assert "Preserve each as a question and never answer it." in run.prompt
+    assert "Preserve each as a question and never answer it here" in run.prompt
 
 
 # -- 7. an architecture-only question -----------------------------------------
@@ -625,7 +627,7 @@ def test_the_prompt_places_a_self_identified_product_question_in_open_questions(
         "while product_questions holds none" in prompt
     )
     # Still never answered, which is what made the section trustworthy.
-    assert "Preserve each as a question and never answer it." in prompt
+    assert "Preserve each as a question and never answer it here" in prompt
 
 
 def test_the_prompt_resolves_the_contradiction_by_recording_the_question():

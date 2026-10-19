@@ -21,6 +21,8 @@ from sdlc.standard_analysis import NormalizedRequirement
 
 REQUIREMENT_ID = "SDLC-FR-0031"
 RAW_ID = "SDLC-RAW-0007"
+#: Verbatim text of the fixture RAW's Root, long enough to be a citation.
+RAW_QUOTE = "Source material."
 
 
 def normalized(**changes) -> dict:
@@ -44,6 +46,7 @@ def analysis_output(
     analysis=None,
     questions=(),
     rework=(),
+    resolutions=(),
 ):
     """A Process response. Open Questions is rendered from `questions`, so the
     normalized sections never carry it (Material-WHAT Gate v0.1).
@@ -56,7 +59,13 @@ def analysis_output(
         raise AssertionError("pass open questions as `questions`, not as a section")
     body = {"normalized_requirement": sections, "rework_responses": list(rework)}
     if questions:
-        body["product_questions"] = list(questions)
+        # Every open question says why it stays open (Autonomous Resolution
+        # v0.1 §2); a test that is about that authority states its own.
+        body["product_questions"] = [
+            {"authority": "HUMAN_REQUIRED", **question} for question in questions
+        ]
+    if resolutions:
+        body["resolutions"] = list(resolutions)
     if analysis is not None:
         body["analysis"] = analysis
     if findings:
@@ -64,6 +73,37 @@ def analysis_output(
     if relations:
         body["proposed_relations"] = list(relations)
     return json.dumps(body)
+
+
+def citation(kind="RAW", quote=RAW_QUOTE, requirement_id=RAW_ID):
+    """One source citation as the model returns it (no entity, no fingerprint)."""
+    body = {"kind": kind, "quote": quote}
+    if kind != "REQUIREMENT":
+        body["requirement_id"] = requirement_id
+    return body
+
+
+def resolution(
+    resolution_class="SOURCE_GROUNDED",
+    issue="Which requests does the obligation cover?",
+    answer="Every request the source names.",
+    sections=("requirement",),
+    sources=None,
+    clause=None,
+    justification="The source states it.",
+):
+    """One resolution as the model returns it (Autonomous Resolution v0.1 §4)."""
+    body = {
+        "class": resolution_class,
+        "issue": issue,
+        "answer": answer,
+        "affected_sections": list(sections),
+        "sources": list(sources if sources is not None else [citation()]),
+        "justification": justification,
+    }
+    if clause is not None:
+        body["policy_clause"] = clause
+    return body
 
 
 def resolved(item="R0001.F0", explanation="Corrected from the source wording."):

@@ -51,6 +51,7 @@ from sdlc.review_result import (
 from sdlc.standard_analysis import (
     InvalidAnalysisOutput,
     ProductQuestion,
+    ResolutionClass,
     parse_analysis_output,
 )
 from sdlc.standard_review import (
@@ -164,8 +165,8 @@ def move_to_apply_in_fibery(ws, requirement):
 def test_process_renders_open_questions_from_the_structured_questions():
     result = parse_analysis_output(analysis_output(questions=[MATERIAL, MINOR]))
     assert result.product_questions == (
-        ProductQuestion(MATERIAL["detail"], True),
-        ProductQuestion(MINOR["detail"], False),
+        ProductQuestion(MATERIAL["detail"], True, ResolutionClass.HUMAN_REQUIRED),
+        ProductQuestion(MINOR["detail"], False, ResolutionClass.HUMAN_REQUIRED),
     )
     assert result.normalized.open_questions == (
         f"- {MATERIAL['detail']}\n- {MINOR['detail']}"
@@ -198,8 +199,10 @@ def test_the_model_cannot_write_open_questions_prose_itself():
 def test_a_process_result_persists_its_questions_and_older_ones_carry_none():
     ws, _, _, _ = build_review_workspace(questions=(material_question(),))
     _, process = latest_process(ws)
-    assert process.version == "0.5" and process.has_question_evidence
-    assert process.product_questions == (material_question(),)
+    assert process.version == "0.6" and process.has_question_evidence
+    assert process.product_questions == (
+        material_question(authority=ResolutionClass.HUMAN_REQUIRED),
+    )
     older = replace(process, version="0.3")
     reread = parse_process_result(render_process_result(older))
     assert reread.product_questions is None and not reread.has_question_evidence
@@ -396,7 +399,9 @@ def test_the_prompt_shows_each_question_with_its_claimed_materiality():
     )
     review_standard_requirement(ws, model, requirement.id)
     [call] = model.calls
-    assert f"[0] material=true: {MATERIAL['detail']}" in call["context"]
+    assert (
+        f"[0] material=true, HUMAN_REQUIRED: {MATERIAL['detail']}" in (call["context"])
+    )
     assert "A question answered only by" in " ".join(call["prompt"].split())
 
 
@@ -581,7 +586,13 @@ def test_changed_normative_content_is_stale_before_the_gate_is_reached():
 def test_changed_process_questions_make_the_evidence_incoherent():
     ws, requirement, _, _ = reviewed()
     node, _ = latest_process(ws)
-    rewrite_payload(ws, node, product_questions=[MATERIAL])
+    rewrite_payload(
+        ws,
+        node,
+        product_questions=[
+            {**MATERIAL, "authority": "HUMAN_REQUIRED", "alternatives": []}
+        ],
+    )
     result = approve_standard_requirement(ws, requirement.id)
     assert result.code is ReadyDecisionResultCode.INVALID_REVIEW_RESULT, result
     assert "not the questions" in " ".join(result.details)
@@ -723,11 +734,11 @@ def requalify(ws, workers, requirement):
     """Process then Review, by the runner alone, from a reset Process cycle."""
     assert ws.status_of(requirement.id) == NOT_PROCESSED
     assert run_cycle(ws, workers).outcome is CycleOutcome.HANDED_OFF
-    assert latest_process(ws)[1].version == "0.5"
+    assert latest_process(ws)[1].version == "0.6"
     assert run_cycle(ws, workers).outcome is CycleOutcome.SUCCEEDED
     assert ws.requirements[requirement.id].state == "Ready"
     review = review_results(ws)[-1]
-    assert review.version == "0.6" and review.what_status is WhatStatus.CLEAR
+    assert review.version == "0.7" and review.what_status is WhatStatus.CLEAR
 
 
 def test_the_worker_fails_legacy_apply_with_only_its_processing_status():

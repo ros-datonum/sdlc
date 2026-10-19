@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from sdlc.standard_analysis import FindingKind, RelationKind
+from sdlc.standard_analysis import AUTONOMOUS_CLASSES, FindingKind, RelationKind
 from sdlc.standard_review import ReviewSeverity, VerificationOutcome
 
 
@@ -46,6 +46,9 @@ class BriefCategory(StrEnum):
     # An existing DEPENDS_ON edge the Review did not confirm
     # (Requirement-Dependency-Bindings-v0.1).
     EXISTING_DEPENDENCY = "EXISTING_DEPENDENCY"
+    # A resolution of the source Process the Review did not confirm
+    # (Requirement-Autonomous-Resolution-v0.1): a product decision still open.
+    RESOLUTION = "RESOLUTION"
 
 
 # One letter per category in the deterministic item reference
@@ -58,6 +61,7 @@ REF_LETTERS = {
     BriefCategory.MATERIAL_WHAT: "W",
     BriefCategory.REWORK_CLAIM: "C",
     BriefCategory.EXISTING_DEPENDENCY: "E",
+    BriefCategory.RESOLUTION: "A",
 }
 #: Origins whose item is a relation: its kind and exact target are identity.
 RELATION_LETTERS = frozenset(
@@ -156,6 +160,22 @@ class ReworkBrief:
     def what_refs(self) -> frozenset[str]:
         return frozenset(item.ref for item in self.items if item.blocks_what)
 
+    @property
+    def resolution_refs(self) -> frozenset[str]:
+        """Items that carry an earlier resolution the review did not confirm.
+
+        A RESOLUTION item, or a claim that re-raises one. That resolution's
+        answer was written into the Requirement, so the Requirement's own text
+        is no authority for it (Autonomous Resolution v0.1 §7).
+        """
+        autonomous = {kind.value for kind in AUTONOMOUS_CLASSES}
+        return frozenset(
+            item.ref
+            for item in self.items
+            if item.category is BriefCategory.RESOLUTION
+            or (item.category is BriefCategory.REWORK_CLAIM and item.kind in autonomous)
+        )
+
     def item(self, ref: str) -> BriefItem:
         return next(item for item in self.items if item.ref == ref)
 
@@ -208,18 +228,25 @@ class ReworkBrief:
         return brief
 
 
-def run_input_identity(input_tree_fingerprint: str, brief_identity: str | None) -> str:
-    """What one Process model call consumes: the normative tree and the Brief.
+def run_input_identity(
+    input_tree_fingerprint: str,
+    brief_identity: str | None,
+    policy_fingerprint: str | None = None,
+) -> str:
+    """What one Process model call consumes: the tree, the Brief and the policy.
 
-    Two runs with the same identity would show the model the same Requirement
-    and the same feedback; peers and the RAW are context, not part of it.
+    Two runs with the same identity would show the model the same Requirement,
+    the same feedback and the same delegated authority; peers and the RAW are
+    context, not part of it. Without a policy the identity is exactly the one
+    Requirement-Rework-Brief-v0.1 defined, so history keeps matching.
     """
-    return _digest(
-        {
-            "normative_input_tree": input_tree_fingerprint,
-            "rework_brief": brief_identity,
-        }
-    )
+    content: dict[str, object] = {
+        "normative_input_tree": input_tree_fingerprint,
+        "rework_brief": brief_identity,
+    }
+    if policy_fingerprint is not None:
+        content["autonomy_policy"] = policy_fingerprint
+    return _digest(content)
 
 
 def _digest(content: dict[str, object]) -> str:
@@ -343,11 +370,17 @@ def _has_origin_shape(item: BriefItem, review_iteration: int) -> bool:
         and item.requirement_id is not None
     )
     is_finding = item.kind is None or item.kind in {kind.value for kind in FindingKind}
+    is_resolution = (
+        item.kind in {kind.value for kind in AUTONOMOUS_CLASSES}
+        and item.requirement_id is None
+    )
     letter = match.group("letter")
     if letter in RELATION_LETTERS:
         return is_relation
+    if letter == REF_LETTERS[BriefCategory.RESOLUTION]:
+        return is_resolution
     if letter == REF_LETTERS[BriefCategory.REWORK_CLAIM]:
-        return is_relation or is_finding
+        return is_relation or is_finding or is_resolution
     return is_finding
 
 
@@ -392,6 +425,15 @@ def _has_category_shape(item: BriefItem) -> bool:
             and item.requirement_id is not None
             and graded_iff_rejected
             and not item.blocks_what
+        )
+    if item.category is BriefCategory.RESOLUTION:
+        return (
+            verified
+            and item.outcome is not VerificationOutcome.CONFIRMED
+            and item.kind in {kind.value for kind in AUTONOMOUS_CLASSES}
+            and item.requirement_id is None
+            and graded_iff_rejected
+            and item.blocks_what
         )
     if item.category is BriefCategory.MATERIAL_WHAT:
         return (

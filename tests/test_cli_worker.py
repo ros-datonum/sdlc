@@ -210,7 +210,7 @@ def test_a_state_driven_apply_runs_without_a_manual_command(monkeypatch):
 def test_ctrl_c_during_a_worker_leaves_its_claim_as_it_is(monkeypatch):
     ws = workspace_of(record("r-1", 1, "Standard", "Apply"))
 
-    def interrupted(workspace, entity_id):
+    def interrupted(workspace, entity_id, **_context):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "apply_standard_requirement", interrupted)
