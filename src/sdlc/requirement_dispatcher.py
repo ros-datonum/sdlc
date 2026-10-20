@@ -133,6 +133,8 @@ NO_ROUTE_STATES = {
         RouteDecision.NO_MACHINE_WORK,
         "a Draft observed on its own is not inherited authorization",
     ),
+    # Not a machine route: an opt-in Ready step of the runner may decide it
+    # where an operator delegated that (Requirement-Autonomous-Ready-v0.1).
     (STANDARD_TYPE, READY_STATE): (
         RouteDecision.HUMAN_BOUNDARY,
         "the human approval or rework decision is due",

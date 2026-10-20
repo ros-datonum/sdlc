@@ -11,6 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
+from sdlc.autonomous_ready import (
+    LoadDelegation,
+    LoadPolicies,
+    ReadyDecider,
+    ReadyDecisionRecord,
+)
 from sdlc.autonomy_policy import (
     AutonomyPolicies,
     AutonomyPolicyError,
@@ -47,6 +53,7 @@ from sdlc.ready_decision import (
     approve_standard_requirement,
     rework_standard_requirement,
 )
+from sdlc.ready_delegation import load_ready_delegation
 from sdlc.requirement_add import add_raw_requirement
 from sdlc.requirement_apply import apply_standard_requirement
 from sdlc.requirement_dispatcher import RequirementWorkers
@@ -1134,13 +1141,14 @@ def _run_worker(arguments: argparse.Namespace, out: TextIO, error_out: TextIO) -
         workers = _runner_workers(
             workspace, load_model_runtime_config(), load_autonomy_policies
         )
+        ready = _ready_decider(load_ready_delegation, load_autonomy_policies)
     except (ConfigurationError, ModelRuntimeConfigError) as error:
         _render_runner_code(
             RunnerCode.WORKER_RUNNER_CONFIGURATION_INVALID, str(error), error_out
         )
         return EXIT_FAILURE
     return _run_guarded(
-        workspace, workers, arguments.poll_interval_seconds, out, error_out
+        workspace, workers, arguments.poll_interval_seconds, out, error_out, ready
     )
 
 
@@ -1150,6 +1158,7 @@ def _run_guarded(
     poll_interval_seconds: int,
     out: TextIO,
     error_out: TextIO,
+    ready: ReadyDecider | None = None,
 ) -> int:
     """Hold the workspace lock for the runner's whole life; report each refusal."""
     try:
@@ -1161,7 +1170,10 @@ def _run_guarded(
                 report=functools.partial(render_cycle, out=out, error_out=error_out),
                 should_continue=_keep_running,
                 poll_interval_seconds=poll_interval_seconds,
-                on_started=functools.partial(_render_started, stream=out),
+                on_started=functools.partial(
+                    _render_started, stream=out, ready_delegated=ready is not None
+                ),
+                ready_decider=ready,
             )
     except WorkerRunnerBusy as error:
         _render_runner_code(RunnerCode.WORKER_RUNNER_BUSY, str(error), error_out)
@@ -1239,6 +1251,22 @@ def _runner_workers(
     )
 
 
+def _ready_decider(
+    load_delegation: LoadDelegation, load_policies: LoadPolicies
+) -> ReadyDecider | None:
+    """The opt-in Ready step, or None: Ready stays the human boundary.
+
+    Read at start so a broken `[ready_decisions]` table stops the runner
+    before any claim, and so a runner started with delegation disabled is
+    exactly the runner it was before Requirement-Autonomous-Ready-v0.1. What
+    the start-time read says authorizes nothing: the decider reads both tables
+    again for every decision, and stops deciding when delegation is disabled.
+    """
+    if not load_delegation().is_enabled:
+        return None
+    return ReadyDecider(load_delegation, load_policies)
+
+
 def _under_current_policies[Result](
     stage: Callable[..., Result],
     load_policies: Callable[[], AutonomyPolicies],
@@ -1295,11 +1323,19 @@ def _keep_running() -> bool:
     return True
 
 
-def _render_started(interval: int, stream: TextIO) -> None:
+def _render_started(
+    interval: int, stream: TextIO, ready_delegated: bool = False
+) -> None:
+    delegated = (
+        " Ready decisions are delegated only where [ready_decisions] authorizes "
+        "a Project; every other Ready Requirement waits for a human."
+        if ready_delegated
+        else ""
+    )
     _render_runner_code(
         RunnerCode.WORKER_RUNNER_STARTED,
         f"Watching every Project of the configured Fibery workspace; idle poll "
-        f"interval {interval} s. Ctrl-C stops the runner.",
+        f"interval {interval} s.{delegated} Ctrl-C stops the runner.",
         stream,
     )
 
@@ -1341,9 +1377,53 @@ def render_cycle(cycle: CycleReport, out: TextIO, error_out: TextIO) -> None:
         )
         if dispatched.progressed:
             print(f"Progressed: {', '.join(dispatched.progressed)}", file=stream)
+    if cycle.ready_decision is not None:
+        _render_ready_decision(cycle.ready_decision, stream)
     for item in cycle.details:
         print(f"- {item}", file=stream)
     stream.flush()
+
+
+def _render_ready_decision(record: ReadyDecisionRecord, stream: TextIO) -> None:
+    """The decision record, line by line: identity, evidence and codes only."""
+    lines = [
+        f"Ready decision: {record.decision.value}; transition "
+        f"{record.transition.value}"
+        + (f" ({record.transition_code})" if record.transition_code else "")
+        + f"; State {record.state_after or 'not established'}",
+        f"Project: {record.project_code or 'unknown'} (entity {record.project_id})",
+    ]
+    if record.authorization is not None:
+        lines.append(
+            f"Authorization: {record.authorization.authorization_id} "
+            f"{record.authorization.fingerprint}"
+        )
+    evidence = record.evidence
+    if evidence is not None:
+        lines += [
+            (
+                f"Evidence: Review Result {evidence.review_iteration} "
+                f"{evidence.review_fingerprint}; Process Result "
+                f"{evidence.process_iteration} {evidence.process_fingerprint}"
+            ),
+            (
+                f"Bound: Root {evidence.root_fingerprint}; normative tree "
+                f"{evidence.tree_fingerprint}"
+            ),
+            f"Verdict {record.verdict}; WHAT {record.what_status or 'unknown'}",
+        ]
+    if record.autonomy_policy is not None:
+        lines.append(
+            f"Autonomy policy: {record.autonomy_policy.policy_id} "
+            f"{record.autonomy_policy.fingerprint}"
+        )
+    lines += [f"Checked: {check}" for check in record.checks]
+    lines += [f"Progress: {item}" for item in record.progress]
+    lines += [f"Reason: {reason}" for reason in record.reasons]
+    if record.next_action:
+        lines.append(f"Next: {record.next_action}")
+    for line in lines:
+        print(line, file=stream)
 
 
 def render_apply_result(result: ApplyResult, stream: TextIO) -> None:

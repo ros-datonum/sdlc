@@ -16,9 +16,11 @@ signal. A successful Apply issues zero Document writes.
 
 `State = Apply` is the approval (Requirement-Lifecycle-Ownership-v0.2),
 whether a human set it directly in Fibery, an assistant set it on the human's
-explicit instruction, or the admin `approve` command did. Apply cannot tell
-which and does not need to: it takes no verdict acknowledgement and
-revalidates the reviewed evidence identically every time.
+explicit instruction, the admin `approve` command did, or the delegated Ready
+decider did where an operator authorized it (Requirement-Autonomous-Ready
+v0.1): it records an authorized Ready decision, not necessarily a human's.
+Apply cannot tell which and does not need to: it takes no verdict
+acknowledgement and revalidates the reviewed evidence identically every time.
 
 Two invariants shape the code:
 

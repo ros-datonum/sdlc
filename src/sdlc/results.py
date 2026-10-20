@@ -307,6 +307,9 @@ class ReadyDecisionResultCode(StrEnum):
     FIBERY_READ_FAILED = "FIBERY_READ_FAILED"
     FIBERY_WRITE_FAILED = "FIBERY_WRITE_FAILED"
     VALIDATION_FAILED = "VALIDATION_FAILED"
+    # A delegated decision only (Requirement-Autonomous-Ready-v0.1 §9): the
+    # evidence or authority it was decided on changed before its transition.
+    DECISION_BASIS_CHANGED = "DECISION_BASIS_CHANGED"
 
 
 NORMAL_READY_OUTCOMES = frozenset(

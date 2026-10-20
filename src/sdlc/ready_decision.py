@@ -30,10 +30,20 @@ Both write exactly one thing, the workflow State, and confirm it by reading
 the entity back. Neither touches the Root Document, any Process Result, any
 Review Result, `Revision`, or any relation: the evidence a decision was made
 on must outlive the decision unchanged.
+
+Requirement-Autonomous-Ready-v0.1 adds a delegated caller: the deterministic
+Ready decider, where an operator authorized it for the Project. It uses these
+same two decisions, never acknowledges a verdict, and passes a `guard` that
+re-checks, immediately before the single State write, that the evidence and
+authority it decided on are still the current ones. So `State = Apply` means
+that an authorized decision was made at Ready — a human's, or the decider's
+under operator delegation — not necessarily that a human approved. Without a
+guard both decisions behave exactly as before.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -57,6 +67,7 @@ from sdlc.process_result import (
     document_fingerprint,
     parse_process_result,
     parse_process_result_name,
+    render_process_result,
 )
 from sdlc.resolution_evidence import (
     ResolutionEvidenceError,
@@ -70,6 +81,7 @@ from sdlc.review_result import (
     open_material_questions,
     parse_review_result,
     parse_review_result_name,
+    render_review_result,
     what_clearance,
 )
 from sdlc.standard_review import ReviewSeverity, ReviewVerdict, WhatStatus
@@ -116,6 +128,8 @@ class _History:
     tree: TreeManifest
     latest_process: ProcessResult
     latest_review: ReviewResult
+    # Every child Document of the Root, as listed for this read.
+    children: tuple[DocumentNode, ...] = ()
 
     @property
     def current(self) -> _Bindings:
@@ -138,6 +152,62 @@ class _History:
         )
 
 
+@dataclass(frozen=True)
+class EvidenceIdentity:
+    """Exactly which evidence one decision was made on.
+
+    Each fingerprint is SHA-256: change detection, not authentication.
+    """
+
+    entity_id: str
+    root_fingerprint: str
+    tree_fingerprint: str
+    process_iteration: int
+    process_output_fingerprint: str
+    process_fingerprint: str
+    review_iteration: int
+    review_fingerprint: str
+
+
+@dataclass(frozen=True)
+class ReadyEvidence:
+    """A Ready Requirement's latest evidence, read fresh and found current.
+
+    Current means: the latest Review Result binds the current Root, normative
+    tree and latest Process Result; its WHAT evidence is coherent; every bound
+    dependency and every cited source and policy is still the one reviewed.
+    It does not mean approvable: `what_status` may be BLOCKED_ON_WHAT and the
+    verdict anything.
+    """
+
+    requirement: RequirementRecord
+    latest_process: ProcessResult
+    latest_review: ReviewResult
+    what_status: WhatStatus | None
+    identity: EvidenceIdentity
+    children: tuple[DocumentNode, ...]
+
+
+class ReadyEvidenceError(Exception):
+    """The evidence is not current, or could not be read. Nothing was written."""
+
+    def __init__(
+        self,
+        code: ReadyDecisionResultCode,
+        message: str,
+        causes: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.causes = causes
+
+
+#: Re-checks a delegated decision's basis on the fresh evidence immediately
+#: before its State write; returns why it no longer holds, or None.
+DecisionGuard = Callable[[ReadyEvidence], str | None]
+
+
 # -- the two decisions ------------------------------------------------------
 
 
@@ -147,10 +217,13 @@ def approve_standard_requirement(
     acknowledged_verdict: ReviewVerdict | None = None,
     *,
     policies: AutonomyPolicies = DISABLED,
+    guard: DecisionGuard | None = None,
 ) -> ReadyDecisionResult:
-    """Record a human approval: `Ready -> Apply`, only for what was reviewed.
+    """Record an approval: `Ready -> Apply`, only for what was reviewed.
 
     `policies` are the approved autonomy policies, read once by the caller.
+    `guard` is given only by the delegated decider, which never acknowledges
+    a verdict: it runs after every check below, on the evidence they read.
     """
     requirement: RequirementRecord | None = None
     review: ReviewResult | None = None
@@ -169,10 +242,12 @@ def approve_standard_requirement(
         history = _read_history(workspace, requirement)
         review = history.latest_review
         _check_bindings(requirement, history)
-        _check_what(requirement, history)
+        status = _check_what(requirement, history)
         _check_dependencies(workspace, requirement, review)
         _check_resolutions(workspace, requirement, history, policies)
         _check_acknowledgement(review.verdict, acknowledged_verdict)
+        if guard is not None:
+            _check_guard(guard, _evidence(requirement, history, status))
         _transition(workspace, requirement, APPLY_STATE)
     except _Refused as refusal:
         return _refused_result(refusal, APPROVE_DECISION, requirement, review)
@@ -192,9 +267,18 @@ def approve_standard_requirement(
 
 
 def rework_standard_requirement(
-    workspace: ReadyDecisionWorkspace, entity_id: str
+    workspace: ReadyDecisionWorkspace,
+    entity_id: str,
+    *,
+    policies: AutonomyPolicies = DISABLED,
+    guard: DecisionGuard | None = None,
 ) -> ReadyDecisionResult:
-    """Record a human rework decision: `Ready -> Process`, certifying nothing."""
+    """Record a rework decision: `Ready -> Process`, certifying nothing.
+
+    Without a `guard` (a human's decision) only the entry state is validated,
+    as before. The delegated decider passes one, and then the evidence is read
+    under `policies` and must still be current and the one it decided on.
+    """
     requirement: RequirementRecord | None = None
     try:
         requirement = _load_requirement(workspace, entity_id)
@@ -207,6 +291,8 @@ def rework_standard_requirement(
                 "and Process was not run.",
             )
         _require_ready(requirement)
+        if guard is not None:
+            _check_guard(guard, _current_evidence(workspace, requirement, policies))
         _transition(workspace, requirement, PROCESS_STATE)
     except _Refused as refusal:
         return _refused_result(refusal, REWORK_DECISION, requirement, None)
@@ -373,6 +459,7 @@ def _read_history(
     history = _History(
         root_content=root_content,
         tree=tree.manifest,
+        children=tuple(children),
         latest_review=_read_review_result(
             workspace,
             review_nodes[latest_review_iteration],
@@ -552,16 +639,13 @@ def _check_bindings(requirement: RequirementRecord, history: _History) -> None:
         )
 
 
-def _check_what(requirement: RequirementRecord, history: _History) -> None:
-    """Approve only CLEAR: no acknowledgement can override anything else.
-
-    Material-WHAT Gate v0.1 section 7. BLOCKED_ON_WHAT is a confirmed open
-    material question; legacy evidence establishes no status at all (UNKNOWN),
-    which is refused as missing evidence, never reported as a defect.
-    """
+def _what_status(
+    requirement: RequirementRecord, history: _History
+) -> WhatStatus | None:
+    """The WHAT status the latest Review establishes, refused when incoherent."""
     review = history.latest_review
     try:
-        status = what_clearance(review, history.latest_process)
+        return what_clearance(review, history.latest_process)
     except InvalidReviewResult as error:
         raise _Refused(
             ReadyDecisionResultCode.INVALID_REVIEW_RESULT,
@@ -569,6 +653,17 @@ def _check_what(requirement: RequirementRecord, history: _History) -> None:
             "cannot be trusted for approval. Nothing was written.",
             (str(error),),
         ) from error
+
+
+def _check_what(requirement: RequirementRecord, history: _History) -> WhatStatus:
+    """Approve only CLEAR: no acknowledgement can override anything else.
+
+    Material-WHAT Gate v0.1 section 7. BLOCKED_ON_WHAT is a confirmed open
+    material question; legacy evidence establishes no status at all (UNKNOWN),
+    which is refused as missing evidence, never reported as a defect.
+    """
+    review = history.latest_review
+    status = _what_status(requirement, history)
     if status is None:
         raise _Refused(
             ReadyDecisionResultCode.PRODUCT_QUESTION_EVIDENCE_REQUIRED,
@@ -588,6 +683,7 @@ def _check_what(requirement: RequirementRecord, history: _History) -> None:
             "Process) and have it reviewed again. Nothing was written.",
             open_material_questions(review),
         )
+    return status
 
 
 def _check_dependencies(
@@ -700,6 +796,173 @@ def _check_acknowledgement(
         f"{acknowledged.value} was acknowledged. Re-read the latest Review "
         "Result and acknowledge the verdict it actually derives.",
     )
+
+
+# -- delegated decisions ----------------------------------------------------
+
+
+def read_ready_evidence(
+    workspace: ReadyDecisionWorkspace,
+    entity_id: str,
+    policies: AutonomyPolicies,
+) -> ReadyEvidence:
+    """A Ready Standard Requirement's current evidence, or why it is not current.
+
+    Every check the approval makes on the evidence itself, in the same order,
+    except the WHAT gate and the acknowledgement: the delegated decider also
+    reasons about evidence it will not approve. Reads only; writes nothing.
+    """
+    try:
+        requirement = _load_requirement(workspace, entity_id)
+        _require_ready(requirement)
+        return _current_evidence(workspace, requirement, policies)
+    except _Refused as refusal:
+        raise ReadyEvidenceError(
+            refusal.code, refusal.message, refusal.causes
+        ) from refusal
+
+
+def read_review_lineage(
+    workspace: ReadyDecisionWorkspace, evidence: ReadyEvidence
+) -> tuple[tuple[ProcessResult, ReviewResult], ...]:
+    """Every Review Result under the Root, oldest first, with the Process it bound.
+
+    Each must bind a persisted Process Result by iteration and output
+    fingerprint, and successive Reviews must bind strictly increasing Process
+    iterations (Rework Brief v0.1 §3); otherwise the history cannot establish
+    progress and ReadyEvidenceError is raised. The latest pair is the
+    evidence's own. Cost: one content read per earlier Process and Review
+    Result of this Requirement.
+    """
+    requirement = evidence.requirement
+    children = list(evidence.children)
+    try:
+        process_nodes = _artifacts_by_iteration(
+            children,
+            requirement,
+            parse_process_result_name,
+            ReadyDecisionResultCode.INVALID_PROCESS_RESULT,
+            "Process Result",
+        )
+        review_nodes = _artifacts_by_iteration(
+            children,
+            requirement,
+            parse_review_result_name,
+            ReadyDecisionResultCode.REVIEW_STATE_CONFLICT,
+            "Review Result",
+        )
+        latest = evidence.latest_review.iteration
+        lineage = []
+        for iteration in sorted(review_nodes):
+            review = (
+                evidence.latest_review
+                if iteration == latest
+                else _read_review_result(
+                    workspace, review_nodes[iteration], requirement, iteration
+                )
+            )
+            lineage.append(
+                (
+                    _reviewed_process(
+                        workspace, requirement, review, process_nodes, evidence
+                    ),
+                    review,
+                )
+            )
+    except _Refused as refusal:
+        raise ReadyEvidenceError(
+            refusal.code, refusal.message, refusal.causes
+        ) from refusal
+    reviewed = [process.iteration for process, _ in lineage]
+    if reviewed != sorted(set(reviewed)):
+        raise ReadyEvidenceError(
+            ReadyDecisionResultCode.REVIEW_STATE_CONFLICT,
+            f"The Review Results of {requirement.requirement_id} do not bind "
+            "strictly increasing Process iterations; their order cannot be "
+            "established.",
+            tuple(f"Process {iteration}" for iteration in reviewed),
+        )
+    return tuple(lineage)
+
+
+def _reviewed_process(
+    workspace: ReadyDecisionWorkspace,
+    requirement: RequirementRecord,
+    review: ReviewResult,
+    process_nodes: dict[int, DocumentNode],
+    evidence: ReadyEvidence,
+) -> ProcessResult:
+    iteration = review.reviewed_process_iteration
+    if iteration not in process_nodes:
+        raise _Refused(
+            ReadyDecisionResultCode.NO_PROCESS_RESULT,
+            f"Review Result {review.iteration} of {requirement.requirement_id} "
+            f"binds Process Result {iteration}, which does not exist.",
+        )
+    process = (
+        evidence.latest_process
+        if iteration == evidence.latest_process.iteration
+        else _read_process_result(
+            workspace, process_nodes[iteration], requirement, iteration
+        )
+    )
+    if process.output_fingerprint != review.reviewed_process_output_fingerprint:
+        raise _Refused(
+            ReadyDecisionResultCode.INVALID_REVIEW_RESULT,
+            f"Review Result {review.iteration} of {requirement.requirement_id} "
+            f"does not bind the output of Process Result {iteration}.",
+        )
+    return process
+
+
+def _current_evidence(
+    workspace: ReadyDecisionWorkspace,
+    requirement: RequirementRecord,
+    policies: AutonomyPolicies,
+) -> ReadyEvidence:
+    history = _read_history(workspace, requirement)
+    _check_bindings(requirement, history)
+    status = _what_status(requirement, history)
+    _check_dependencies(workspace, requirement, history.latest_review)
+    _check_resolutions(workspace, requirement, history, policies)
+    return _evidence(requirement, history, status)
+
+
+def _evidence(
+    requirement: RequirementRecord, history: _History, status: WhatStatus | None
+) -> ReadyEvidence:
+    process, review = history.latest_process, history.latest_review
+    return ReadyEvidence(
+        requirement=requirement,
+        latest_process=process,
+        latest_review=review,
+        what_status=status,
+        identity=EvidenceIdentity(
+            entity_id=requirement.id,
+            root_fingerprint=document_fingerprint(history.root_content),
+            tree_fingerprint=history.tree.fingerprint,
+            process_iteration=process.iteration,
+            process_output_fingerprint=process.output_fingerprint,
+            process_fingerprint=_digest(render_process_result(process)),
+            review_iteration=review.iteration,
+            review_fingerprint=_digest(render_review_result(review)),
+        ),
+        children=history.children,
+    )
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _check_guard(guard: DecisionGuard, evidence: ReadyEvidence) -> None:
+    reason = guard(evidence)
+    if reason is not None:
+        raise _Refused(
+            ReadyDecisionResultCode.DECISION_BASIS_CHANGED,
+            f"{evidence.requirement.requirement_id}: {reason} The delegated "
+            "decision was withdrawn and nothing was written.",
+        )
 
 
 # -- the single mutation ----------------------------------------------------

@@ -27,6 +27,11 @@ Processing (a killed runner, an unconfirmed write) stays there: it is never
 treated as stale, retried or stolen, and recovery is explicit admin work.
 
 The runner keeps no lifecycle state of its own; Fibery is the only record.
+
+Requirement-Autonomous-Ready-v0.1 adds one opt-in step: when no machine route
+has work, an optional `ready_decider` may decide one `Standard + Ready`
+Requirement, inside the same lock and cycle. Without it — the default, and
+whenever Ready delegation is disabled at start — a cycle is exactly as above.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from typing import TYPE_CHECKING, Protocol
 
 from sdlc.fibery_workspace import FiberyError, RequirementRecord, RunnerWorkspace
 from sdlc.requirement_dispatcher import (
@@ -48,6 +54,9 @@ from sdlc.requirement_dispatcher import (
     dispatch,
     select_route,
 )
+
+if TYPE_CHECKING:
+    from sdlc.autonomous_ready import ReadyDecisionRecord
 
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 MINIMUM_POLL_INTERVAL_SECONDS = 1
@@ -107,6 +116,17 @@ class CycleOutcome(StrEnum):
     FAILED = "FAILED"
     # The final status cannot be safely established; left as observed.
     PARTIAL = "PARTIAL"
+    # Requirement-Autonomous-Ready-v0.1: the opt-in Ready step.
+    # AUTO_APPROVE or AUTO_REWORK, its State transition confirmed.
+    READY_DECIDED = "READY_DECIDED"
+    # HUMAN_REQUIRED: the Requirement stays at Ready; nothing was written.
+    READY_ESCALATED = "READY_ESCALATED"
+    # A decision withdrawn before its write: the State, evidence or authority moved.
+    READY_WITHDRAWN = "READY_WITHDRAWN"
+    # The decided State write failed or did not read back; not repeated.
+    READY_UNCERTAIN = "READY_UNCERTAIN"
+    # The configuration or a Fibery read failed; no decision, nothing written.
+    READY_FAILED = "READY_FAILED"
 
 
 # The runner waits the idle interval after a cycle that started no worker for
@@ -119,6 +139,8 @@ WAITING_OUTCOMES = frozenset(
         CycleOutcome.CANDIDATE_READ_FAILED,
         CycleOutcome.CLAIM_FAILED,
         CycleOutcome.CLAIM_NOT_CONFIRMED,
+        CycleOutcome.READY_WITHDRAWN,
+        CycleOutcome.READY_FAILED,
     }
 )
 # Cycles whose result is the contract working as designed.
@@ -128,6 +150,9 @@ NORMAL_OUTCOMES = frozenset(
         CycleOutcome.CANDIDATE_CHANGED,
         CycleOutcome.SUCCEEDED,
         CycleOutcome.HANDED_OFF,
+        CycleOutcome.READY_DECIDED,
+        CycleOutcome.READY_ESCALATED,
+        CycleOutcome.READY_WITHDRAWN,
     }
 )
 
@@ -146,6 +171,16 @@ FAILED_AFTER_RAW_REVIEW = frozenset(
 )
 
 
+class ReadyStep(Protocol):
+    """The opt-in Ready step (Requirement-Autonomous-Ready-v0.1 §9)."""
+
+    def __call__(self, workspace: RunnerWorkspace) -> CycleReport | None:
+        """One decision, or None when there is nothing to decide."""
+
+    def forget(self, entity_id: str) -> None:
+        """A machine cycle was claimed for it: its next Ready is a new one."""
+
+
 class RunnerPreflightError(Exception):
     """The workspace cannot host the runner; nothing was polled or written."""
 
@@ -157,6 +192,7 @@ class CycleReport:
     `requirement` is the Requirement as last read in the cycle, and
     `dispatch_result` the RW-O02 result when a worker ran. `details` name
     observed differences and Fibery failures, never Requirement content.
+    `ready_decision` is the decision record of an opt-in Ready step.
     """
 
     outcome: CycleOutcome
@@ -164,6 +200,7 @@ class CycleReport:
     requirement: RequirementRecord | None = None
     dispatch_result: DispatchResult | None = None
     details: tuple[str, ...] = ()
+    ready_decision: ReadyDecisionRecord | None = None
 
     @property
     def should_wait(self) -> bool:
@@ -213,6 +250,7 @@ def run_requirement_runner(
     should_continue: Callable[[], bool],
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS,
     on_started: Callable[[int], None] | None = None,
+    ready_decider: ReadyStep | None = None,
 ) -> None:
     """Run cycles one at a time for as long as `should_continue` answers True.
 
@@ -227,14 +265,23 @@ def run_requirement_runner(
     if on_started is not None:
         on_started(interval)
     while should_continue():
-        cycle = run_cycle(workspace, workers)
+        cycle = run_cycle(workspace, workers, ready_decider)
         report(cycle)
         if cycle.should_wait:
             sleep(interval)
 
 
-def run_cycle(workspace: RunnerWorkspace, workers: RequirementWorkers) -> CycleReport:
-    """One poll, then at most one claimed and dispatched Requirement."""
+def run_cycle(
+    workspace: RunnerWorkspace,
+    workers: RequirementWorkers,
+    ready_decider: ReadyStep | None = None,
+) -> CycleReport:
+    """One poll, then at most one claimed and dispatched Requirement.
+
+    Machine work always comes first; only a cycle that finds none offers the
+    optional Ready step its turn, so it can never starve Process, Review or
+    Apply.
+    """
     try:
         polled = workspace.find_eligible_requirements(
             MACHINE_ROUTES, ProcessingStatus.NOT_PROCESSED.value
@@ -247,7 +294,8 @@ def run_cycle(workspace: RunnerWorkspace, workers: RequirementWorkers) -> CycleR
         )
     candidate = _lowest_eligible(polled)
     if candidate is None:
-        return CycleReport(
+        decided = ready_decider(workspace) if ready_decider is not None else None
+        return decided or CycleReport(
             CycleOutcome.IDLE, "No Requirement is eligible for machine work."
         )
     selection = _fresh_selection(workspace, candidate)
@@ -256,6 +304,8 @@ def run_cycle(workspace: RunnerWorkspace, workers: RequirementWorkers) -> CycleR
     claimed = _claim(workspace, selection.requirement)
     if isinstance(claimed, CycleReport):
         return claimed
+    if ready_decider is not None:
+        ready_decider.forget(claimed.id)
     return finalize_cycle(workspace, claimed, dispatch(workspace, workers, selection))
 
 

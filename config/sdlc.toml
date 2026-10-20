@@ -90,3 +90,19 @@ runtime = "claude"
 # approved in this repository.
 [autonomy]
 mode = "disabled"
+
+# Automatic Ready decisions (Requirement-Autonomous-Ready-v0.1 §3).
+#
+# A separate permission from [autonomy]: a delegated-default policy above
+# authorizes no State transition. Only an authorization here lets the running
+# worker decide at Ready for one Project, deterministically and without a
+# model: AUTO_APPROVE (Ready -> Apply), AUTO_REWORK (Ready -> Process), or
+# leave it at Ready for a human.
+#
+# "disabled" is default deny: Ready is the human boundary for every Project.
+# Enabling needs mode = "enabled" and, per Project code, an authorization
+# whose content hashes to the approved_fingerprint the approving operator
+# recorded; every limit must be stated. No Project is authorized in this
+# repository.
+[ready_decisions]
+mode = "disabled"
