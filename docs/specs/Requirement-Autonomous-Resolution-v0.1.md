@@ -76,7 +76,7 @@ evidence_required = "<applicability evidence the Process must cite>"
   - `mode` is missing or unknown;
   - `mode = "disabled"` still carries projects.
 - **Absence:** the `[autonomy]` table missing entirely is the same as `mode = "disabled"`.
-- **When it is read:** once per invocation, and once at runner start for the worker. It is immutable for that whole run.
+- **When it is read:** as each command invocation starts, and as each Standard stage of a running worker starts (§3.4). It is immutable for that stage only.
 
 ### 3.3 Default deny and activation
 
@@ -84,6 +84,41 @@ evidence_required = "<applicability evidence the Process must cite>"
 - With no policy, Classes A and B still operate when their evidence suffices. Class C is unavailable: a C resolution is refused deterministically.
 - A clause authorizes only what it states. Paraphrase, broadening or a generic "low risk" claim authorizes nothing, and the Reviewer judges scope.
 - No test fixture is configuration: the Class C test policies exist only in the test suite.
+
+### 3.4 Policy lifetime
+
+Five things are kept apart:
+
+| | What it is | How long it lives |
+|---|---|---|
+| A | **Worker lifetime:** one `sdlc worker run` process. | Hours or days. It carries **no** policy authority. |
+| B | **Stage invocation:** one claimed machine stage (Standard Process, Review or Apply) of one Requirement, or one single-shot command. | From the stage's start to its result. |
+| C | **Stage snapshot:** the policies read from `config/sdlc.toml` as B starts. Every model prompt, deterministic check and currentness check in B uses it. | B only. Never reused by a later stage. |
+| D | **Bound evidence:** the `{policy_id, fingerprint}` a Process Result records (§5) and a Review Result copies (§6). | As long as the artifact. Never rebound or reinterpreted. |
+| E | **Effective operator policy:** whatever `config/sdlc.toml` holds now. | Until the operator edits it. |
+
+**Invariant.** No new machine-stage operation is authorized under a policy that was already changed, disabled, removed or broken before that operation began.
+
+**Refresh boundary.** The worker resolves its Fibery workspace and model roles once at start, as before. It also reads the policies once at start, only so that a broken table stops the runner before any claim. That read authorizes nothing. Each Standard Process, Review and Apply stage then reads the policies again, after its claim and before it reads Fibery or invokes a model, and uses only that snapshot (C). RAW processing reads no policy. An idle worker reads nothing. Model runtime selection is unaffected: it stays resolved at start.
+
+**Snapshot identity.** A snapshot is identified only by each policy's `policy_id` and content fingerprint. `approved_by` is outside the fingerprint and outside the identity. Changing it neither revokes a policy nor grants anything, and it is never an authentication.
+
+**Revocation.** Each operator change takes effect at the next stage start:
+- `mode = "disabled"`, the table removed, or the Project's policy removed: the next Process offers the model no policy, and a Class C resolution is refused (`INVALID_MODEL_OUTPUT`). Review, Ready, Apply and TSA refuse P1-bound evidence as `RESOLUTION_EVIDENCE_STALE` / `REQUIREMENT_NOT_ADMISSIBLE`.
+- A different approved policy P2: new work may use P2 and is bound to P2. P1-bound evidence is stale as above.
+- Bound evidence (D) keeps its P1 binding. It never becomes current again because some process still holds P1.
+
+**Configuration failure.** Malformed TOML, an unknown `mode`, content that does not hash to `approved_fingerprint`, a changed `approved_fingerprint`, or an unreadable file all make the stage refuse with `AUTONOMY_POLICY_INVALID`. In that case the stage reads nothing from Fibery, invokes no model and writes nothing. There is no fallback: no cached policy, no last-known-good policy, and no substitute. The refusal names the configuration error only, never clause text. At runner start the same failure is `WORKER_RUNNER_CONFIGURATION_INVALID`, and nothing is claimed.
+
+**Recovery.** A refusal happens after the runner's claim (RW-C04), so the existing semantics apply unchanged. The dispatch is `WORKER_FAILED`, Processing Status becomes Failed in the claimed State, the State is not changed, and there is no automatic retry and no second model call. The operator corrects the configuration and resets Processing Status, and the stage then runs under the policy current at that moment. A refusal before the claim would need policy knowledge in the generic runner, so it is not done.
+
+**In-flight changes.** A snapshot is immutable inside its stage, so a change made while a stage runs is seen by the next stage, not by this one:
+- *Changed during a Process model call:* the Process Result may persist bound to the revoked policy. The next Review refuses it as stale before invoking its model.
+- *Changed during a Review model call:* the Review Result may persist and move the Requirement to Ready. Ready approval, a worker Apply (each with its own fresh snapshot) and TSA admission refuse it as stale.
+- *Changed between Review and Apply:* Apply's fresh snapshot refuses it before any relation or State write.
+- *Changed after Apply's snapshot, before its Applied transition:* this window is **not closed**. Apply checks currentness before and after its writes, but both checks use the snapshot taken as the stage started. The window spans Apply's own Fibery reads and writes, with no model call, as it always has for single-shot `sdlc requirement apply`. A Requirement applied in this window is still refused at TSA admission, which reads the policy afresh.
+
+Revocation is therefore effective at the next stage start, not instantaneously. No configuration transaction or file watcher is introduced.
 
 ## 4. Structured resolution evidence (Process contract)
 
@@ -207,7 +242,7 @@ Smallest checks, reusing WI-1 and WI-4:
 
 | Point | Check |
 |---|---|
-| Process persistence | The policy is read once per run; the deterministic citation checks of §4 run against the captured input; the existing input re-read guards stay. |
+| Process persistence | The policy snapshot is read as the stage starts (§3.4); the deterministic citation checks of §4 run against the captured input; the existing input re-read guards stay. |
 | Process recovery | `--resume-result` refuses a changed policy for a Class C Result (§5). |
 | Review | Every citation and the policy are re-established (§6). |
 | Ready approval, Apply (before and after its writes), TSA admission | The Review must verify exactly the bound Process Result's resolutions and policy binding. For a Class C resolution, the active policy must still be the bound one (changed, removed, revoked or disabled → stale). Every RAW and DEPENDENCY citation must still resolve to the same entity with the same fingerprint (changed → stale). WI-4 continues to bind dependency trees. |
@@ -232,6 +267,7 @@ A historical resolution is never reinterpreted under a newer policy. Any change 
 | `INVALID_MODEL_OUTPUT` | Process, Review | A resolution, citation, policy clause, question authority, rework binding or resolution verification fails the closed contract or the deterministic checks. |
 | `RESOLUTION_EVIDENCE_STALE` | Process (resume), Review, Ready, Apply | A cited source or the bound policy changed, was removed or is no longer active. |
 | `RESOLUTION_EVIDENCE_INVALID` | Review | A persisted citation's identity or quote does not hold against an unchanged source. |
+| `AUTONOMY_POLICY_INVALID` | worker Process, Review, Apply | The policy configuration could not be read or validated as the stage started (§3.4). Single-shot commands report the same failure as a configuration error before any Fibery read. |
 | `INVALID_PROCESS_RESULT`, `INVALID_REVIEW_RESULT` | all | A persisted 0.6/0.7 artifact is malformed or the copies disagree with the bound Result. |
 | `REQUIREMENT_NOT_ADMISSIBLE` | TSA | Any of the above at admission. |
 
@@ -251,4 +287,5 @@ A historical resolution is never reinterpreted under a newer policy. Any change 
 - **Earlier unreviewed model text.** Text a Process iteration wrote into the Requirement is that iteration's output. Code keeps a rejected or unresolved resolution from citing itself back (§7), and both prompts tell the models such text is not authority. An answer written outside `resolutions` (unchanged since WI-1) remains a reviewer judgement and is not checked by code.
 - **Non-Applied dependencies.** At Process, a dependency citation needs only an existing or proposed DEPENDS_ON to a same-Project Standard. Approved standing is enforced later: clearance needs a verified, bound dependency (WI-4), and Apply refuses one that is not Applied.
 - **TSA policy carriage.** Admission reads the policies from `PolicyBoundEvidence`. A reader that does not carry them delegates nothing, so a delegated default is refused as stale.
+- **Revocation is per stage, not instantaneous.** A change made during a stage is seen by the next stage. The one window no later stage gate covers before a State write is Apply's, between its snapshot and its Applied transition. TSA admission still refuses there (§3.4).
 - **Nothing is live-verified.** No model has been run against the new prompts and no Fibery round-trip of the 0.6/0.7 payloads has been made.

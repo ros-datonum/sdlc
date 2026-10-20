@@ -14,7 +14,8 @@ SHA-256 over the canonical content: change detection, not a signature.
 
 The default, and what this repository ships, is `mode = "disabled"`: no
 Project has delegated defaults. A configuration without an `[autonomy]` table
-is the same. The policy is read once per invocation and is immutable for it.
+is the same. The policy is read as each invocation or worker stage starts and
+is immutable for that stage; a running worker never reuses it for the next one.
 """
 
 from __future__ import annotations
@@ -212,6 +213,13 @@ def load_autonomy_policies(path: Path | None = None) -> AutonomyPolicies:
     except FileNotFoundError as error:
         raise AutonomyPolicyError(
             f"No runtime configuration at {config_path}."
+        ) from error
+    except (OSError, UnicodeDecodeError) as error:
+        # A running worker reads this file again as each stage starts (section
+        # 3.4); an unreadable file refuses like any other broken configuration.
+        raise AutonomyPolicyError(
+            f"The runtime configuration at {config_path} cannot be read: "
+            f"{type(error).__name__}."
         ) from error
     except tomllib.TOMLDecodeError as error:
         raise AutonomyPolicyError(

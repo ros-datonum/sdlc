@@ -6,12 +6,16 @@ import argparse
 import functools
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
-from sdlc.autonomy_policy import DISABLED, AutonomyPolicies, load_autonomy_policies
+from sdlc.autonomy_policy import (
+    AutonomyPolicies,
+    AutonomyPolicyError,
+    load_autonomy_policies,
+)
 from sdlc.config import ConfigurationError, FiberySettings, load_fibery_settings
 from sdlc.fibery_client import FiberyClient
 from sdlc.fibery_http import (
@@ -117,6 +121,13 @@ EXIT_FAILURE = 1
 EXIT_INTERRUPTED = 130
 
 WORKER_SETUP_DOCUMENT = "docs/fibery/Worker-Runner-Setup-v0.1.md"
+POLICY_REFUSAL = (
+    "The autonomy policy configuration could not be read or validated as this "
+    "stage started, so the stage did not run: it read nothing from Fibery, "
+    "no model was invoked and nothing was written. No earlier policy is reused. "
+    "Correct [autonomy] in the runtime configuration, then reset Processing "
+    "Status."
+)
 RUNNER_STOPPED_NOTE = (
     "Stopped. A Requirement whose worker was interrupted keeps its Processing "
     "Status: the runner never treats it as stale, retries or resets it, and "
@@ -1121,7 +1132,7 @@ def _run_worker(arguments: argparse.Namespace, out: TextIO, error_out: TextIO) -
         settings = load_fibery_settings()
         workspace = _runner_workspace(settings)
         workers = _runner_workers(
-            workspace, load_model_runtime_config(), load_autonomy_policies()
+            workspace, load_model_runtime_config(), load_autonomy_policies
         )
     except (ConfigurationError, ModelRuntimeConfigError) as error:
         _render_runner_code(
@@ -1186,16 +1197,20 @@ def _runner_workers(
     workspace: FiberyRawProcessorWorkspace,
     # The parsed [model_runtime] table, as load_model_runtime_config returns it.
     runtime_config: dict[str, Any],
-    policies: AutonomyPolicies = DISABLED,
+    load_policies: Callable[[], AutonomyPolicies],
 ) -> RequirementWorkers:
     """The four existing workers, bound to the configured roles; Apply is model-free.
 
     Every role resolves here, before the runner starts, so a configuration
     error stops it before any Requirement is claimed. Nothing overrides a role.
-    The autonomy policies are read once, here, and hold for the runner's whole
-    life: a changed policy needs a restart, and evidence bound to the old one
-    is refused at Ready (Requirement-Autonomous-Resolution-v0.1 §3.2).
+    The autonomy policies are not part of that composition: every Standard
+    stage reads them again as it starts, so a policy the operator changed,
+    disabled or broke is never the authority for later work
+    (Requirement-Autonomous-Resolution-v0.1 §3.4). RAW processing reads none.
     """
+    # Read now only so a broken [autonomy] table stops the runner before any
+    # claim. What it says authorizes nothing: each stage reads its own.
+    load_policies()
     raw, standard, reviewer = (
         LocalCliModelRuntime(select_runtime(runtime_config, role))
         for role in (
@@ -1206,15 +1221,67 @@ def _runner_workers(
     )
     return RequirementWorkers(
         process_raw=functools.partial(process_raw_requirement, workspace, raw),
-        process_standard=functools.partial(
-            process_standard_requirement, workspace, standard, policies=policies
+        process_standard=_under_current_policies(
+            functools.partial(process_standard_requirement, workspace, standard),
+            load_policies,
+            _refused_process,
         ),
-        review_standard=functools.partial(
-            review_standard_requirement, workspace, reviewer, policies=policies
+        review_standard=_under_current_policies(
+            functools.partial(review_standard_requirement, workspace, reviewer),
+            load_policies,
+            _refused_review,
         ),
-        apply_standard=functools.partial(
-            apply_standard_requirement, workspace, policies=policies
+        apply_standard=_under_current_policies(
+            functools.partial(apply_standard_requirement, workspace),
+            load_policies,
+            _refused_apply,
         ),
+    )
+
+
+def _under_current_policies[Result](
+    stage: Callable[..., Result],
+    load_policies: Callable[[], AutonomyPolicies],
+    refuse: Callable[[AutonomyPolicyError], Result],
+) -> Callable[..., Result]:
+    """`stage`, run under the policies the configuration holds as it starts.
+
+    Nothing is cached between stages and nothing falls back: a configuration
+    that no longer loads refuses the stage before it reads Fibery or invokes
+    a model, and the runner marks the claimed cycle Failed.
+    """
+
+    def run(entity_id: str, **options: Any) -> Result:
+        try:
+            policies = load_policies()
+        except AutonomyPolicyError as error:
+            return refuse(error)
+        return stage(entity_id, policies=policies, **options)
+
+    return run
+
+
+def _refused_process(error: AutonomyPolicyError) -> StandardProcessResult:
+    return StandardProcessResult(
+        code=StandardProcessResultCode.AUTONOMY_POLICY_INVALID,
+        message=POLICY_REFUSAL,
+        details=(str(error),),
+    )
+
+
+def _refused_review(error: AutonomyPolicyError) -> StandardReviewResult:
+    return StandardReviewResult(
+        code=StandardReviewResultCode.AUTONOMY_POLICY_INVALID,
+        message=POLICY_REFUSAL,
+        details=(str(error),),
+    )
+
+
+def _refused_apply(error: AutonomyPolicyError) -> ApplyResult:
+    return ApplyResult(
+        code=ApplyResultCode.AUTONOMY_POLICY_INVALID,
+        message=POLICY_REFUSAL,
+        details=(str(error),),
     )
 
 
