@@ -799,3 +799,40 @@ def test_http_a_scoped_query_adds_one_exact_project_clause_to_the_same_filter(me
         assert scoped["query"][key] == unscoped["query"][key]
     assert scoped["query"]["q/limit"] == ELIGIBLE_QUERY_LIMIT
     assert clause not in unscoped["query"]["q/where"]
+
+
+def test_a_rename_after_the_scope_check_never_borrows_another_codes_authority(
+    monkeypatch, tmp_path
+):
+    """The Project is renamed, to a Code with its own Ready authorization,
+    between the scope check and the decision's own Project read."""
+    ready = ready_table(
+        authorization(),
+        authorization(project="OTHER", authorization_id="OTHER-READY-1"),
+    )
+    operator, ws, requirement = ready_at(
+        monkeypatch, tmp_path, PASS_REVIEW, ready=ready
+    )
+    pilot = ProjectRecord(
+        id="p-1", name="SDLC", code="SDLC", state="Planned", public_id="9"
+    )
+    projects = Projects(pilot, TSAP1).install(monkeypatch, ws.inner)
+    decider = scoped_decider(operator, ws)
+    reads = projects.reads
+    real = projects.read_project
+
+    def renamed_after_the_check(project_id):
+        found = real(project_id)
+        if projects.reads == reads + 1:
+            projects.recode("p-1", "OTHER")
+        return found
+
+    monkeypatch.setattr(ws.inner, "read_project", renamed_after_the_check)
+    before = len(ws.inner.mutations)
+
+    report = decider(ws)
+
+    assert report.outcome is CycleOutcome.SCOPE_INVALID
+    assert report.ready_decision is None
+    assert ws.inner.mutations[before:] == []
+    assert state_of(ws, requirement) == "Ready"

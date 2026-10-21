@@ -46,7 +46,7 @@ The scope holds for the whole run, and is checked against fresh Fibery data, nev
 |---|---|---|
 | before every claim | the same workspace identity; the Project read by entity id exists, is that entity and has the bound Code | `SCOPE_INVALID`: nothing written; the runner stops |
 | before every dispatch, after the claim is confirmed | the same | `SCOPE_INVALID`: the claim stays as written (`Processing`) for explicit recovery (RW-C04 §25), nothing more is written; the runner stops |
-| before every Ready decision | the same | `SCOPE_INVALID`: no decision, nothing written; the runner stops |
+| before every Ready decision | the same; and the Project the decision itself reads, whose Code selects the Ready authorization, must still carry the bound Code | `SCOPE_INVALID`: no decision, nothing written; the runner stops |
 
 The runner reports the `SCOPE_INVALID` cycle, then ends with `WORKER_RUNNER_PROJECT_INVALID` and exit 1. A Project whose Code changed is not followed under its new Code: the operator restarts the runner with the Code they intend.
 

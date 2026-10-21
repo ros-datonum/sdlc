@@ -406,6 +406,17 @@ def decide(
             fresh or candidate,
             details=changes,
         )
+    if scope is not None and (project is None or project.code != scope.project_code):
+        # The Code the authorization is looked up by must be the bound one: a
+        # rename since the scope check never borrows another Code's authority.
+        return CycleReport(
+            CycleOutcome.SCOPE_INVALID,
+            f"{_label(candidate)}: its Project no longer reads as Project "
+            f"{scope.project_code}; no decision, nothing written, and the runner "
+            "stops.",
+            fresh,
+            details=(f"Project Code read: {project.code if project else None!r}",),
+        )
     code = project.code if project is not None else None
     base = ReadyDecisionRecord(
         requirement_id=fresh.requirement_id,
