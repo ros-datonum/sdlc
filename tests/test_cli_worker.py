@@ -122,7 +122,8 @@ def test_every_other_interval_is_rejected(value, capsys):
         ["--runtime", "claude"],
         ["--model", "x"],
         ["--requirement", "entity-uuid"],
-        ["--project", "SDLC"],
+        # `--project` exists since Requirement-Worker-Project-Scope-v0.1; it
+        # narrows the scope and is tested in test_worker_project_scope.py.
         ["--type", "Raw"],
         ["--state", "Process"],
         ["--status", "Not Processed"],

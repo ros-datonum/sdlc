@@ -131,6 +131,8 @@ class StatusWorkspace:
         self.poll_rows = None
         self.on_call = {}
         self.polls = 0
+        # The Project filter each eligible-work query was made with.
+        self.project_filters = []
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
@@ -177,11 +179,14 @@ class StatusWorkspace:
         if sorted(self.options) != sorted(options):
             raise FiberyError(f"Processing Status has the options {self.options!r}")
 
-    def find_eligible_requirements(self, routes, status):
+    def find_eligible_requirements(self, routes, status, project_id=None):
+        """The machine query: one live-sized page, `fibery/public-id` order,
+        filtered to `project_id` before the limit, as Fibery filters it."""
         self._before_poll()
         self._before("find_eligible_requirements")
         self.inner._record("find_eligible_requirements")
         self.queries.append((tuple(routes), status))
+        self.project_filters.append(project_id)
         if self.poll_rows is not None:
             return list(self.poll_rows)
         rows = [self.with_status(r) for r in self.inner.requirements.values()]
@@ -191,16 +196,20 @@ class StatusWorkspace:
                 for r in rows
                 if (r.type_name, r.state) in set(routes)
                 and r.processing_status == status
+                and (project_id is None or r.project_id == project_id)
             ),
             key=lambda r: int(r.public_id),
-        )
+        )[:ELIGIBLE_QUERY_LIMIT]
 
-    def find_eligible_requirements_after(self, routes, status, after_id):
+    def find_eligible_requirements_after(
+        self, routes, status, after_id, project_id=None
+    ):
         """The Ready decider's query: one live-sized page, `fibery/id` order."""
         self._before_poll()
         self._before("find_eligible_requirements_after")
         self.inner._record("find_eligible_requirements_after")
         self.queries.append((tuple(routes), status))
+        self.project_filters.append(project_id)
         if self.poll_rows is not None:
             rows = list(self.poll_rows)
         else:
@@ -209,6 +218,7 @@ class StatusWorkspace:
                 for r in map(self.with_status, self.inner.requirements.values())
                 if (r.type_name, r.state) in set(routes)
                 and r.processing_status == status
+                and (project_id is None or r.project_id == project_id)
             ]
         ordered = sorted(
             (r for r in rows if after_id is None or r.id > after_id),

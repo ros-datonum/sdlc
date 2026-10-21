@@ -444,6 +444,9 @@ class FiberyRequirementWorkspace:
     def find_projects_by_name(self, name: str) -> list[ProjectRecord]:
         return self._projects.find_projects_by_name(name)
 
+    def count_projects_with_code(self, code: str) -> int:
+        return self._projects.count_projects_with_code(code)
+
     # -- requirements ---------------------------------------------------
 
     def find_requirement_by_fingerprint(
@@ -1532,15 +1535,19 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
             )
 
     def find_eligible_requirements(
-        self, routes: Sequence[tuple[str, str]], status: str
+        self,
+        routes: Sequence[tuple[str, str]],
+        status: str,
+        project_id: str | None = None,
     ) -> list[RequirementRecord]:
-        """Requirements in every Project at one of `routes` with this status.
+        """Requirements at one of `routes` with this status, in every Project or,
+        given `project_id`, in that Project only (filtered by Fibery).
 
         Ordered by `fibery/public-id` ascending and bounded to one page.
         Cost: one query per poll, at most ELIGIBLE_QUERY_LIMIT rows.
         """
         schema = self._processing_status_schema()
-        where, params = _eligible_where(schema, routes, status)
+        where, params = _eligible_where(schema, routes, status, project_id)
         rows = self._query_requirements(
             schema,
             where,
@@ -1551,16 +1558,21 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
         return [self._to_requirement(schema, row) for row in rows]
 
     def find_eligible_requirements_after(
-        self, routes: Sequence[tuple[str, str]], status: str, after_id: str | None
+        self,
+        routes: Sequence[tuple[str, str]],
+        status: str,
+        after_id: str | None,
+        project_id: str | None = None,
     ) -> list[RequirementRecord]:
         """One page of the same Requirements, in `fibery/id` order, after `after_id`.
 
         Fibery's documented cursor pagination: `q/order-by` `fibery/id`
         ascending and, past the first page, `[">", ["fibery/id"], "$after"]`.
+        `project_id` filters to one Project as `find_eligible_requirements` does.
         Cost: one query, at most ELIGIBLE_QUERY_LIMIT rows.
         """
         schema = self._processing_status_schema()
-        where, params = _eligible_where(schema, routes, status)
+        where, params = _eligible_where(schema, routes, status, project_id)
         if after_id is not None:
             where = [*where, [">", [ID_FIELD], "$after"]]
             params["$after"] = after_id
@@ -1599,9 +1611,13 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
 
 
 def _eligible_where(
-    schema: _RequirementSchema, routes: Sequence[tuple[str, str]], status: str
+    schema: _RequirementSchema,
+    routes: Sequence[tuple[str, str]],
+    status: str,
+    project_id: str | None,
 ) -> tuple[list[Any], dict[str, Any]]:
-    """The eligible-work filter: this Processing Status, at one of `routes`."""
+    """The eligible-work filter: this Processing Status, at one of `routes`,
+    and in the Project `project_id` names when it is given."""
     params: dict[str, Any] = {"$status": status}
     clauses: list[Any] = []
     for number, (type_name, state) in enumerate(routes):
@@ -1619,6 +1635,9 @@ def _eligible_where(
         ["=", [schema.processing_status_field, ENUM_NAME_FIELD], "$status"],
         ["q/or", *clauses],
     ]
+    if project_id is not None:
+        where.append(["=", [schema.project_field, ID_FIELD], "$project"])
+        params["$project"] = project_id
     return where, params
 
 

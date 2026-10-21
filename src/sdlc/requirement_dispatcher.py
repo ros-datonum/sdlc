@@ -374,6 +374,7 @@ def _route_drift(
             ("requirement_id", "Requirement ID"),
             ("type_name", "Type"),
             ("state", "State"),
+            ("project_id", "Project"),
         )
         if getattr(selected, field) != getattr(current, field)
     )
@@ -483,6 +484,11 @@ def _candidate_problem(
 ) -> str | None:
     if candidate.type_name != STANDARD_TYPE:
         return f"Type is {candidate.type_name!r}, not {STANDARD_TYPE}"
+    if candidate.project_id != raw.project_id:
+        return (
+            f"belongs to Project {candidate.project_id!r}, not the RAW's "
+            f"{raw.project_id!r}"
+        )
     if candidate.state != DRAFT_STATE:
         return f"State is {candidate.state!r}, not {DRAFT_STATE}; it is left as it is"
     if raw.id not in {source.id for source in workspace.derived_from(candidate.id)}:

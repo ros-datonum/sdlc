@@ -168,12 +168,13 @@ class Models:
         return self.by_role[STANDARD_REQUIREMENT_REVIEWER_ROLE]
 
 
-def run_worker(monkeypatch, operator, ws, models, at_poll=None, loads=None):
+def run_worker(monkeypatch, operator, ws, models, at_poll=None, loads=None, extra=()):
     """`sdlc worker run`, started under the current file, until its first idle wait.
 
     `at_poll[n]` runs just before the n-th eligible-work poll: the operator
     editing the file, or a human moving a Requirement in Fibery, while the
     worker keeps running. `loads`, when given, counts reads of the real loader.
+    `extra` are further `worker run` arguments, such as `--project`.
     """
     monkeypatch.chdir(operator.path.parent.parent)
     for name, value in ENVIRONMENT.items():
@@ -202,7 +203,7 @@ def run_worker(monkeypatch, operator, ws, models, at_poll=None, loads=None):
         monkeypatch.setattr(cli, "load_autonomy_policies", counted)
     for poll, action in (at_poll or {}).items():
         ws.on_call[(POLL, poll)] = action
-    arguments = cli.build_parser().parse_args(["worker", "run"])
+    arguments = cli.build_parser().parse_args(["worker", "run", *extra])
     out, error_out = io.StringIO(), io.StringIO()
     code = arguments.handler(arguments, out, error_out)
     return code, reports, error_out.getvalue()

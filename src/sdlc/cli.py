@@ -62,9 +62,12 @@ from sdlc.requirement_runner import (
     MINIMUM_POLL_INTERVAL_SECONDS,
     CycleOutcome,
     CycleReport,
+    ProjectScope,
+    ProjectScopeError,
     RunnerCode,
     RunnerPreflightError,
     require_poll_interval,
+    resolve_project_scope,
     run_requirement_runner,
 )
 from sdlc.result_shell import RECOVERY_OPTION
@@ -204,7 +207,12 @@ WORKER_RUN_DESCRIPTION = (
     "takes no Requirement, State, Type, status, runtime, model or approval "
     "argument. The Processing Status field and its reset automation must be "
     "configured and verified first (docs/fibery/Worker-Runner-Setup-v0.1.md). "
-    "One runner per workspace on this host; a second one exits immediately."
+    "One runner per workspace on this host; a second one exits immediately. "
+    "With --project CODE it works only on that one Project: Fibery returns no "
+    "other Project's work, the Project is read again before every claim and "
+    "dispatch, and a Project that cannot be resolved, or no longer has that "
+    "Code, stops the runner (WORKER_RUNNER_PROJECT_INVALID); it never widens "
+    "to the whole workspace."
 )
 
 NEXT_STEP_HINT = "Use:\nsdlc project requirement add\nto add requirements."
@@ -592,6 +600,15 @@ def _add_worker_commands(
             "Idle poll interval in whole seconds (default "
             f"{DEFAULT_POLL_INTERVAL_SECONDS}, minimum "
             f"{MINIMUM_POLL_INTERVAL_SECONDS}). Changes responsiveness only."
+        ),
+    )
+    run.add_argument(
+        "--project",
+        metavar="CODE",
+        help=(
+            "Work only on the Project with exactly this Project Code "
+            "(Requirement-Worker-Project-Scope-v0.1). Without it, every Project "
+            "of the workspace."
         ),
     )
     run.set_defaults(handler=_run_worker)
@@ -1141,15 +1158,40 @@ def _run_worker(arguments: argparse.Namespace, out: TextIO, error_out: TextIO) -
         workers = _runner_workers(
             workspace, load_model_runtime_config(), load_autonomy_policies
         )
-        ready = _ready_decider(load_ready_delegation, load_autonomy_policies)
+        scope = _project_scope(workspace, arguments.project)
+        ready = _ready_decider(load_ready_delegation, load_autonomy_policies, scope)
     except (ConfigurationError, ModelRuntimeConfigError) as error:
         _render_runner_code(
             RunnerCode.WORKER_RUNNER_CONFIGURATION_INVALID, str(error), error_out
         )
         return EXIT_FAILURE
+    except ProjectScopeError as error:
+        _render_runner_code(
+            RunnerCode.WORKER_RUNNER_PROJECT_INVALID, str(error), error_out
+        )
+        return EXIT_FAILURE
     return _run_guarded(
-        workspace, workers, arguments.poll_interval_seconds, out, error_out, ready
+        workspace,
+        workers,
+        arguments.poll_interval_seconds,
+        out,
+        error_out,
+        ready,
+        scope,
     )
+
+
+def _project_scope(
+    workspace: FiberyRawProcessorWorkspace, selector: str | None
+) -> ProjectScope | None:
+    """The `--project` scope, resolved before the lock; None runs unscoped.
+
+    A selector that does not resolve raises ProjectScopeError: there is no
+    fallback to the whole workspace.
+    """
+    if selector is None:
+        return None
+    return resolve_project_scope(workspace, selector)
 
 
 def _run_guarded(
@@ -1159,6 +1201,7 @@ def _run_guarded(
     out: TextIO,
     error_out: TextIO,
     ready: ReadyDecider | None = None,
+    scope: ProjectScope | None = None,
 ) -> int:
     """Hold the workspace lock for the runner's whole life; report each refusal."""
     try:
@@ -1171,9 +1214,13 @@ def _run_guarded(
                 should_continue=_keep_running,
                 poll_interval_seconds=poll_interval_seconds,
                 on_started=functools.partial(
-                    _render_started, stream=out, ready_delegated=ready is not None
+                    _render_started,
+                    stream=out,
+                    ready_delegated=ready is not None,
+                    scope=scope,
                 ),
                 ready_decider=ready,
+                scope=scope,
             )
     except WorkerRunnerBusy as error:
         _render_runner_code(RunnerCode.WORKER_RUNNER_BUSY, str(error), error_out)
@@ -1181,6 +1228,11 @@ def _run_guarded(
     except WorkerRunnerGuardUnavailable as error:
         code = RunnerCode.WORKER_RUNNER_GUARD_UNAVAILABLE
         _render_runner_code(code, str(error), error_out)
+        return EXIT_FAILURE
+    except ProjectScopeError as error:
+        _render_runner_code(
+            RunnerCode.WORKER_RUNNER_PROJECT_INVALID, str(error), error_out
+        )
         return EXIT_FAILURE
     except RunnerPreflightError as error:
         message = f"{error}\n\nSee {WORKER_SETUP_DOCUMENT}."
@@ -1252,7 +1304,9 @@ def _runner_workers(
 
 
 def _ready_decider(
-    load_delegation: LoadDelegation, load_policies: LoadPolicies
+    load_delegation: LoadDelegation,
+    load_policies: LoadPolicies,
+    scope: ProjectScope | None = None,
 ) -> ReadyDecider | None:
     """The opt-in Ready step, or None: Ready stays the human boundary.
 
@@ -1264,7 +1318,7 @@ def _ready_decider(
     """
     if not load_delegation().is_enabled:
         return None
-    return ReadyDecider(load_delegation, load_policies)
+    return ReadyDecider(load_delegation, load_policies, scope)
 
 
 def _under_current_policies[Result](
@@ -1324,7 +1378,10 @@ def _keep_running() -> bool:
 
 
 def _render_started(
-    interval: int, stream: TextIO, ready_delegated: bool = False
+    interval: int,
+    stream: TextIO,
+    ready_delegated: bool = False,
+    scope: ProjectScope | None = None,
 ) -> None:
     delegated = (
         " Ready decisions are delegated only where [ready_decisions] authorizes "
@@ -1332,10 +1389,16 @@ def _render_started(
         if ready_delegated
         else ""
     )
+    watching = (
+        f"Watching only Project {scope.project_code} (entity {scope.project_id}) "
+        "of the configured Fibery workspace"
+        if scope is not None
+        else "Watching every Project of the configured Fibery workspace"
+    )
     _render_runner_code(
         RunnerCode.WORKER_RUNNER_STARTED,
-        f"Watching every Project of the configured Fibery workspace; idle poll "
-        f"interval {interval} s.{delegated} Ctrl-C stops the runner.",
+        f"{watching}; idle poll interval {interval} s.{delegated} Ctrl-C stops "
+        "the runner.",
         stream,
     )
 

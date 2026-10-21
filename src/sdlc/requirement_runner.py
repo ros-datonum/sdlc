@@ -32,6 +32,11 @@ Requirement-Autonomous-Ready-v0.1 adds one opt-in step: when no machine route
 has work, an optional `ready_decider` may decide one `Standard + Ready`
 Requirement, inside the same lock and cycle. Without it — the default, and
 whenever Ready delegation is disabled at start — a cycle is exactly as above.
+
+Requirement-Worker-Project-Scope-v0.1 adds an optional `ProjectScope`: the
+eligible-work query is filtered to that Project by Fibery, and the bound
+Project is read again before every claim and every dispatch. A scope that no
+longer holds ends the runner; it never widens to the whole workspace.
 """
 
 from __future__ import annotations
@@ -41,7 +46,13 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
-from sdlc.fibery_workspace import FiberyError, RequirementRecord, RunnerWorkspace
+from sdlc.fibery_workspace import (
+    FiberyError,
+    RequirementRecord,
+    RunnerWorkspace,
+    ScopedRunnerWorkspace,
+)
+from sdlc.project_code import InvalidProjectCode, validate_project_code
 from sdlc.requirement_dispatcher import (
     ROUTES,
     DispatchOutcome,
@@ -86,6 +97,7 @@ class RunnerCode(StrEnum):
     WORKER_RUNNER_BUSY = "WORKER_RUNNER_BUSY"
     WORKER_RUNNER_GUARD_UNAVAILABLE = "WORKER_RUNNER_GUARD_UNAVAILABLE"
     WORKER_RUNNER_PREFLIGHT_FAILED = "WORKER_RUNNER_PREFLIGHT_FAILED"
+    WORKER_RUNNER_PROJECT_INVALID = "WORKER_RUNNER_PROJECT_INVALID"
     WORKER_RUNNER_STOPPED = "WORKER_RUNNER_STOPPED"
 
 
@@ -127,6 +139,10 @@ class CycleOutcome(StrEnum):
     READY_UNCERTAIN = "READY_UNCERTAIN"
     # The configuration or a Fibery read failed; no decision, nothing written.
     READY_FAILED = "READY_FAILED"
+    # Requirement-Worker-Project-Scope-v0.1: the bound Project no longer holds
+    # (unreadable, gone, or another Code); nothing more is written and the
+    # runner stops.
+    SCOPE_INVALID = "SCOPE_INVALID"
 
 
 # The runner waits the idle interval after a cycle that started no worker for
@@ -185,6 +201,22 @@ class RunnerPreflightError(Exception):
     """The workspace cannot host the runner; nothing was polled or written."""
 
 
+class ProjectScopeError(Exception):
+    """The Project scope cannot be established, or no longer holds.
+
+    Nothing may run under it, and nothing falls back to the whole workspace.
+    """
+
+
+@dataclass(frozen=True)
+class ProjectScope:
+    """The one Project a scoped runner is bound to, as it was resolved at start."""
+
+    project_id: str
+    project_code: str
+    workspace_identity: str
+
+
 @dataclass(frozen=True)
 class CycleReport:
     """What one cycle did, for the operator: identity and codes only.
@@ -241,6 +273,84 @@ def preflight(workspace: RunnerWorkspace) -> None:
         raise RunnerPreflightError(str(error)) from error
 
 
+def resolve_project_scope(
+    workspace: ScopedRunnerWorkspace, selector: str
+) -> ProjectScope:
+    """Bind the runner to the one Project whose Code is exactly `selector`.
+
+    Only an exact Project Code is accepted: no Name, no case or whitespace
+    normalization, no partial match. The Code must name exactly one Project,
+    and that Project, read again by its entity id, must carry it. Any failure,
+    a Fibery read failure included, raises ProjectScopeError. Cost: three
+    reads, once per runner start.
+    """
+    try:
+        code = validate_project_code(selector)
+    except InvalidProjectCode as error:
+        raise ProjectScopeError(
+            f"--project takes one exact Project Code: {error}"
+        ) from error
+    if code != selector:
+        raise ProjectScopeError(
+            f"--project takes one exact Project Code; {selector!r} is not one "
+            f"(did you mean {code!r}?)."
+        )
+    try:
+        count = workspace.count_projects_with_code(code)
+        project = workspace.find_project_by_code(code) if count == 1 else None
+        current = workspace.read_project(project.id) if project is not None else None
+    except FiberyError as error:
+        raise ProjectScopeError(
+            f"Project {code} could not be resolved: {error}"
+        ) from error
+    if count == 0:
+        raise ProjectScopeError(f"No Project has the Code {code}.")
+    if count != 1:
+        raise ProjectScopeError(
+            f"More than one Project has the Code {code}; the scope is ambiguous."
+        )
+    if (
+        project is None
+        or current is None
+        or current.id != project.id
+        or current.code != code
+    ):
+        raise ProjectScopeError(
+            f"Project {code} did not read back as the same Project."
+        )
+    return ProjectScope(project.id, code, workspace.lock_scope)
+
+
+def check_project_scope(workspace: ScopedRunnerWorkspace, scope: ProjectScope) -> None:
+    """Raise ProjectScopeError unless the bound Project is still what was bound.
+
+    Read fresh from Fibery: the same workspace, the same Project entity, the
+    same Code. Cost: one Project read.
+    """
+    if workspace.lock_scope != scope.workspace_identity:
+        raise ProjectScopeError(
+            f"The workspace is {workspace.lock_scope!r}, not the "
+            f"{scope.workspace_identity!r} Project {scope.project_code} was "
+            "bound in."
+        )
+    try:
+        current = workspace.read_project(scope.project_id)
+    except FiberyError as error:
+        raise ProjectScopeError(
+            f"Project {scope.project_code} could not be read: {error}"
+        ) from error
+    if current is None or current.id != scope.project_id:
+        raise ProjectScopeError(
+            f"Project {scope.project_code} (entity {scope.project_id}) no longer "
+            "exists."
+        )
+    if current.code != scope.project_code:
+        raise ProjectScopeError(
+            f"Project entity {scope.project_id} now has the Code "
+            f"{current.code!r}, not {scope.project_code}."
+        )
+
+
 def run_requirement_runner(
     workspace: RunnerWorkspace,
     workers: RequirementWorkers,
@@ -251,6 +361,7 @@ def run_requirement_runner(
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS,
     on_started: Callable[[int], None] | None = None,
     ready_decider: ReadyStep | None = None,
+    scope: ProjectScope | None = None,
 ) -> None:
     """Run cycles one at a time for as long as `should_continue` answers True.
 
@@ -258,15 +369,18 @@ def run_requirement_runner(
     refused before anything is polled or claimed; `on_started` hears the
     interval once it has passed. `sleep`, `report` and `should_continue` are
     the process's clock, output and stop condition, injected so a test drives
-    exact cycles without waiting.
+    exact cycles without waiting. A SCOPE_INVALID cycle is reported, then
+    ends the runner with ProjectScopeError.
     """
     interval = require_poll_interval(poll_interval_seconds)
     preflight(workspace)
     if on_started is not None:
         on_started(interval)
     while should_continue():
-        cycle = run_cycle(workspace, workers, ready_decider)
+        cycle = run_cycle(workspace, workers, ready_decider, scope)
         report(cycle)
+        if cycle.outcome is CycleOutcome.SCOPE_INVALID:
+            raise ProjectScopeError(cycle.message)
         if cycle.should_wait:
             sleep(interval)
 
@@ -275,16 +389,20 @@ def run_cycle(
     workspace: RunnerWorkspace,
     workers: RequirementWorkers,
     ready_decider: ReadyStep | None = None,
+    scope: ProjectScope | None = None,
 ) -> CycleReport:
     """One poll, then at most one claimed and dispatched Requirement.
 
     Machine work always comes first; only a cycle that finds none offers the
     optional Ready step its turn, so it can never starve Process, Review or
-    Apply.
+    Apply. Under a `scope`, Fibery returns only that Project's work, and the
+    Project is read again before the claim and before the dispatch.
     """
     try:
         polled = workspace.find_eligible_requirements(
-            MACHINE_ROUTES, ProcessingStatus.NOT_PROCESSED.value
+            MACHINE_ROUTES,
+            ProcessingStatus.NOT_PROCESSED.value,
+            project_id=scope.project_id if scope is not None else None,
         )
     except FiberyError as error:
         return CycleReport(
@@ -298,15 +416,50 @@ def run_cycle(
         return decided or CycleReport(
             CycleOutcome.IDLE, "No Requirement is eligible for machine work."
         )
-    selection = _fresh_selection(workspace, candidate)
+    selection = _fresh_selection(workspace, candidate, scope)
     if isinstance(selection, CycleReport):
         return selection
-    claimed = _claim(workspace, selection.requirement)
+    refused = _scope_refusal(workspace, scope, candidate, "its claim", claimed=False)
+    if refused is not None:
+        return refused
+    claimed = _claim(workspace, selection.requirement, scope)
     if isinstance(claimed, CycleReport):
         return claimed
+    refused = _scope_refusal(workspace, scope, claimed, "its dispatch", claimed=True)
+    if refused is not None:
+        return refused
     if ready_decider is not None:
         ready_decider.forget(claimed.id)
     return finalize_cycle(workspace, claimed, dispatch(workspace, workers, selection))
+
+
+def _scope_refusal(
+    workspace: ScopedRunnerWorkspace,
+    scope: ProjectScope | None,
+    requirement: RequirementRecord,
+    before: str,
+    *,
+    claimed: bool,
+) -> CycleReport | None:
+    """SCOPE_INVALID when the bound Project no longer holds; None otherwise."""
+    if scope is None:
+        return None
+    try:
+        check_project_scope(workspace, scope)
+    except ProjectScopeError as error:
+        left = (
+            "Its Processing claim stays as written for explicit recovery; "
+            if claimed
+            else ""
+        )
+        return CycleReport(
+            CycleOutcome.SCOPE_INVALID,
+            f"{_label(requirement)}: the Project scope no longer holds before "
+            f"{before}. {left}nothing more was written and the runner stops.",
+            requirement,
+            details=(str(error),),
+        )
+    return None
 
 
 # -- selection and claim ------------------------------------------------------------
@@ -341,9 +494,15 @@ def _public_id_order(record: RequirementRecord) -> tuple[bool, int, str]:
 
 
 def _fresh_selection(
-    workspace: RunnerWorkspace, candidate: RequirementRecord
+    workspace: RunnerWorkspace,
+    candidate: RequirementRecord,
+    scope: ProjectScope | None = None,
 ) -> RouteSelection | CycleReport:
-    """Re-read the candidate and select its route again from what Fibery holds now."""
+    """Re-read the candidate and select its route again from what Fibery holds now.
+
+    Under a scope the fresh record must also be in the bound Project, judged
+    against the scope itself and not against the poll row.
+    """
     try:
         fresh = workspace.read_requirement(candidate.id)
     except FiberyError as error:
@@ -354,7 +513,7 @@ def _fresh_selection(
             candidate,
             details=(str(error),),
         )
-    changes = _differences(candidate, fresh, CYCLE_FIELDS)
+    changes = (*_differences(candidate, fresh, CYCLE_FIELDS), *_outside(fresh, scope))
     selection = None if fresh is None or changes else _selected(fresh)
     if selection is None:
         return CycleReport(
@@ -367,9 +526,14 @@ def _fresh_selection(
 
 
 def _claim(
-    workspace: RunnerWorkspace, requirement: RequirementRecord
+    workspace: RunnerWorkspace,
+    requirement: RequirementRecord,
+    scope: ProjectScope | None = None,
 ) -> RequirementRecord | CycleReport:
-    """Processing Status = Processing, confirmed by read-back before any worker."""
+    """Processing Status = Processing, confirmed by read-back before any worker.
+
+    Under a scope the read-back must also still be in the bound Project.
+    """
     try:
         workspace.set_processing_status(
             requirement.id, ProcessingStatus.PROCESSING.value
@@ -385,6 +549,7 @@ def _claim(
     claimed, conflicts = _observe(
         workspace, requirement, requirement.state, ProcessingStatus.PROCESSING
     )
+    conflicts = (*conflicts, *_outside(claimed, scope))
     if claimed is None or conflicts:
         return CycleReport(
             CycleOutcome.CLAIM_NOT_CONFIRMED,
@@ -540,6 +705,20 @@ def _observe(
         return None, (f"read failed: {error}",)
     expected = replace(cycle, state=state, processing_status=status.value)
     return current, _differences(expected, current, fields)
+
+
+def _outside(
+    record: RequirementRecord | None, scope: ProjectScope | None
+) -> tuple[str, ...]:
+    """Why `record` is not in the bound Project; empty when it is, or unscoped."""
+    if scope is None or record is None or record.project_id == scope.project_id:
+        return ()
+    return (
+        (
+            f"Project: {record.project_id!r} is outside the scope of Project "
+            f"{scope.project_code} ({scope.project_id})"
+        ),
+    )
 
 
 def _differences(

@@ -73,7 +73,13 @@ from sdlc.requirement_dispatcher import (
     STANDARD_TYPE,
     ProcessingStatus,
 )
-from sdlc.requirement_runner import CycleOutcome, CycleReport
+from sdlc.requirement_runner import (
+    CycleOutcome,
+    CycleReport,
+    ProjectScope,
+    ProjectScopeError,
+    check_project_scope,
+)
 from sdlc.results import ReadyDecisionResult, ReadyDecisionResultCode
 from sdlc.review_result import ReviewResult
 from sdlc.rework_brief import BriefCategory, item_ref
@@ -215,8 +221,16 @@ class ReadyDeciderWorkspace(RunnerWorkspace, ReadyDecisionWorkspace, Protocol):
     def read_project(self, project_id: str) -> ProjectRecord | None: ...
 
     def find_eligible_requirements_after(
-        self, routes: Sequence[tuple[str, str]], status: str, after_id: str | None
+        self,
+        routes: Sequence[tuple[str, str]],
+        status: str,
+        after_id: str | None,
+        project_id: str | None = None,
     ) -> list[RequirementRecord]: ...
+
+    def find_project_by_code(self, code: str) -> ProjectRecord | None: ...
+
+    def count_projects_with_code(self, code: str) -> int: ...
 
 
 # What a configured decider is given: the two loaders it reads on every cycle.
@@ -249,10 +263,16 @@ class ReadyDecider:
     """The runner's opt-in Ready step: at most one decision per call."""
 
     def __init__(
-        self, load_delegation: LoadDelegation, load_policies: LoadPolicies
+        self,
+        load_delegation: LoadDelegation,
+        load_policies: LoadPolicies,
+        scope: ProjectScope | None = None,
     ) -> None:
         self._load_delegation = load_delegation
         self._load_policies = load_policies
+        # Requirement-Worker-Project-Scope-v0.1: only this Project's Ready
+        # Requirements are read, and none other is ever decided.
+        self._scope = scope
         self._decided: dict[str, Basis] = {}
         # The last `fibery/id` of the page before the one being read; None is
         # the first page. Memory only: a restart reads from the first page.
@@ -286,7 +306,10 @@ class ReadyDecider:
             return None
         try:
             page = workspace.find_eligible_requirements_after(
-                READY_ROUTE, READY_STATUS.value, self._cursor
+                READY_ROUTE,
+                READY_STATUS.value,
+                self._cursor,
+                project_id=self._scope.project_id if self._scope is not None else None,
             )
         except FiberyError as error:
             return CycleReport(
@@ -315,6 +338,7 @@ class ReadyDecider:
             delegation,
             policies,
             reload=lambda: (self._load_delegation(), self._load_policies()),
+            scope=self._scope,
         )
         if report.outcome in SETTLED_OUTCOMES:
             self._decided[candidate.id] = basis
@@ -351,11 +375,27 @@ def decide(
     delegation: ReadyDelegation,
     policies: AutonomyPolicies,
     reload: Callable[[], tuple[ReadyDelegation, AutonomyPolicies]],
+    scope: ProjectScope | None = None,
 ) -> CycleReport:
-    """Decide one Ready candidate under one configuration snapshot."""
+    """Decide one Ready candidate under one configuration snapshot.
+
+    Under a `scope` the bound Project is read again first, and a candidate
+    outside it is never decided.
+    """
+    if scope is not None:
+        try:
+            check_project_scope(workspace, scope)
+        except ProjectScopeError as error:
+            return CycleReport(
+                CycleOutcome.SCOPE_INVALID,
+                f"{_label(candidate)}: the Project scope no longer holds; no "
+                "decision, nothing written, and the runner stops.",
+                candidate,
+                details=(str(error),),
+            )
     try:
         fresh = workspace.read_requirement(candidate.id)
-        changes = _differences(candidate, fresh)
+        changes = (*_differences(candidate, fresh), *_outside(fresh, scope))
         project = workspace.read_project(candidate.project_id) if not changes else None
     except FiberyError as error:
         return _failed(candidate, "could not be re-read", error)
@@ -864,6 +904,19 @@ def _differences(
         f"{getattr(current, field)!r}"
         for field, name in CANDIDATE_FIELDS
         if getattr(expected, field) != getattr(current, field)
+    )
+
+
+def _outside(
+    record: RequirementRecord | None, scope: ProjectScope | None
+) -> tuple[str, ...]:
+    if scope is None or record is None or record.project_id == scope.project_id:
+        return ()
+    return (
+        (
+            f"Project: {record.project_id!r} is outside the scope of Project "
+            f"{scope.project_code} ({scope.project_id})"
+        ),
     )
 
 

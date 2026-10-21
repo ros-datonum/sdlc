@@ -531,11 +531,28 @@ class RunnerWorkspace(DispatchWorkspace, Protocol):
         exactly these option names."""
 
     def find_eligible_requirements(
-        self, routes: Sequence[tuple[str, str]], status: str
+        self,
+        routes: Sequence[tuple[str, str]],
+        status: str,
+        project_id: str | None = None,
     ) -> list[RequirementRecord]:
-        """Requirements in every Project whose `(Type, State)` is one of
-        `routes` and whose Processing Status is `status`, in
-        `fibery/public-id` ascending order, bounded to one page."""
+        """Requirements whose `(Type, State)` is one of `routes` and whose
+        Processing Status is `status`, in every Project or, given
+        `project_id`, in that Project only, in `fibery/public-id` ascending
+        order, bounded to one page."""
 
     def set_processing_status(self, entity_id: str, status: str) -> None:
         """Set the Processing Status single-select by option name."""
+
+
+class ScopedRunnerWorkspace(RunnerWorkspace, Protocol):
+    """A runner bound to one Project also resolves and re-reads that Project."""
+
+    def find_project_by_code(self, code: str) -> ProjectRecord | None:
+        """The Project with this exact Code, or None."""
+
+    def count_projects_with_code(self, code: str) -> int:
+        """How many Projects carry this Code, bounded to two."""
+
+    def read_project(self, project_id: str) -> ProjectRecord | None:
+        """Read one Project entity by id."""
