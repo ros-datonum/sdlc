@@ -224,7 +224,7 @@ Text keys are exact after normalization. So a reworded issue counts as a new key
   4. If the page holds nothing left to decide, the cycle is idle. A full page moves the cursor past its last row, and a short (last) page moves it back to the first page.
 - **Discovery completeness:**
   - Each call reads exactly one page, so an idle worker never scans the whole workspace in one cycle.
-  - Every Ready candidate is reached without a restart. A candidate is decided within as many idle cycles as there are pages, plus one cycle per undecided candidate ahead of it, however many Requirements of other or non-authorized Projects were decided before it.
+  - Every Ready candidate is reached without a restart, unless a persistently failing candidate is ahead of it (§17). A candidate is decided within as many idle cycles as there are pages, plus one cycle per undecided candidate ahead of it, however many Requirements of other or non-authorized Projects were decided before it. A candidate whose decision ends `READY_FAILED` or `READY_WITHDRAWN` is not remembered, so it is retried after the poll interval.
   - `fibery/id` never changes, so a row leaving Ready does not shift any other row past the cursor. A candidate that appears behind the cursor is reached when the cursor wraps.
 - **Eligibility:**
   - Only `Ready + Succeeded` is a candidate: the runner's own Review cycle completed.
@@ -358,7 +358,7 @@ An uncertain transition is never silently retried by the worker that saw it. If 
 4. Whether the operational decision log (§10) and Fibery's own history are sufficient provenance, or a durable decision artifact is required. That would need a new authorization.
 5. Whether the worker runs under a dedicated Fibery identity, so that machine transitions are distinguishable in Fibery's history.
 6. Whether to run a live probe first on temporary state:
-   - the `Standard + Ready + Succeeded` page query: `q/order-by` on `fibery/id` and the `>` cursor, used nowhere else in this repository and not live-verified. That includes whether Fibery's `>` on `fibery/id` agrees with its order;
+   - the `Standard + Ready + Succeeded` page query at volume: `q/order-by` on `fibery/id` and the `>` cursor were read live once, read-only (below), but never over more than 100 Ready rows;
    - the reset automation on a machine-made `Ready -> Apply` / `Ready -> Process`;
    - the end-to-end decision path, including Process Result 0.6 and Review Result 0.7 serialization, which remain not live-verified.
 
@@ -384,5 +384,11 @@ An uncertain transition is never silently retried by the worker that saw it. If 
   - A Requirement that leaves `Ready + Succeeded` and returns without passing through this worker's own machine cycle (impossible in single-worker operation, but possible after manual recovery) keeps its remembered decision until the next restart or configuration change. That errs toward the human boundary.
   - The decider's own forgetting compares `fibery/id` values as strings, assuming Fibery orders them the same way. If it does not, the worst case is one extra re-decision or a remembered entry kept until restart. Neither makes a transition without every check.
   - The cursor is in memory: a restart begins at the first page again.
+- **A persistently failing candidate.** A Ready candidate whose re-read or evidence read fails every time (`READY_FAILED`) is chosen first on its page at every cycle. That holds back the candidates after it, on its page and on later pages, until the read succeeds, the Requirement leaves `Ready + Succeeded`, or delegation is disabled. Every such cycle is reported `READY_FAILED` with the Requirement named, and the runner waits the poll interval between them, so the stall is visible to the operator and never a tight loop. The machine routes behave the same way with a persistent `CANDIDATE_READ_FAILED`.
 - **Concurrency window.** Fibery has no compare-and-set, and the window in §11 remains.
-- **Not live-verified.** No live Fibery round trip, live model run, live worker run or new Project was made.
+- **Live evidence for the cursor: one read-only probe.** On 2026-10-21 the production `find_eligible_requirements_after` ran against the configured workspace with `fibery.schema/query` and `fibery.entity/query` only, nothing written:
+  - the exact Ready query (26 `Standard + Ready + Succeeded` rows) at the production page size, and at page sizes 1, 2, 3, 7 and 13 to force multi-page traversal;
+  - the same method over every Type and State route present, for `Succeeded` (31 rows) and `Not Processed` (7 rows), at page sizes 100, 7 and 3;
+  - a cursor at the last id, and cursors naming no entity at both ends of the range.
+  Every traversal returned exactly the independently read reference set, with no duplicate and no gap, ordered as Python orders the `fibery/id` strings. Pages ended on a short page, an empty page following an exactly full one. Not observed live: more than 100 Ready rows at the production page size, and rows changing between pages (fakes only).
+- **Not live-verified otherwise.** No live Fibery write, live model run, live worker run or new Project was made.

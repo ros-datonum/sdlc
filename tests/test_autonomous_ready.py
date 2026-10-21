@@ -2003,6 +2003,34 @@ def test_a_full_page_of_decided_candidates_never_spins(monkeypatch, tmp_path):
     assert len(sleeps) == 6
 
 
+def test_a_candidate_that_arrives_behind_the_cursor_is_reached_after_the_wrap(
+    monkeypatch, tmp_path
+):
+    """The last page sends the cursor back to the first, so a candidate that
+    becomes Ready on an already-swept page is not left behind it."""
+    operator, ws, requirement = ready_at(monkeypatch, tmp_path, PASS_REVIEW)
+    with_projects(monkeypatch, ws, OTHER_PROJECT)
+    crowd(ws, ELIGIBLE_QUERY_LIMIT + 50, "p-2", "a0")
+    late = "a0-0001"
+    for entity in (late, requirement.id):
+        ws.inner.requirements[entity] = dataclasses.replace(
+            ws.inner.requirements[entity], state="Draft"
+        )
+    decider = decider_for(operator)
+    swept = ELIGIBLE_QUERY_LIMIT + 49
+    reports, _ = drive(ws, NO_WORKERS, swept + 4, ready_decider=decider)
+    assert len(ready_decisions(reports)) == swept
+    assert outcomes(reports)[-2:] == [CycleOutcome.IDLE] * 2
+
+    # Back at Ready + Succeeded on the first page, behind every later page.
+    ws.inner.requirements[late] = dataclasses.replace(
+        ws.inner.requirements[late], state="Ready"
+    )
+    reports, _ = drive(ws, NO_WORKERS, 4, ready_decider=decider)
+
+    assert ready_decisions(reports) == [late]
+
+
 def test_raw_processing_is_unaffected(monkeypatch, tmp_path):
     from processor_fake import FakeModelRuntime, build_workspace, model_output
 
