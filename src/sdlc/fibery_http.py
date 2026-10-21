@@ -1540,28 +1540,36 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
         Cost: one query per poll, at most ELIGIBLE_QUERY_LIMIT rows.
         """
         schema = self._processing_status_schema()
-        params: dict[str, Any] = {"$status": status}
-        clauses: list[Any] = []
-        for number, (type_name, state) in enumerate(routes):
-            params[f"$type{number}"] = type_name
-            params[f"$state{number}"] = state
-            clauses.append(
-                [
-                    "q/and",
-                    ["=", [schema.type_field, ENUM_NAME_FIELD], f"$type{number}"],
-                    ["=", [WORKFLOW_STATE_FIELD, ENUM_NAME_FIELD], f"$state{number}"],
-                ]
-            )
+        where, params = _eligible_where(schema, routes, status)
         rows = self._query_requirements(
             schema,
-            [
-                "q/and",
-                ["=", [schema.processing_status_field, ENUM_NAME_FIELD], "$status"],
-                ["q/or", *clauses],
-            ],
+            where,
             params,
             ELIGIBLE_QUERY_LIMIT,
             order_by=[[[PUBLIC_ID_FIELD], "q/asc"]],
+        )
+        return [self._to_requirement(schema, row) for row in rows]
+
+    def find_eligible_requirements_after(
+        self, routes: Sequence[tuple[str, str]], status: str, after_id: str | None
+    ) -> list[RequirementRecord]:
+        """One page of the same Requirements, in `fibery/id` order, after `after_id`.
+
+        Fibery's documented cursor pagination: `q/order-by` `fibery/id`
+        ascending and, past the first page, `[">", ["fibery/id"], "$after"]`.
+        Cost: one query, at most ELIGIBLE_QUERY_LIMIT rows.
+        """
+        schema = self._processing_status_schema()
+        where, params = _eligible_where(schema, routes, status)
+        if after_id is not None:
+            where = [*where, [">", [ID_FIELD], "$after"]]
+            params["$after"] = after_id
+        rows = self._query_requirements(
+            schema,
+            where,
+            params,
+            ELIGIBLE_QUERY_LIMIT,
+            order_by=[[[ID_FIELD], "q/asc"]],
         )
         return [self._to_requirement(schema, row) for row in rows]
 
@@ -1588,6 +1596,30 @@ class FiberyRawProcessorWorkspace(FiberyRequirementWorkspace):
                 "Field."
             )
         return field, database
+
+
+def _eligible_where(
+    schema: _RequirementSchema, routes: Sequence[tuple[str, str]], status: str
+) -> tuple[list[Any], dict[str, Any]]:
+    """The eligible-work filter: this Processing Status, at one of `routes`."""
+    params: dict[str, Any] = {"$status": status}
+    clauses: list[Any] = []
+    for number, (type_name, state) in enumerate(routes):
+        params[f"$type{number}"] = type_name
+        params[f"$state{number}"] = state
+        clauses.append(
+            [
+                "q/and",
+                ["=", [schema.type_field, ENUM_NAME_FIELD], f"$type{number}"],
+                ["=", [WORKFLOW_STATE_FIELD, ENUM_NAME_FIELD], f"$state{number}"],
+            ]
+        )
+    where = [
+        "q/and",
+        ["=", [schema.processing_status_field, ENUM_NAME_FIELD], "$status"],
+        ["q/or", *clauses],
+    ]
+    return where, params
 
 
 def _single_select_field(

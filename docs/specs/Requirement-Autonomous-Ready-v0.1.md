@@ -219,8 +219,13 @@ Text keys are exact after normalization. So a reworded issue counts as a new key
   - The Ready step runs inside the same workspace lock and sequential loop: no second poller, service or lock.
 - **Each Ready step:**
   1. Reads both tables afresh. A disabled table means no decision and an idle cycle. An unreadable or invalid one is `READY_FAILED`, a waiting outcome with no fallback.
-  2. Runs one query for `Standard + Ready + Succeeded`, one page bounded like the machine query.
-  3. Decides the lowest public id not already decided under the same configuration identity, after re-reading it.
+  2. Runs one query for `Standard + Ready + Succeeded`: one page, bounded like the machine query (`ELIGIBLE_QUERY_LIMIT`), ordered by `fibery/id` and starting after the decider's in-memory cursor. This is Fibery's documented cursor pagination (`q/order-by` `fibery/id` ascending, `[">", ["fibery/id"], "$after"]`). The machine query is unchanged.
+  3. Decides the lowest public id on that page not already decided under the same configuration identity, after re-reading it.
+  4. If the page holds nothing left to decide, the cycle is idle. A full page moves the cursor past its last row, and a short (last) page moves it back to the first page.
+- **Discovery completeness:**
+  - Each call reads exactly one page, so an idle worker never scans the whole workspace in one cycle.
+  - Every Ready candidate is reached without a restart. A candidate is decided within as many idle cycles as there are pages, plus one cycle per undecided candidate ahead of it, however many Requirements of other or non-authorized Projects were decided before it.
+  - `fibery/id` never changes, so a row leaving Ready does not shift any other row past the cursor. A candidate that appears behind the cursor is reached when the cursor wraps.
 - **Eligibility:**
   - Only `Ready + Succeeded` is a candidate: the runner's own Review cycle completed.
   - `Ready + Not Processed` (a Review run outside the runner), `Processing` and `Failed` are not candidates and stay with a human.
@@ -232,7 +237,7 @@ Text keys are exact after normalization. So a reworded issue counts as a new key
   - The decider remembers, in memory only, the entities it decided (`READY_DECIDED`, `READY_ESCALATED`, `READY_UNCERTAIN`) under the current configuration identity. A cycle with nothing new to decide is idle and waits the poll interval.
   - The memory is dropped for an entity when:
     - the runner claims a machine cycle for it (only such a cycle returns it to `Ready + Succeeded`);
-    - the Ready query no longer returns it;
+    - the Ready page covering its `fibery/id` no longer returns it;
     - the configuration identity changes (Ready authorizations and autonomy policy bindings).
   - It is no lifecycle state: a restart starts empty and decides every Ready Requirement once more from Fibery, under the same durable history and budget.
 - **Cycle outcomes:**
@@ -277,19 +282,26 @@ A worker start re-decides each Ready Requirement once, including those of non-au
 **Order of checks.** Immediately before its single State write, a decision re-reads:
 1. the Requirement;
 2. all the evidence, through the existing approval or rework function;
-3. the configuration, through the guard.
+3. the Requirement's Project, and then the configuration, through the guard.
+
+**Final binding.** The guard compares the freshly read Requirement with the one decided on: the same Requirement ID, Type and State, the same Project entity, and Processing Status still `Succeeded`. It then re-reads that Project and requires the same Project Code, and requires the Ready authorization for that Code to be the decided binding. An automatic transition is written only for the same Requirement, in the same authorized Project, in an eligible Processing Status, on the same evidence. An authorization is never carried over to another Project, or to the same Project under another Code.
 
 **On conflict it refuses:**
 - a human moved `Ready -> Apply` or `Ready -> Process`;
 - another worker or command changed the State;
 - the Root, a child, the Process or Review evidence, a dependency or a cited source changed;
-- the WI-5 policy or the Ready authorization changed.
+- the WI-5 policy or the Ready authorization changed;
+- the Requirement moved to another Project, or its Project's Code changed;
+- its Processing Status left `Succeeded` (`Processing`, `Failed` or `Not Processed`);
+- its Project can no longer be read, or no longer exists.
+
+A Requirement withdrawn this way is decided afresh at a later cycle, under the Project and authorization it then has, if it is still a candidate.
 
 Each refusal is `WITHDRAWN` or `TRANSITION_REFUSED`. It writes nothing and never overwrites a human's later decision. A human's `Ready -> Apply` made first is reported `REQUIREMENT_ALREADY_APPROVED` and left alone.
 
-New code `DECISION_BASIS_CHANGED`: the guard found that the evidence identity or the configuration moved between the decision and its write.
+New code `DECISION_BASIS_CHANGED`: the guard found that the evidence identity, the Requirement's Project or Processing Status, the Project's Code, or the configuration moved between the decision and its write.
 
-**Remaining limit.** Fibery has no compare-and-set. Between the last read and the write there is a window of a few milliseconds, the same one the admin `approve` and `rework` commands have always had. A human change landing exactly inside it can be overwritten. No distributed lock is introduced. The workspace runner guard still excludes a second cooperating worker on the same host; multi-host operation remains unsupported.
+**Remaining limit.** Fibery has no compare-and-set. Between the guard's reads (the Requirement with its Project and Processing Status, the Project and the configuration) and the write there is a window of a few milliseconds, the same one the admin `approve` and `rework` commands have always had. A human change landing exactly inside it can be overwritten. No distributed lock is introduced. The workspace runner guard still excludes a second cooperating worker on the same host; multi-host operation remains unsupported.
 
 ## 12. Policy lifetime
 
@@ -334,7 +346,7 @@ An uncertain transition is never silently retried by the worker that saw it. If 
 
 | Code | Where | Meaning |
 |---|---|---|
-| `DECISION_BASIS_CHANGED` (new) | Ready decision, delegated only | The guard found the evidence or configuration moved before the write. |
+| `DECISION_BASIS_CHANGED` (new) | Ready decision, delegated only | The guard found the evidence, the Requirement's Project or Processing Status, the Project's Code, or the configuration moved before the write. |
 | `READY_DECIDED`, `READY_ESCALATED`, `READY_WITHDRAWN`, `READY_UNCERTAIN`, `READY_FAILED` (new) | Runner cycle | §9. |
 | Every existing Ready refusal | Ready decision | Unchanged, and reported as the transition code. |
 
@@ -346,7 +358,7 @@ An uncertain transition is never silently retried by the worker that saw it. If 
 4. Whether the operational decision log (§10) and Fibery's own history are sufficient provenance, or a durable decision artifact is required. That would need a new authorization.
 5. Whether the worker runs under a dedicated Fibery identity, so that machine transitions are distinguishable in Fibery's history.
 6. Whether to run a live probe first on temporary state:
-   - the `Standard + Ready + Succeeded` query;
+   - the `Standard + Ready + Succeeded` page query: `q/order-by` on `fibery/id` and the `>` cursor, used nowhere else in this repository and not live-verified. That includes whether Fibery's `>` on `fibery/id` agrees with its order;
    - the reset automation on a machine-made `Ready -> Apply` / `Ready -> Process`;
    - the end-to-end decision path, including Process Result 0.6 and Review Result 0.7 serialization, which remain not live-verified.
 
@@ -370,6 +382,7 @@ An uncertain transition is never silently retried by the worker that saw it. If 
 - **Human rounds count.** They consume the budget, because the history does not durably record who started a round.
 - **Remembered decisions.**
   - A Requirement that leaves `Ready + Succeeded` and returns without passing through this worker's own machine cycle (impossible in single-worker operation, but possible after manual recovery) keeps its remembered decision until the next restart or configuration change. That errs toward the human boundary.
-  - Only the first page of the Ready query is considered. Requirements beyond it wait for a human.
+  - The decider's own forgetting compares `fibery/id` values as strings, assuming Fibery orders them the same way. If it does not, the worst case is one extra re-decision or a remembered entry kept until restart. Neither makes a transition without every check.
+  - The cursor is in memory: a restart begins at the first page again.
 - **Concurrency window.** Fibery has no compare-and-set, and the window in §11 remains.
 - **Not live-verified.** No live Fibery round trip, live model run, live worker run or new Project was made.

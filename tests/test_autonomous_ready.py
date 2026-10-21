@@ -31,7 +31,8 @@ from sdlc.autonomous_ready import (
     Transition,
 )
 from sdlc.autonomy_policy import load_autonomy_policies
-from sdlc.fibery_workspace import FiberyError
+from sdlc.fibery_http import ELIGIBLE_QUERY_LIMIT
+from sdlc.fibery_workspace import FiberyError, ProjectRecord, RequirementRecord
 from sdlc.model_runtime_config import load_model_runtime_config
 from sdlc.ready_decision import (
     approve_standard_requirement,
@@ -68,6 +69,7 @@ from test_requirement_runner import (
     StatusWorkspace,
     drive,
     only_eligible,
+    outcomes,
 )
 from test_worker_policy_lifetime import (
     CONFIRMED_D1,
@@ -283,7 +285,7 @@ def decide_once(monkeypatch, operator, ws, models=None, at_poll=None):
 
     `at_poll[n]` runs before this worker's own n-th eligible-work query.
     """
-    base = ws.inner.calls.count("find_eligible_requirements")
+    base = ws.polls
     code, reports, errors = run_worker(
         monkeypatch,
         operator,
@@ -1478,6 +1480,190 @@ def test_a_changed_basis_withdraws_the_decision_before_its_write(
     assert state_of(ws, requirement) == "Ready"
 
 
+# -- the final binding: same Requirement, same Project, same eligible status -----------
+
+OTHER_PROJECT = ProjectRecord(id="p-2", name="Other", code="OTHER", state="Planned")
+THIRD_PROJECT = ProjectRecord(id="p-3", name="Third", code="THIRD", state="Planned")
+DECIDED = {
+    "approve": (
+        PASS_REVIEW,
+        "approve_standard_requirement",
+        ReadyDecisionKind.AUTO_APPROVE,
+        HumanReason.APPROVAL_NOT_DELEGATED,
+    ),
+    "rework": (
+        NEEDS_WORK_REVIEW,
+        "rework_standard_requirement",
+        ReadyDecisionKind.AUTO_REWORK,
+        HumanReason.REWORK_NOT_DELEGATED,
+    ),
+}
+
+
+def with_projects(monkeypatch, ws, *projects):
+    """The fake knows these Projects as well as its own; returns the live map."""
+    known = {project.id: project for project in (ws.inner.project, *projects)}
+
+    def read_project(project_id):
+        ws.inner._record("read_project")
+        return known.get(project_id)
+
+    monkeypatch.setattr(ws.inner, "read_project", read_project)
+    return known
+
+
+def moved_to(ws, requirement, project_id):
+    """Someone moves the Requirement to another Project in Fibery."""
+
+    def move():
+        current = ws.inner.requirements[requirement.id]
+        ws.inner.requirements[requirement.id] = dataclasses.replace(
+            current, project_id=project_id
+        )
+
+    return move
+
+
+def withdrawn_before_the_write(monkeypatch, operator, ws, decided, change):
+    """`change` lands just as the decided transition starts: nothing is written."""
+    _, function, kind, _ = DECIDED[decided]
+    before = len(ws.inner.mutations)
+    monkeypatch.setattr(
+        autonomous_ready,
+        function,
+        first_then(change, getattr(autonomous_ready, function)),
+    )
+
+    found, reports, _ = decide_once(monkeypatch, operator, ws)
+
+    [withdrawn] = found
+    assert withdrawn.decision is kind
+    assert withdrawn.transition is Transition.WITHDRAWN
+    assert withdrawn.transition_code == "DECISION_BASIS_CHANGED"
+    assert reports[-1].outcome is CycleOutcome.READY_WITHDRAWN
+    assert state_writes_since(ws, before) == []
+    monkeypatch.setattr(autonomous_ready, function, getattr(autonomous_ready, function))
+    return withdrawn
+
+
+@pytest.mark.parametrize("decided", ["approve", "rework"])
+def test_a_move_to_an_unauthorized_project_refuses_the_transition(
+    monkeypatch, tmp_path, decided
+):
+    review, function, _, _ = DECIDED[decided]
+    operator, ws, requirement = ready_at(monkeypatch, tmp_path, review)
+    with_projects(monkeypatch, ws, OTHER_PROJECT)
+    real = getattr(autonomous_ready, function)
+
+    withdrawn = withdrawn_before_the_write(
+        monkeypatch, operator, ws, decided, moved_to(ws, requirement, "p-2")
+    )
+
+    assert withdrawn.project_code == "SDLC"
+    assert state_of(ws, requirement) == "Ready"
+    # Decided afresh, in the Project it is in now: a human's.
+    monkeypatch.setattr(autonomous_ready, function, real)
+    again, _ = only_decision(monkeypatch, operator, ws)
+    assert again.project_code == "OTHER"
+    assert again.decision is ReadyDecisionKind.HUMAN_REQUIRED
+    assert again.reasons[0] == HumanReason.NOT_DELEGATED.value
+    assert state_of(ws, requirement) == "Ready"
+
+
+@pytest.mark.parametrize("decided", ["approve", "rework"])
+@pytest.mark.parametrize("change", ["moved", "code-changed"])
+def test_a_project_under_another_authorization_never_reuses_the_first(
+    monkeypatch, tmp_path, decided, change
+):
+    """Both Projects are delegated, but differently: the decision made under
+    the first Project's authorization is never written for the second."""
+    review, function, _, not_delegated = DECIDED[decided]
+    ready = ready_table(
+        authorization(),
+        authorization(
+            project="OTHER",
+            authorization_id="OTHER-READY-1",
+            auto_approve=decided != "approve",
+            auto_rework=decided != "rework",
+        ),
+    )
+    operator, ws, requirement = ready_at(monkeypatch, tmp_path, review, ready=ready)
+    known = with_projects(monkeypatch, ws, OTHER_PROJECT)
+    real = getattr(autonomous_ready, function)
+
+    def recode():
+        known["p-1"] = dataclasses.replace(known["p-1"], code="OTHER")
+
+    changes = {"moved": moved_to(ws, requirement, "p-2"), "code-changed": recode}
+    withdrawn = withdrawn_before_the_write(
+        monkeypatch, operator, ws, decided, changes[change]
+    )
+
+    assert withdrawn.authorization.authorization_id == "SDLC-READY-1"
+    monkeypatch.setattr(autonomous_ready, function, real)
+    again, _ = only_decision(monkeypatch, operator, ws)
+    assert again.authorization.authorization_id == "OTHER-READY-1"
+    assert again.decision is ReadyDecisionKind.HUMAN_REQUIRED
+    assert again.reasons[0] == not_delegated.value
+    assert state_of(ws, requirement) == "Ready"
+
+
+@pytest.mark.parametrize("decided", ["approve", "rework"])
+def test_a_move_to_another_project_with_the_same_code_refuses_the_transition(
+    monkeypatch, tmp_path, decided
+):
+    """Fibery enforces no Code uniqueness (API constraint 14): the decided
+    Project is bound by entity as well as by Code."""
+    review, _, _, _ = DECIDED[decided]
+    operator, ws, requirement = ready_at(monkeypatch, tmp_path, review)
+    twin = ProjectRecord(id="p-4", name="Twin", code="SDLC", state="Planned")
+    with_projects(monkeypatch, ws, twin)
+
+    withdrawn_before_the_write(
+        monkeypatch, operator, ws, decided, moved_to(ws, requirement, "p-4")
+    )
+
+    assert state_of(ws, requirement) == "Ready"
+
+
+@pytest.mark.parametrize("decided", ["approve", "rework"])
+@pytest.mark.parametrize("status", ["Processing", "Failed", "Not Processed"])
+def test_a_processing_status_change_refuses_the_transition(
+    monkeypatch, tmp_path, decided, status
+):
+    review, _, _, _ = DECIDED[decided]
+    operator, ws, requirement = ready_at(monkeypatch, tmp_path, review)
+
+    def set_status():
+        ws.statuses[requirement.id] = status
+
+    withdrawn_before_the_write(monkeypatch, operator, ws, decided, set_status)
+
+    assert state_of(ws, requirement) == "Ready"
+    assert ws.status_of(requirement.id) == status
+
+
+@pytest.mark.parametrize("decided", ["approve", "rework"])
+@pytest.mark.parametrize("failure", ["removed", "unreadable"])
+def test_a_project_that_cannot_be_established_refuses_the_transition(
+    monkeypatch, tmp_path, decided, failure
+):
+    review, _, _, _ = DECIDED[decided]
+    operator, ws, requirement = ready_at(monkeypatch, tmp_path, review)
+    known = with_projects(monkeypatch, ws)
+
+    def unreadable(project_id):
+        raise FiberyError("Fibery is unavailable")
+
+    changes = {
+        "removed": lambda: known.pop("p-1"),
+        "unreadable": lambda: monkeypatch.setattr(ws.inner, "read_project", unreadable),
+    }
+    withdrawn_before_the_write(monkeypatch, operator, ws, decided, changes[failure])
+
+    assert state_of(ws, requirement) == "Ready"
+
+
 # -- recovery: failed, lost and unconfirmed writes ------------------------------------------
 
 
@@ -1697,6 +1883,124 @@ def test_a_ready_row_the_query_should_not_return_is_never_decided(
     assert [r.outcome for r in reports] == [CycleOutcome.IDLE]
     assert ws.inner.mutations[before:] == []
     assert state_of(ws, requirement) == "Ready"
+
+
+# -- discovery: every Ready candidate is reached, one bounded page per call ------------
+
+DELEGATED_PROJECTS = ready_table(
+    authorization(), authorization(project="THIRD", authorization_id="THIRD-READY-1")
+)
+
+
+def crowd(ws, count, project_id, prefix):
+    """`count` Ready + Succeeded Standard Requirements ahead of the fixture's in
+    `fibery/id` order, none with evidence: each is decided once, to a human."""
+    for number in range(1, count + 1):
+        entity = f"{prefix}-{number:04d}"
+        ws.inner.requirements[entity] = RequirementRecord(
+            id=entity,
+            public_id=str(5000 + len(ws.inner.requirements)),
+            requirement_id=None,
+            title=None,
+            type_name="Standard",
+            state="Ready",
+            revision=1,
+            project_id=project_id,
+            source_fingerprint=None,
+        )
+
+
+def ready_decisions(reports):
+    return [r.requirement.id for r in reports if r.ready_decision is not None]
+
+
+CROWDS = {
+    "unauthorized-first-page": (("p-2", 100),),
+    "more-authorized-than-a-page": (("p-1", 150),),
+    "several-projects": (("p-2", 70), ("p-1", 70), ("p-3", 70)),
+}
+
+
+@pytest.mark.parametrize("crowd_name", list(CROWDS))
+def test_a_candidate_beyond_the_first_page_is_reached(
+    monkeypatch, tmp_path, crowd_name
+):
+    operator, ws, requirement = ready_at(
+        monkeypatch, tmp_path, PASS_REVIEW, ready=DELEGATED_PROJECTS
+    )
+    with_projects(monkeypatch, ws, OTHER_PROJECT, THIRD_PROJECT)
+    for index, (project_id, count) in enumerate(CROWDS[crowd_name]):
+        crowd(ws, count, project_id, f"a{index}")
+    ahead = sum(count for _, count in CROWDS[crowd_name])
+    assert ahead >= ELIGIBLE_QUERY_LIMIT
+    # Pages wholly ahead of the fixture: each costs one idle cycle once decided.
+    passed = ahead // ELIGIBLE_QUERY_LIMIT
+    decider = decider_for(operator)
+    workers = CompletingWorkers(ws)
+    queries = ws.inner.calls.count("find_eligible_requirements_after")
+
+    # Every Ready row is decided exactly once, the fixture's approval is
+    # applied by the ordinary Apply route, and nothing is left to decide.
+    cycles = ahead + 1 + passed + 1
+    reports, sleeps = drive(ws, workers.bound(), cycles, ready_decider=decider)
+
+    decided = ready_decisions(reports)
+    assert len(decided) == len(set(decided)) == ahead + 1
+    [approved] = [
+        record
+        for record in (r.ready_decision for r in reports)
+        if record is not None and record.entity_id == requirement.id
+    ]
+    assert approved.decision is ReadyDecisionKind.AUTO_APPROVE
+    assert approved.transition is Transition.CONFIRMED
+    others = [r.ready_decision for r in reports if r.ready_decision is not None]
+    assert sum(r.decision is ReadyDecisionKind.HUMAN_REQUIRED for r in others) == ahead
+    assert [call[0] for call in workers.calls] == [Worker.STANDARD_APPLY]
+    assert len(sleeps) == passed
+    # One bounded Ready query per idle-of-machine-work cycle, never a scan.
+    assert ws.inner.calls.count("find_eligible_requirements_after") - queries == (
+        cycles - 1
+    )
+    assert state_of(ws, requirement) == "Applied"
+
+
+def test_a_candidate_that_arrives_after_a_full_sweep_is_reached(monkeypatch, tmp_path):
+    operator, ws, requirement = ready_at(monkeypatch, tmp_path, PASS_REVIEW)
+    with_projects(monkeypatch, ws, OTHER_PROJECT)
+    crowd(ws, ELIGIBLE_QUERY_LIMIT, "p-2", "a0")
+    ws.inner.requirements[requirement.id] = dataclasses.replace(
+        ws.inner.requirements[requirement.id], state="Draft"
+    )
+    decider = decider_for(operator)
+    reports, _ = drive(ws, NO_WORKERS, ELIGIBLE_QUERY_LIMIT + 4, ready_decider=decider)
+    assert len(ready_decisions(reports)) == ELIGIBLE_QUERY_LIMIT
+    assert outcomes(reports)[-4:] == [CycleOutcome.IDLE] * 4
+
+    # Back at Ready + Succeeded, beyond the remembered first page.
+    ws.inner.requirements[requirement.id] = dataclasses.replace(
+        ws.inner.requirements[requirement.id], state="Ready"
+    )
+    workers = CompletingWorkers(ws)
+    reports, _ = drive(ws, workers.bound(), 4, ready_decider=decider)
+
+    [approved] = [r.ready_decision for r in reports if r.ready_decision is not None]
+    assert approved.entity_id == requirement.id
+    assert approved.decision is ReadyDecisionKind.AUTO_APPROVE
+    assert state_of(ws, requirement) == "Applied"
+
+
+def test_a_full_page_of_decided_candidates_never_spins(monkeypatch, tmp_path):
+    operator, ws, _requirement = exhausted(monkeypatch, tmp_path)
+    with_projects(monkeypatch, ws, OTHER_PROJECT)
+    crowd(ws, ELIGIBLE_QUERY_LIMIT, "p-2", "a0")
+    decider = decider_for(operator)
+    first, _ = drive(ws, NO_WORKERS, ELIGIBLE_QUERY_LIMIT + 2, ready_decider=decider)
+    assert len(ready_decisions(first)) == ELIGIBLE_QUERY_LIMIT + 1
+
+    reports, sleeps = drive(ws, NO_WORKERS, 6, ready_decider=decider)
+
+    assert outcomes(reports) == [CycleOutcome.IDLE] * 6
+    assert len(sleeps) == 6
 
 
 def test_raw_processing_is_unaffected(monkeypatch, tmp_path):

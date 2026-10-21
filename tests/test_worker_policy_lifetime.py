@@ -55,6 +55,7 @@ from test_cli_worker import ENVIRONMENT
 from test_requirement_runner import (
     FAILED_STATUS,
     NOT_PROCESSED,
+    POLL,
     SUCCEEDED,
     StatusWorkspace,
     only_eligible,
@@ -200,7 +201,7 @@ def run_worker(monkeypatch, operator, ws, models, at_poll=None, loads=None):
 
         monkeypatch.setattr(cli, "load_autonomy_policies", counted)
     for poll, action in (at_poll or {}).items():
-        ws.on_call[("find_eligible_requirements", poll)] = action
+        ws.on_call[(POLL, poll)] = action
     arguments = cli.build_parser().parse_args(["worker", "run"])
     out, error_out = io.StringIO(), io.StringIO()
     code = arguments.handler(arguments, out, error_out)

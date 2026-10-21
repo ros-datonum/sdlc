@@ -107,7 +107,8 @@ class StatusWorkspace:
 
     `on_call[(method, n)]` runs just before the n-th call of `method`, which
     is how a test interleaves a concurrent change or a Fibery failure at an
-    exact point of a cycle. `poll_rows` replaces what the eligible-work query
+    exact point of a cycle; `on_call[(POLL, n)]` before the n-th eligible-work
+    query of either kind, the runner's or the Ready decider's. `poll_rows` replaces what the eligible-work query
     returns, to model a query that disagrees with current Fibery state.
     """
 
@@ -129,6 +130,7 @@ class StatusWorkspace:
         self.queries = []
         self.poll_rows = None
         self.on_call = {}
+        self.polls = 0
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
@@ -141,6 +143,12 @@ class StatusWorkspace:
 
     def _before(self, method):
         action = self.on_call.pop((method, self.inner.calls.count(method) + 1), None)
+        if action is not None:
+            action()
+
+    def _before_poll(self):
+        self.polls += 1
+        action = self.on_call.pop((POLL, self.polls), None)
         if action is not None:
             action()
 
@@ -170,6 +178,7 @@ class StatusWorkspace:
             raise FiberyError(f"Processing Status has the options {self.options!r}")
 
     def find_eligible_requirements(self, routes, status):
+        self._before_poll()
         self._before("find_eligible_requirements")
         self.inner._record("find_eligible_requirements")
         self.queries.append((tuple(routes), status))
@@ -186,6 +195,27 @@ class StatusWorkspace:
             key=lambda r: int(r.public_id),
         )
 
+    def find_eligible_requirements_after(self, routes, status, after_id):
+        """The Ready decider's query: one live-sized page, `fibery/id` order."""
+        self._before_poll()
+        self._before("find_eligible_requirements_after")
+        self.inner._record("find_eligible_requirements_after")
+        self.queries.append((tuple(routes), status))
+        if self.poll_rows is not None:
+            rows = list(self.poll_rows)
+        else:
+            rows = [
+                r
+                for r in map(self.with_status, self.inner.requirements.values())
+                if (r.type_name, r.state) in set(routes)
+                and r.processing_status == status
+            ]
+        ordered = sorted(
+            (r for r in rows if after_id is None or r.id > after_id),
+            key=lambda r: r.id,
+        )
+        return ordered[:ELIGIBLE_QUERY_LIMIT]
+
     def set_processing_status(self, entity_id, status):
         self._before("set_processing_status")
         self.inner._record("set_processing_status")
@@ -193,6 +223,10 @@ class StatusWorkspace:
             raise FiberyError(f"Processing Status has no option {status!r}")
         self.inner.mutations.append(f"set_processing_status {entity_id} {status}")
         self.statuses[entity_id] = status
+
+
+#: The `on_call` key of an eligible-work query, whichever method made it.
+POLL = "poll"
 
 
 def record(entity_id, public_id, type_name, state, **changes):
@@ -1286,6 +1320,28 @@ def test_http_the_eligible_query_filters_routes_and_status_in_public_id_order():
     assert pairs == RESET_TARGETS
     assert len(routes_clause) == 1 + len(RESET_TARGETS)
     assert [r.processing_status for r in records] == [NOT_PROCESSED]
+
+
+@pytest.mark.parametrize("after_id", [None, "r0"])
+def test_http_the_ready_page_query_pages_by_a_fibery_id_cursor(after_id):
+    """Fibery's documented cursor pagination over the same eligible filter."""
+    workspace, opener = http_workspace([ok([]), ok([requirement_row()])])
+    routes = (("Standard", "Ready"),)
+
+    workspace.find_eligible_requirements(routes, SUCCEEDED)
+    records = workspace.find_eligible_requirements_after(routes, SUCCEEDED, after_id)
+
+    machine, paged = sent(opener, 1)["args"], sent(opener, 2)["args"]
+    query, params = paged["query"], paged["params"]
+    assert query["q/from"] == "SDLC/Requirement"
+    assert query["q/order-by"] == [[["fibery/id"], "q/asc"]]
+    assert query["q/limit"] == ELIGIBLE_QUERY_LIMIT
+    assert query["q/select"] == machine["query"]["q/select"]
+    cursor = [[">", ["fibery/id"], "$after"]] if after_id else []
+    assert query["q/where"] == [*machine["query"]["q/where"], *cursor]
+    expected = {**machine["params"], **({"$after": after_id} if after_id else {})}
+    assert params == expected
+    assert [r.id for r in records] == ["r1"]
 
 
 def test_http_a_status_write_resolves_the_option_entity_then_updates_the_field():

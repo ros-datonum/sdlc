@@ -21,20 +21,23 @@ its workspace lock. The decider keeps, in memory, which Ready Requirements it
 already decided under the current configuration, so a Requirement left at
 Ready is not decided again in a loop. That memory is no lifecycle state: an
 entry is dropped when the runner claims a machine cycle for the Requirement
-(only such a cycle returns it to `Ready + Succeeded`), when it is no longer
-returned by the Ready query, or when the configuration changes; a restarted
-runner decides every Ready Requirement once more from Fibery alone.
+(only such a cycle returns it to `Ready + Succeeded`), when the Ready page
+covering it no longer returns it, or when the configuration changes; a
+restarted runner decides every Ready Requirement once more from Fibery alone.
+Candidates are read one bounded `fibery/id` page per call, so every one is
+reached however many were decided ahead of it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol
 
 from sdlc.autonomy_policy import AutonomyPolicies, PolicyBinding
 from sdlc.config import ConfigurationError
+from sdlc.fibery_http import ELIGIBLE_QUERY_LIMIT
 from sdlc.fibery_workspace import (
     FiberyError,
     ProjectRecord,
@@ -211,6 +214,10 @@ class ReadyDeciderWorkspace(RunnerWorkspace, ReadyDecisionWorkspace, Protocol):
 
     def read_project(self, project_id: str) -> ProjectRecord | None: ...
 
+    def find_eligible_requirements_after(
+        self, routes: Sequence[tuple[str, str]], status: str, after_id: str | None
+    ) -> list[RequirementRecord]: ...
+
 
 # What a configured decider is given: the two loaders it reads on every cycle.
 LoadDelegation = Callable[[], ReadyDelegation]
@@ -247,13 +254,20 @@ class ReadyDecider:
         self._load_delegation = load_delegation
         self._load_policies = load_policies
         self._decided: dict[str, Basis] = {}
+        # The last `fibery/id` of the page before the one being read; None is
+        # the first page. Memory only: a restart reads from the first page.
+        self._cursor: str | None = None
 
     def __call__(self, workspace: ReadyDeciderWorkspace) -> CycleReport | None:
-        """Decide the lowest undecided Ready candidate, or None when there is none.
+        """Decide one undecided Ready candidate of the current page, or None.
 
         The configuration is read afresh first: disabled delegation returns
-        None, so the cycle is idle and Ready is the human boundary. Cost: one
-        configuration read and one bounded Fibery query per idle cycle.
+        None, so the cycle is idle and Ready is the human boundary. Candidates
+        are read one `fibery/id`-ordered page at a time: a page with nothing
+        left to decide moves the cursor to the next page, and the last page
+        back to the first, so every Ready candidate is reached within as many
+        idle cycles as there are pages, however many were decided before it.
+        Cost: one configuration read and one bounded Fibery query per call.
         """
         try:
             delegation = self._load_delegation()
@@ -268,10 +282,11 @@ class ReadyDecider:
             )
         if not delegation.is_enabled:
             self._decided.clear()
+            self._cursor = None
             return None
         try:
-            polled = workspace.find_eligible_requirements(
-                READY_ROUTE, READY_STATUS.value
+            page = workspace.find_eligible_requirements_after(
+                READY_ROUTE, READY_STATUS.value, self._cursor
             )
         except FiberyError as error:
             return CycleReport(
@@ -280,22 +295,19 @@ class ReadyDecider:
                 details=(str(error),),
             )
         basis = _basis(delegation, policies)
-        present = {record.id for record in polled}
-        self._decided = {
-            entity: settled
-            for entity, settled in self._decided.items()
-            if entity in present
-        }
+        is_last_page = len(page) < ELIGIBLE_QUERY_LIMIT
+        self._forget_absent(page, is_last_page)
         candidate = min(
             (
                 record
-                for record in polled
+                for record in page
                 if self._decided.get(record.id) != basis and _is_candidate(record)
             ),
             key=_public_id_order,
             default=None,
         )
         if candidate is None:
+            self._cursor = None if is_last_page else page[-1].id
             return None
         report = decide(
             workspace,
@@ -307,6 +319,23 @@ class ReadyDecider:
         if report.outcome in SETTLED_OUTCOMES:
             self._decided[candidate.id] = basis
         return report
+
+    def _forget_absent(self, page: list[RequirementRecord], is_last_page: bool) -> None:
+        """Drop the decisions of Requirements this page's range no longer holds.
+
+        The range is every `fibery/id` after the cursor, up to the page's last
+        row unless this is the last page; entries outside it are kept until
+        their own page is read.
+        """
+        present = {record.id for record in page}
+        end = None if is_last_page else page[-1].id
+        self._decided = {
+            entity: settled
+            for entity, settled in self._decided.items()
+            if entity in present
+            or (self._cursor is not None and entity <= self._cursor)
+            or (end is not None and entity > end)
+        }
 
     def forget(self, entity_id: str) -> None:
         """The runner claimed a machine cycle for it: decide its next Ready afresh."""
@@ -574,7 +603,7 @@ def _transition(
     reload: Callable[[], tuple[ReadyDelegation, AutonomyPolicies]],
 ) -> CycleReport:
     """Make the decided transition through the existing decision, guarded."""
-    guard = _guard(record, evidence, policies, reload)
+    guard = _guard(workspace, requirement, record, evidence, policies, reload)
     if record.decision is ReadyDecisionKind.AUTO_APPROVE:
         # No acknowledgement: anything but PASS refuses inside the approval.
         result = approve_standard_requirement(
@@ -590,16 +619,33 @@ def _transition(
 
 
 def _guard(
+    workspace: ReadyDeciderWorkspace,
+    requirement: RequirementRecord,
     record: ReadyDecisionRecord,
     evidence: ReadyEvidence,
     policies: AutonomyPolicies,
     reload: Callable[[], tuple[ReadyDelegation, AutonomyPolicies]],
 ) -> DecisionGuard:
-    """The decision's basis, re-checked on the fresh evidence just before the write."""
+    """The decision's basis, re-checked on the fresh evidence just before the write.
+
+    The same Requirement, in the same Project under the same Code, still
+    `Ready + Succeeded`, with the same evidence, delegation and policies.
+    """
 
     def still_holds(fresh: ReadyEvidence) -> str | None:
         if fresh.identity != evidence.identity:
             return "The evidence changed after the decision was made."
+        if _differences(requirement, fresh.requirement):
+            return (
+                "The Requirement's Project or Processing Status changed after the "
+                "decision was made."
+            )
+        try:
+            project = workspace.read_project(fresh.requirement.project_id)
+        except FiberyError:
+            return "The Requirement's Project can no longer be read."
+        if project is None or project.code != record.project_code:
+            return "The Requirement's Project changed after the decision was made."
         try:
             delegation, current = reload()
         except ConfigurationError:
