@@ -72,7 +72,7 @@ Shape:
   "finding_verifications": [
     { "process_finding_index": 0,
       "outcome": "CONFIRMED" | "REJECTED" | "UNRESOLVED",
-      "severity": "INFO" | "WARNING" | "BLOCKING",
+      "severity": "CONFIRMED only: INFO" | "WARNING" | "BLOCKING",
       "reason": "concise justification" }
   ],
   "relation_verifications": [
@@ -102,13 +102,13 @@ Shape:
   "dependency_verifications": [
     { "requirement_id": "an existing DEPENDS_ON target",
       "outcome": "CONFIRMED" | "REJECTED" | "UNRESOLVED",
-      "severity": "INFO" | "WARNING" | "BLOCKING",
+      "severity": "REJECTED only: INFO" | "WARNING" | "BLOCKING",
       "reason": "concise justification" }
   ],
   "rework_verifications": [
     { "item": "the Brief item reference of one rework response",
       "outcome": "CONFIRMED" | "REJECTED" | "UNRESOLVED",
-      "severity": "INFO" | "WARNING" | "BLOCKING",
+      "severity": "REJECTED only: INFO" | "WARNING" | "BLOCKING",
       "reason": "concise justification" }
   ],
   "resolution_verifications": [
@@ -134,6 +134,12 @@ Shape:
     "acceptance_criteria": "..."
   }
 }
+
+Severity: a "severity" marked "CONFIRMED only" or "REJECTED only" is given
+exactly when the outcome is that one; for every other outcome omit the
+"severity" key entirely (no null, no empty string, no placeholder). Every
+new finding carries its own severity. relation_verifications and
+question_verifications carry no severity.
 
 What a Standard Requirement is:
 
@@ -243,8 +249,12 @@ Rules:
 - Reach your own conclusion. CONFIRMED means you independently agree the
   finding is real. REJECTED means you do not. UNRESOLVED means the available
   context cannot settle it. Rejecting a finding is a normal outcome.
-- Give a severity only when you CONFIRM a finding, and always when you do.
-  REJECTED and UNRESOLVED assert no defect, so they must carry no severity.
+- In finding_verifications, give a severity only when you CONFIRM a Process
+  finding, and always when you do. REJECTED and UNRESOLVED assert no defect
+  there, so they must carry no severity. This rule is for
+  finding_verifications only: in dependency_verifications,
+  rework_verifications and resolution_verifications CONFIRMED asserts that no
+  defect remains, so there only REJECTED carries a severity.
 - Decide independently whether a defect is real, then rate what it puts at
   risk under these same rules. An open product question earns no automatic
   severity, and nothing here forbids a justified BLOCKING when the unmade
@@ -302,9 +312,9 @@ Rules:
   direction, owned by that target, and consistent with this Requirement?
 - Verify every existing DEPENDS_ON edge exactly once in
   dependency_verifications, by its target. CONFIRMED: the dependency is
-  necessary and correct. REJECTED: it is a false or wrongly directed
-  dependency, which is a defect: always give a severity. UNRESOLVED: the
-  context cannot settle it; no severity. Never confirm a proposed DEPENDS_ON
+  necessary and correct; no severity. REJECTED: it is a false or wrongly
+  directed dependency, which is a defect: always give a severity.
+  UNRESOLVED: the context cannot settle it; no severity. Never confirm a proposed DEPENDS_ON
   that the context says cannot be confirmed.
 - Report, with the existing finding kinds: a missing required dependency
   (this Requirement needs a definition another Requirement owns but neither
@@ -327,7 +337,8 @@ Rules:
     with the rest of the Requirement and with related Requirements, and
     introduces no new defect. For REBUTTED, the evidence shows the item was
     not a real defect. For ESCALATED, it genuinely cannot be settled from the
-    evidence and stays recorded as an open question.
+    evidence and stays recorded as an open question. No defect remains, so
+    no severity.
   * REJECTED: the claim does not hold, so a defect remains: the original
     problem still exists, the correction is unfaithful or contradictory, the
     rebuttal is wrong, or the escalation was avoidable. Always give the
@@ -377,7 +388,7 @@ Rules:
   not authority, and a REQUIREMENT citation of it does not pass
   source_supports_answer or authority_class_correct.
   CONFIRMED requires every check to PASS (within_policy_clause may be
-  NOT_APPLICABLE as above). Any FAIL is REJECTED, with the severity of the
+  NOT_APPLICABLE as above), with no severity. Any FAIL is REJECTED, with the severity of the
   unsupported or unauthorized decision. Otherwise any UNCERTAIN is
   UNRESOLVED, with no severity. A resolution you do not confirm keeps the
   Requirement blocked on WHAT; never choose a different answer yourself.

@@ -733,10 +733,11 @@ def test_severity_judgement_sits_with_the_rules_for_confirmed_findings():
         "as evidence for a human: it does not enter the Requirement document, "
         "and it is not by itself a demand for more work." in rules
     )
-    # The severity classes and the rule that only CONFIRMED carries one are
-    # untouched; the verdict is still derived, never stated.
+    # The severity classes and the rule that only a CONFIRMED finding
+    # verification carries one are untouched (now scoped to that list); the
+    # verdict is still derived, never stated.
     assert (
-        "Give a severity only when you CONFIRM a finding, and always when you do."
-        in rules
+        "In finding_verifications, give a severity only when you CONFIRM a Process "
+        "finding, and always when you do." in rules
     )
     assert "Do not state an overall verdict" in rules

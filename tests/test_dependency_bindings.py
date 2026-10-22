@@ -328,6 +328,7 @@ def test_an_altered_binding_fingerprint_is_stale_at_ready():
         ([dep(D1), dep(D1)], "more than once"),
         ([dep(D1), dep(D2)], "did not claim"),
         ([dep(D1, "REJECTED")], "if and only if"),
+        ([dep(D1, severity="INFO")], "if and only if"),
     ],
 )
 def test_existing_dependencies_are_verified_exactly_once(verifications, message):
