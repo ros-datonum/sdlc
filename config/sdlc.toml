@@ -49,8 +49,9 @@ invocation_mode = "print"
 # environment_passthrough = []
 
 # The one Claude Code build qualified for SDLC reasoning execution. `sha256`
-# is the SHA-256 of the executable file `claude` resolves to (symlinks
-# followed); that file runs the login check and the inference. Any other
+# is the SHA-256 of the executable file `executable` (the alias above)
+# resolves to, symlinks followed; that file runs the login check and the
+# inference. Any other
 # build, an updated one included, fails with RUNTIME_ISOLATION_UNAVAILABLE
 # before any process starts and needs its own qualification. `version` and
 # `builtin_plugins` are what this build must report in its own session init

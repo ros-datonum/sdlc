@@ -1184,3 +1184,40 @@ def test_the_regression_child_does_leak_without_the_switch(tmp_path, monkeypatch
     response = mention_runtime(tmp_path, marker).run("Summarize @inside-secret.txt")
 
     assert marker in response.text
+
+
+# -- review notes N1, N4 -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("char", ["\u2028", "\u2029", "\u0085"])
+def test_an_answer_quoting_a_unicode_line_separator_is_accepted(char):
+    """The CLI's JSON.stringify leaves these raw inside strings (it escapes only
+    control characters below U+0020); events are split on newline only."""
+    text = f"before{char}after"
+    stdout = "".join(
+        json.dumps(event, ensure_ascii=False) + "\n"
+        for event in events_of(real_stream(text))
+    )
+    assert char in stdout
+    assert validate_stream(stdout, SHIPPED_EXPECTED) == text
+
+
+def test_the_runtime_returns_an_answer_quoting_a_line_separator():
+    def raw(invocation):
+        events = events_of(claude_stream(invocation.cwd, "a\u2028b"))
+        return (
+            0,
+            "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events),
+            "",
+        )
+
+    runtime, _ = build(CLAUDE, results=[ok(CLAUDE), raw])
+    assert runtime.run("p").text == "a\u2028b"
+
+
+def test_a_builtin_path_with_a_foreign_source_is_refused():
+    plugins = [
+        REAL_INIT["plugins"][0],
+        {**REAL_INIT["plugins"][1], "source": "cc-plugin-plugin-authoring@marketplace"},
+    ]
+    real_refused(real_stream(init_changes={"plugins": plugins}), "PLUGIN_NOT_QUALIFIED")

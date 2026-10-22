@@ -30,8 +30,9 @@ process's command line and environment.
 Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1 adds three Claude
 controls. The resolved executable file must be the operator-qualified build
 (its SHA-256), and that file, never the symlink that named it, runs both the
-login check and the inference. The child's analytics are switched off by a
-fixed environment value. And the answer is taken only from a stream-json
+login check and the inference. Fixed environment values switch off the
+child's analytics and its implicit `@` file attachments. And the answer is
+taken only from a stream-json
 session whose own init record shows exactly the qualified built-in plugins
 and no capability (claude_session.py). Built-in plugins do load and their
 hooks do run under --safe-mode on that build; the amendment states what they

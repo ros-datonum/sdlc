@@ -114,7 +114,7 @@ claude -p --safe-mode --restricted --tools "" --strict-mcp-config \
        --no-session-persistence [--model <MODEL>]
 ```
 
-> **Amended for Claude Code 2.1.306** by `Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1.md`: on that build built-in plugins load and their hooks run under `--safe-mode`; executable identity, a fixed `DISABLE_TELEMETRY=1` and per-call stream-json session validation now apply. The 2.1.260 record below is historical.
+> **Amended for Claude Code 2.1.306** by `Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1.md`: on that build built-in plugins load and their hooks run under `--safe-mode`; executable identity, fixed `DISABLE_TELEMETRY=1`, `CLAUDE_CODE_DISABLE_ATTACHMENTS=1` and `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`, and per-call stream-json session validation now apply. The 2.1.260 record below is historical.
 
 Prompt and context arrive on stdin. Verified on 2.1.260: `--safe-mode`
 disables CLAUDE.md, skills, plugins, hooks and MCP servers while login and

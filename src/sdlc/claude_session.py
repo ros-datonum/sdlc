@@ -1,6 +1,6 @@
 """Validation of a Claude Code reasoning child's stream-json session.
 
-Implements Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1 §5. The
+Implements Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1 §4. The
 SDLC child runs `claude -p ... --output-format stream-json --verbose`, so its
 stdout is one JSON event per line: the session's own `system/init` record,
 the assistant turn, and one final `result`. The model's answer is returned
@@ -175,7 +175,10 @@ class SessionValidator:
 def validate_stream(stdout: str, expected: ExpectedSession) -> str:
     """Validate a complete stdout and return the answer, or raise SessionRejected."""
     validator = SessionValidator(expected)
-    for line in stdout.splitlines():
+    # Events are newline-delimited: split on "\n" only. str.splitlines would
+    # also split on U+2028, U+2029 and U+0085, which JSON leaves raw inside
+    # strings, and refuse a legitimate answer quoting one.
+    for line in stdout.split("\n"):
         validator.feed(line)
     return validator.finish()
 
