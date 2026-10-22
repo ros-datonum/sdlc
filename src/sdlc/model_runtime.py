@@ -22,25 +22,50 @@ an exception.
 The child is a reasoning process, not a coding agent. The processors hand it
 everything it needs on stdin and want only its answer back, so it runs with
 the CLI's supported per-invocation restrictions: no tools, no MCP servers, no
-hooks, plugins or skills, no web retrieval, no subagents, a minimal explicit
+skills or slash commands, no web retrieval, no subagents, a minimal explicit
 environment and an empty temporary working directory. The user's interactive
 CLI settings are not touched; these controls exist only on the spawned
-process's command line.
+process's command line and environment.
+
+Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1 adds three Claude
+controls. The resolved executable file must be the operator-qualified build
+(its SHA-256), and that file, never the symlink that named it, runs both the
+login check and the inference. The child's analytics are switched off by a
+fixed environment value. And the answer is taken only from a stream-json
+session whose own init record shows exactly the qualified built-in plugins
+and no capability (claude_session.py). Built-in plugins do load and their
+hooks do run under --safe-mode on that build; the amendment states what they
+can and cannot do there.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import IO, Protocol
 
-from sdlc.model_runtime_config import RuntimeDefinition, RuntimeSelection
+from sdlc.claude_session import (
+    STREAM_OUTPUT_FLAGS,
+    ExpectedSession,
+    SessionRejected,
+    SessionValidator,
+    validate_stream,
+)
+from sdlc.model_runtime_config import (
+    QualifiedBinary,
+    RuntimeDefinition,
+    RuntimeSelection,
+)
 from sdlc.model_runtime_environment import child_environment
 
 # The CLI family. "print" is Claude Code (`claude -p`), "exec" is Codex
@@ -57,6 +82,9 @@ STDIN_ARGUMENT = "-"
 DEFAULT_TIMEOUT_SECONDS = 900
 AUTH_CHECK_TIMEOUT_SECONDS = 60
 CHILD_DIRECTORY_PREFIX = "sdlc-model-"
+# How long a stopped child may take to exit, and its output readers to drain.
+CHILD_EXIT_GRACE_SECONDS = 5
+FINGERPRINT_CHUNK_BYTES = 1 << 20
 
 STAGE_AUTHENTICATION = "authentication"
 STAGE_INFERENCE = "inference"
@@ -108,13 +136,16 @@ CODEX_LOGGED_OUT_LINE = "Not logged in"
 # -- reasoning-child restrictions ------------------------------------------
 #
 # Claude Code 2.1.260, verified live: --safe-mode disables CLAUDE.md, skills,
-# plugins, hooks and MCP while auth and model selection work normally;
-# --restricted drops the command/code tools and WebFetch, ignores user,
-# project and local settings files (managed settings still apply), confines
-# file tools to the working directory and refuses bypassPermissions;
-# --tools "" removes every built-in tool, including the file tools and the
-# Agent tool; --strict-mcp-config with no --mcp-config leaves no MCP servers;
-# --permission-prompts none denies anything that would still prompt.
+# installed plugins, settings hooks and MCP while auth and model selection
+# work normally; --restricted drops the command/code tools and WebFetch,
+# ignores user, project and local settings files (managed settings still
+# apply), confines file tools to the working directory and refuses
+# bypassPermissions; --tools "" removes every built-in tool, including the
+# file tools and the Agent tool; --strict-mcp-config with no --mcp-config
+# leaves no MCP servers; --permission-prompts none denies anything that would
+# still prompt. On 2.1.306 --safe-mode leaves built-in plugins loaded and
+# their hooks running; the qualified plugin set and what it can do are fixed
+# by the amendment and checked on every call (claude_session.py).
 CLAUDE_RESTRICTIONS = (
     "--safe-mode",
     "--restricted",
@@ -190,11 +221,22 @@ class ModelAuthenticationError(ModelRuntimeError):
 
 
 class RuntimeIsolationUnavailable(ModelRuntimeError):
-    """The selected CLI family may not execute a model for SDLC.
+    """The selected CLI family, or the installed build, may not execute a model.
 
     Raised before any subprocess starts. Not an authentication failure and
     not a missing executable: the CLI may be installed and logged in.
     """
+
+
+class ModelSessionRejected(ModelRuntimeError):
+    """The child ran, but its session was not the qualified one.
+
+    Its answer is discarded. `code` is the fixed reason from claude_session.
+    """
+
+    def __init__(self, message: str, *, code: str, runtime: str | None) -> None:
+        super().__init__(message, runtime=runtime, stage=STAGE_INFERENCE)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -233,13 +275,20 @@ class ModelRuntime(Protocol):
 
 @dataclass(frozen=True)
 class ChildInvocation:
-    """Exactly what one child process is started with."""
+    """Exactly what one child process is started with.
+
+    `on_stdout_line`, when given, sees each stdout line as it arrives; if it
+    raises, the child is stopped at once and the exception propagates. A
+    runner that cannot stream may ignore it: the complete stdout is validated
+    again afterwards.
+    """
 
     argv: tuple[str, ...]
     stdin_text: str
     timeout: int
     env: Mapping[str, str]
     cwd: str
+    on_stdout_line: Callable[[str], None] | None = None
 
 
 CommandRunner = Callable[[ChildInvocation], subprocess.CompletedProcess[str]]
@@ -247,6 +296,8 @@ CommandRunner = Callable[[ChildInvocation], subprocess.CompletedProcess[str]]
 
 def _run_command(invocation: ChildInvocation) -> subprocess.CompletedProcess[str]:
     # argv is built from constants and configuration, never from a shell string.
+    if invocation.on_stdout_line is not None:
+        return _run_streaming(invocation, invocation.on_stdout_line)
     return subprocess.run(
         list(invocation.argv),
         input=invocation.stdin_text,
@@ -257,6 +308,101 @@ def _run_command(invocation: ChildInvocation) -> subprocess.CompletedProcess[str
         env=dict(invocation.env),
         cwd=invocation.cwd,
     )
+
+
+def _run_streaming(
+    invocation: ChildInvocation, on_line: Callable[[str], None]
+) -> subprocess.CompletedProcess[str]:
+    """Run the child, handing each stdout line to `on_line` as it arrives.
+
+    Same contract as subprocess.run: TimeoutExpired after the timeout, the
+    child killed. If `on_line` raises, the child is killed and the exception
+    propagates. Stdin is written, and stderr drained, on their own threads so
+    neither pipe can stall the other.
+    """
+    process = subprocess.Popen(
+        list(invocation.argv),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=dict(invocation.env),
+        cwd=invocation.cwd,
+    )
+    lines: queue.Queue[str | None] = queue.Queue()
+    stderr_parts: list[str] = []
+    threads = [
+        threading.Thread(target=_feed_stdin, args=(process, invocation.stdin_text)),
+        threading.Thread(target=_drain_lines, args=(process.stdout, lines)),
+        threading.Thread(target=_drain_text, args=(process.stderr, stderr_parts)),
+    ]
+    for thread in threads:
+        thread.daemon = True
+        thread.start()
+    deadline = time.monotonic() + invocation.timeout
+    stdout_parts: list[str] = []
+    try:
+        while (line := _next_line(lines, deadline, invocation)) is not None:
+            stdout_parts.append(line)
+            on_line(line)
+        returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except BaseException:
+        process.kill()
+        process.wait(timeout=CHILD_EXIT_GRACE_SECONDS)
+        raise
+    finally:
+        for thread in threads:
+            thread.join(timeout=CHILD_EXIT_GRACE_SECONDS)
+    return subprocess.CompletedProcess(
+        list(invocation.argv), returncode, "".join(stdout_parts), "".join(stderr_parts)
+    )
+
+
+def _next_line(
+    lines: queue.Queue[str | None], deadline: float, invocation: ChildInvocation
+) -> str | None:
+    remaining = deadline - time.monotonic()
+    try:
+        if remaining <= 0:
+            raise queue.Empty
+        return lines.get(timeout=remaining)
+    except queue.Empty:
+        raise subprocess.TimeoutExpired(
+            list(invocation.argv), invocation.timeout
+        ) from None
+
+
+def _feed_stdin(process: subprocess.Popen[str], text: str) -> None:
+    stdin = process.stdin
+    if stdin is None:
+        return
+    try:
+        stdin.write(text)
+        stdin.close()
+    except OSError:
+        # The child exited or was stopped before reading all its input; its
+        # exit status and output are what the caller judges.
+        return
+
+
+def _drain_lines(stream: IO[str] | None, lines: queue.Queue[str | None]) -> None:
+    for line in stream or ():
+        lines.put(line)
+    lines.put(None)
+
+
+def _drain_text(stream: IO[str] | None, parts: list[str]) -> None:
+    if stream is not None:
+        parts.append(stream.read())
+
+
+def _file_sha256(path: str) -> str:
+    """SHA-256 of the executable file. Cost: one sequential read of the binary."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(FINGERPRINT_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -272,6 +418,10 @@ class _Session:
     cwd: str
 
 
+# The CLI families whose build must be operator-qualified before they run.
+QUALIFIED_BUILD_FAMILIES = frozenset({INVOCATION_MODE_PRINT})
+
+
 class LocalCliModelRuntime:
     """Runs a prompt through a locally authenticated `claude` or `codex` CLI."""
 
@@ -282,12 +432,16 @@ class LocalCliModelRuntime:
         which: Callable[[str], str | None] = shutil.which,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         environment: Mapping[str, str] | None = None,
+        resolve: Callable[[str], str] = os.path.realpath,
+        fingerprint: Callable[[str], str] = _file_sha256,
     ) -> None:
         self._selection = selection
         self._run = runner
         self._which = which
         self._timeout = timeout_seconds
         self._environment = environment
+        self._resolve = resolve
+        self._fingerprint = fingerprint
 
     @property
     def selection(self) -> RuntimeSelection:
@@ -298,19 +452,28 @@ class LocalCliModelRuntime:
 
         Returns a short sanitized summary of the login method, never the
         CLI's account output. Being authenticated is not the same as being
-        eligible to execute: a family whose boundary is unverified is
-        reported as authenticated but not eligible.
+        eligible to execute: a family whose boundary is unverified, or a build
+        that is not the qualified one, is reported as authenticated but not
+        eligible. This diagnostic runs no model; `run` enforces eligibility
+        before any process starts.
         """
-        with self._session() as session:
+        with self._session(qualify=False) as session:
             summary = self._check_authentication(session)
-        reason = EXECUTION_UNAVAILABLE_FAMILIES.get(
-            self._selection.definition.invocation_mode
-        )
+        definition = self._selection.definition
+        reason = EXECUTION_UNAVAILABLE_FAMILIES.get(definition.invocation_mode)
         if reason is not None:
             return (
                 f"{summary}; authenticated but not eligible for SDLC reasoning "
                 f"execution ({RUNTIME_ISOLATION_UNAVAILABLE})"
             )
+        if definition.invocation_mode in QUALIFIED_BUILD_FAMILIES:
+            try:
+                self._qualified_executable(session.executable)
+            except RuntimeIsolationUnavailable as refusal:
+                return (
+                    f"{summary}; authenticated but not eligible for SDLC reasoning "
+                    f"execution ({refusal})"
+                )
         return summary
 
     def run(self, prompt: str, context: str = "") -> ModelResponse:
@@ -337,10 +500,12 @@ class LocalCliModelRuntime:
 
     # -- session -------------------------------------------------------------
 
-    def _session(self) -> _SessionScope:
-        return _SessionScope(self)
+    def _session(self, qualify: bool = True) -> _SessionScope:
+        return _SessionScope(self, qualify)
 
-    def _open_session(self) -> tuple[_Session, tempfile.TemporaryDirectory[str]]:
+    def _open_session(
+        self, qualify: bool = True
+    ) -> tuple[_Session, tempfile.TemporaryDirectory[str]]:
         definition = self._selection.definition
         executable = self._which(definition.executable)
         if executable is None:
@@ -350,9 +515,15 @@ class LocalCliModelRuntime:
                 runtime=definition.name,
                 stage=STAGE_AUTHENTICATION,
             )
+        if qualify and definition.invocation_mode in QUALIFIED_BUILD_FAMILIES:
+            executable = self._qualified_executable(executable)
         parent = os.environ if self._environment is None else self._environment
         try:
-            env = child_environment(parent, definition.environment_passthrough)
+            env = child_environment(
+                parent,
+                definition.environment_passthrough,
+                fixed_for=definition.invocation_mode,
+            )
         except ValueError as error:
             raise ModelRuntimeError(str(error), runtime=definition.name) from error
         directory = tempfile.TemporaryDirectory(prefix=CHILD_DIRECTORY_PREFIX)
@@ -364,6 +535,45 @@ class LocalCliModelRuntime:
                 "refusing to run the model child there."
             )
         return _Session(executable=executable, env=env, cwd=str(cwd)), directory
+
+    def _qualified_executable(self, found: str) -> str:
+        """The resolved executable file, refused unless it is the qualified build.
+
+        Resolved once per session: the login check and the inference both run
+        this file, so a symlink repointed afterwards changes nothing. The
+        version string is not trusted; the file's SHA-256 is the identity.
+        """
+        definition = self._selection.definition
+        qualified = definition.qualified_binary
+        if qualified is None:
+            raise self._not_qualified(
+                "no build of this CLI is qualified in the runtime configuration "
+                "(qualified_binary)."
+            )
+        resolved = self._resolve(found)
+        if not os.path.isabs(resolved):
+            raise self._not_qualified("the executable did not resolve to a file.")
+        try:
+            digest = self._fingerprint(resolved)
+        except OSError as error:
+            raise self._not_qualified(
+                f"the resolved executable could not be read ({type(error).__name__})."
+            ) from error
+        if digest != qualified.sha256:
+            raise self._not_qualified(
+                f"the resolved executable {resolved} is not the qualified build "
+                f"{qualified.version}; a new build needs its own qualification."
+            )
+        return resolved
+
+    def _not_qualified(self, reason: str) -> RuntimeIsolationUnavailable:
+        definition = self._selection.definition
+        return RuntimeIsolationUnavailable(
+            f"{RUNTIME_ISOLATION_UNAVAILABLE}: runtime {definition.name!r}: {reason} "
+            "No model was invoked.",
+            runtime=definition.name,
+            stage=STAGE_AUTHENTICATION,
+        )
 
     # -- authentication --------------------------------------------------------
 
@@ -416,15 +626,21 @@ class LocalCliModelRuntime:
 
     def _invoke(self, session: _Session, stdin_text: str) -> ModelResponse:
         definition = self._selection.definition
+        expected = self._expected_session(session)
         invocation = ChildInvocation(
             argv=tuple(self._build_argv(session)),
             stdin_text=stdin_text,
             timeout=self._timeout,
             env=session.env,
             cwd=session.cwd,
+            on_stdout_line=(
+                SessionValidator(expected).feed if expected is not None else None
+            ),
         )
         try:
             result = self._run(invocation)
+        except SessionRejected as rejected:
+            raise self._rejected(rejected) from rejected
         except subprocess.TimeoutExpired as error:
             raise ModelRuntimeError(
                 f"{definition.executable} timed out after {self._timeout}s during "
@@ -448,8 +664,37 @@ class LocalCliModelRuntime:
                 stage=STAGE_INFERENCE,
                 exit_code=result.returncode,
             )
+        text = result.stdout
+        if expected is not None:
+            try:
+                text = validate_stream(result.stdout, expected)
+            except SessionRejected as rejected:
+                raise self._rejected(rejected) from rejected
         return ModelResponse(
-            text=result.stdout, runtime=definition.name, model=self._selection.model
+            text=text, runtime=definition.name, model=self._selection.model
+        )
+
+    def _expected_session(self, session: _Session) -> ExpectedSession | None:
+        """What a qualified build's session must report; None for other families."""
+        qualified: QualifiedBinary | None = self._selection.definition.qualified_binary
+        if self._selection.definition.invocation_mode not in QUALIFIED_BUILD_FAMILIES:
+            return None
+        if qualified is None:
+            raise self._not_qualified("no build of this CLI is qualified.")
+        return ExpectedSession(
+            cwd=session.cwd,
+            version=qualified.version,
+            builtin_plugins=qualified.builtin_plugins,
+            protocol_capabilities=qualified.protocol_capabilities,
+        )
+
+    def _rejected(self, rejected: SessionRejected) -> ModelSessionRejected:
+        definition = self._selection.definition
+        return ModelSessionRejected(
+            f"{definition.executable}: the reasoning session was refused "
+            f"({rejected}); its answer was discarded and nothing was returned.",
+            code=rejected.code,
+            runtime=definition.name,
         )
 
     def _build_argv(self, session: _Session) -> list[str]:
@@ -461,7 +706,12 @@ class LocalCliModelRuntime:
         definition = self._selection.definition
         model = self._selection.model
         if definition.invocation_mode == INVOCATION_MODE_PRINT:
-            argv = [session.executable, PRINT_FLAG, *CLAUDE_RESTRICTIONS]
+            argv = [
+                session.executable,
+                PRINT_FLAG,
+                *CLAUDE_RESTRICTIONS,
+                *STREAM_OUTPUT_FLAGS,
+            ]
         elif definition.invocation_mode == INVOCATION_MODE_EXEC:
             argv = [
                 session.executable,
@@ -485,12 +735,13 @@ class LocalCliModelRuntime:
 class _SessionScope:
     """Context manager that removes the child's working directory afterwards."""
 
-    def __init__(self, runtime: LocalCliModelRuntime) -> None:
+    def __init__(self, runtime: LocalCliModelRuntime, qualify: bool) -> None:
         self._runtime = runtime
+        self._qualify = qualify
         self._directory: tempfile.TemporaryDirectory[str] | None = None
 
     def __enter__(self) -> _Session:
-        session, self._directory = self._runtime._open_session()
+        session, self._directory = self._runtime._open_session(self._qualify)
         return session
 
     def __exit__(self, *exc_info: object) -> None:

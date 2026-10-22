@@ -14,8 +14,14 @@ from pathlib import Path
 
 import pytest
 
+from sdlc.model_runtime_config import load_model_runtime_config, runtime_definition
+
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "check-local-model-auth.sh"
+# The shipped Claude runtime's executable: its dedicated alias, not `claude`.
+CLAUDE_EXECUTABLE = runtime_definition(
+    load_model_runtime_config(REPO / "config" / "sdlc.toml"), "claude"
+).executable
 
 EMAIL = "private.person@example.com"
 ORG = "Org-Private-Ltd-4471"
@@ -99,19 +105,22 @@ def assert_private_and_status_only(result, log):
 
 def test_a_valid_claude_login_is_summarized_without_account_details(stand_ins):
     bin_dir, log = stand_ins
-    install(bin_dir, log, "claude", stdout=json.dumps(VALID_CLAUDE))
+    install(bin_dir, log, CLAUDE_EXECUTABLE, stdout=json.dumps(VALID_CLAUDE))
     install(bin_dir, log, "codex", stderr="Logged in using ChatGPT\n")
 
     result = run_script(bin_dir)
 
     assert result.returncode == 0, result
-    assert "OK   claude: logged in via claude.ai (firstParty)" in result.stdout
+    assert (
+        f"OK   {CLAUDE_EXECUTABLE}: logged in via claude.ai (firstParty)"
+        in result.stdout
+    )
     assert_private_and_status_only(result, log)
 
 
 def test_codex_is_reported_authenticated_but_not_eligible(stand_ins):
     bin_dir, log = stand_ins
-    install(bin_dir, log, "claude", stdout=json.dumps(VALID_CLAUDE))
+    install(bin_dir, log, CLAUDE_EXECUTABLE, stdout=json.dumps(VALID_CLAUDE))
     install(bin_dir, log, "codex", stderr="Logged in using ChatGPT\n")
 
     result = run_script(bin_dir)
@@ -126,7 +135,12 @@ def test_codex_is_reported_authenticated_but_not_eligible(stand_ins):
 @pytest.mark.parametrize("field", ["authMethod", "apiProvider"])
 def test_a_short_unknown_status_value_is_rejected_and_not_echoed(stand_ins, field):
     bin_dir, log = stand_ins
-    install(bin_dir, log, "claude", stdout=json.dumps({**VALID_CLAUDE, field: SHORT}))
+    install(
+        bin_dir,
+        log,
+        CLAUDE_EXECUTABLE,
+        stdout=json.dumps({**VALID_CLAUDE, field: SHORT}),
+    )
     install(bin_dir, log, "codex", stderr="Logged in using ChatGPT\n")
 
     result = run_script(bin_dir)
@@ -134,7 +148,7 @@ def test_a_short_unknown_status_value_is_rejected_and_not_echoed(stand_ins, fiel
     assert result.returncode == 1
     assert "FAIL claude: authentication could not be verified" in result.stdout
     assert "unsupported or unrecognized" in result.stdout
-    assert "OK   claude" not in result.stdout
+    assert f"OK   {CLAUDE_EXECUTABLE}" not in result.stdout
     assert_private_and_status_only(result, log)
 
 
@@ -145,20 +159,28 @@ def test_a_short_unknown_status_value_is_rejected_and_not_echoed(stand_ins, fiel
 )
 def test_logged_out_empty_or_malformed_status_never_verifies(stand_ins, stdout):
     bin_dir, log = stand_ins
-    install(bin_dir, log, "claude", stdout=stdout)
+    install(bin_dir, log, CLAUDE_EXECUTABLE, stdout=stdout)
     install(bin_dir, log, "codex", stderr="Logged in using ChatGPT\n")
 
     result = run_script(bin_dir)
 
     assert result.returncode == 1
-    assert "FAIL claude" in result.stdout and "OK   claude" not in result.stdout
+    assert (
+        "FAIL claude" in result.stdout
+        and f"OK   {CLAUDE_EXECUTABLE}" not in result.stdout
+    )
     assert_private_and_status_only(result, log)
 
 
 def test_a_nonzero_status_exit_reports_the_exit_without_its_output(stand_ins):
     bin_dir, log = stand_ins
     install(
-        bin_dir, log, "claude", stdout=f"Email: {EMAIL}\n", stderr=STDERR_MARKER, code=3
+        bin_dir,
+        log,
+        CLAUDE_EXECUTABLE,
+        stdout=f"Email: {EMAIL}\n",
+        stderr=STDERR_MARKER,
+        code=3,
     )
     install(bin_dir, log, "codex", stdout=EMAIL, stderr=STDERR_MARKER, code=2)
 
@@ -178,7 +200,7 @@ def test_a_missing_executable_is_reported_without_verification(stand_ins):
 
     assert result.returncode == 1
     assert "FAIL claude" in result.stdout and "not on PATH" in result.stdout
-    assert "OK   claude" not in result.stdout
+    assert f"OK   {CLAUDE_EXECUTABLE}" not in result.stdout
     assert_private_and_status_only(result, log)
 
 

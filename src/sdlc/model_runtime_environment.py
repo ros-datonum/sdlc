@@ -48,17 +48,47 @@ DENIED_PREFIXES = (
 )
 DENIED_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_BASE_URL")
 
+# Values the runtime itself sets in a child of one CLI family, after the
+# allowlist (Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1 §3). They
+# are code constants: never copied from the parent, never listed by
+# configuration, and never overridden by a parent value of the same name.
+# DISABLE_TELEMETRY: Claude Code's own analytics switch; on 2.1.306 it keeps
+# the built-in telemetry plugin unregistered and the core event logger off.
+# CLAUDE_CODE_DISABLE_ATTACHMENTS: on 2.1.306 the attachment builder returns
+# before any `@` mention in the input is extracted or read, so untrusted text
+# can never pull a local file into the model's context (amendment §7).
+# CLAUDE_CODE_DISABLE_FILE_MENTIONS: defence in depth; a mention that still
+# reached the reader would get a path reference instead of a fresh file read.
+FIXED_CHILD_ENVIRONMENT: dict[str, dict[str, str]] = {
+    "print": {
+        "DISABLE_TELEMETRY": "1",
+        "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
+        "CLAUDE_CODE_DISABLE_FILE_MENTIONS": "1",
+    },
+    "exec": {},
+}
+FIXED_NAMES = frozenset(
+    name for values in FIXED_CHILD_ENVIRONMENT.values() for name in values
+)
+
 
 class DeniedEnvironmentName(ValueError):
     """Configuration asked to pass through a variable that can redirect the child."""
 
 
 def is_denied(name: str) -> bool:
-    """Whether `name` may never reach the child, regardless of configuration."""
+    """Whether `name` may never be passed through, regardless of configuration.
+
+    A fixed child value is denied too: the runtime sets it, nothing passes it.
+    """
     if name in CREDENTIAL_STORE_LOCATIONS:
         return False
     upper = name.upper()
-    return upper.startswith(DENIED_PREFIXES) or upper.endswith(DENIED_SUFFIXES)
+    return (
+        upper.startswith(DENIED_PREFIXES)
+        or upper.endswith(DENIED_SUFFIXES)
+        or upper in FIXED_NAMES
+    )
 
 
 def require_allowed(names: Sequence[str]) -> tuple[str, ...]:
@@ -73,13 +103,20 @@ def require_allowed(names: Sequence[str]) -> tuple[str, ...]:
 
 
 def child_environment(
-    parent: Mapping[str, str], extra: Sequence[str] = ()
+    parent: Mapping[str, str], extra: Sequence[str] = (), fixed_for: str | None = None
 ) -> dict[str, str]:
     """Build the child's environment from an explicit allowlist.
 
     Only listed names present in `parent` are copied. `extra` is the
     configured passthrough list and is validated again here, so a definition
-    built by hand cannot bypass the denylist either.
+    built by hand cannot bypass the denylist either. `fixed_for` names the CLI
+    family whose fixed values are then set, last, so no parent value of the
+    same name can reach the child.
     """
     names = (*BASE_PASSTHROUGH, *CREDENTIAL_STORE_LOCATIONS, *require_allowed(extra))
-    return {name: parent[name] for name in names if name in parent}
+    env = {name: parent[name] for name in names if name in parent}
+    if fixed_for is not None:
+        # An unknown family has no fixed values; it is refused before any
+        # process starts (model_runtime).
+        env.update(FIXED_CHILD_ENVIRONMENT.get(fixed_for, {}))
+    return env

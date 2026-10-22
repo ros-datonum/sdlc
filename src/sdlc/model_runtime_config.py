@@ -12,6 +12,7 @@ Model ids are configuration data. Nothing here hard-codes a runtime or a model.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,20 @@ MODEL_KEY = "model"
 EXECUTABLE_KEY = "executable"
 INVOCATION_MODE_KEY = "invocation_mode"
 ENVIRONMENT_PASSTHROUGH_KEY = "environment_passthrough"
+QUALIFIED_BINARY_KEY = "qualified_binary"
+QUALIFIED_SHA256_KEY = "sha256"
+QUALIFIED_VERSION_KEY = "version"
+QUALIFIED_PLUGINS_KEY = "builtin_plugins"
+QUALIFIED_CAPABILITIES_KEY = "protocol_capabilities"
+QUALIFIED_KEYS = frozenset(
+    {
+        QUALIFIED_SHA256_KEY,
+        QUALIFIED_VERSION_KEY,
+        QUALIFIED_PLUGINS_KEY,
+        QUALIFIED_CAPABILITIES_KEY,
+    }
+)
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 RAW_REQUIREMENT_PROCESSOR_ROLE = "raw_requirement_processor"
 STANDARD_REQUIREMENT_PROCESSOR_ROLE = "standard_requirement_processor"
@@ -43,6 +58,25 @@ TSA_REVIEWER_ROLE = "tsa_reviewer"
 
 class ModelRuntimeConfigError(Exception):
     """The runtime configuration is missing or unusable."""
+
+
+@dataclass(frozen=True)
+class QualifiedBinary:
+    """The one CLI build an operator qualified for SDLC reasoning execution.
+
+    Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1: the build is
+    identified by the SHA-256 of the resolved executable file, not by its path
+    or version string; `version`, `builtin_plugins` and `protocol_capabilities`
+    are what that build must report in its own session initialization under
+    the SDLC restrictions. The capabilities are the SDK control-protocol
+    features the CLI would honour from a host over `--input-format
+    stream-json`, which SDLC never opens; they are not model tools.
+    """
+
+    sha256: str
+    version: str
+    builtin_plugins: frozenset[str]
+    protocol_capabilities: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -60,6 +94,9 @@ class RuntimeDefinition:
     executable: str
     invocation_mode: str
     environment_passthrough: tuple[str, ...] = ()
+    # The operator-qualified build; None means no build is qualified, and a
+    # family that requires one refuses to execute.
+    qualified_binary: QualifiedBinary | None = None
 
 
 @dataclass(frozen=True)
@@ -187,4 +224,44 @@ def runtime_definition(config: dict[str, Any], name: str) -> RuntimeDefinition:
         executable=executable,
         invocation_mode=invocation_mode,
         environment_passthrough=allowed,
+        qualified_binary=_qualified_binary(name, defined.get(QUALIFIED_BINARY_KEY)),
     )
+
+
+def _qualified_binary(name: str, table: object) -> QualifiedBinary | None:
+    """`[model_runtime.runtimes.<name>.qualified_binary]`, validated whole."""
+    if table is None:
+        return None
+    where = f"Runtime {name!r} {QUALIFIED_BINARY_KEY}"
+    if not isinstance(table, dict):
+        raise ModelRuntimeConfigError(f"{where} must be a table.")
+    if set(table) != QUALIFIED_KEYS:
+        raise ModelRuntimeConfigError(
+            f"{where} must define exactly {sorted(QUALIFIED_KEYS)}."
+        )
+    sha256 = table[QUALIFIED_SHA256_KEY]
+    if not isinstance(sha256, str) or not SHA256_PATTERN.match(sha256):
+        raise ModelRuntimeConfigError(
+            f"{where} {QUALIFIED_SHA256_KEY} must be 64 lowercase hex characters."
+        )
+    version = table[QUALIFIED_VERSION_KEY]
+    if not isinstance(version, str) or not version.strip():
+        raise ModelRuntimeConfigError(
+            f"{where} {QUALIFIED_VERSION_KEY} must be non-empty text."
+        )
+    plugins = _distinct_names(table, QUALIFIED_PLUGINS_KEY, where)
+    capabilities = _distinct_names(table, QUALIFIED_CAPABILITIES_KEY, where)
+    return QualifiedBinary(sha256, version, plugins, capabilities)
+
+
+def _distinct_names(table: dict[str, Any], key: str, where: str) -> frozenset[str]:
+    values = table[key]
+    if (
+        not isinstance(values, list)
+        or not all(isinstance(item, str) and item for item in values)
+        or len(set(values)) != len(values)
+    ):
+        raise ModelRuntimeConfigError(
+            f"{where} {key} must be a list of distinct names."
+        )
+    return frozenset(values)

@@ -43,7 +43,7 @@ def test_the_project_config_defines_the_processor_role():
 
     selection = select_runtime(config, RAW_REQUIREMENT_PROCESSOR_ROLE)
 
-    assert selection.definition.executable in {"claude", "codex"}
+    assert selection.definition.executable in {"sdlc-claude-2.1.306", "codex"}
     assert selection.role == RAW_REQUIREMENT_PROCESSOR_ROLE
 
 
@@ -218,7 +218,7 @@ def test_the_project_configures_a_reviewer_role():
     """The shipped configuration must actually define the role."""
     loaded = load_model_runtime_config(PROJECT_CONFIG)
     selection = select_runtime(loaded, STANDARD_REQUIREMENT_REVIEWER_ROLE)
-    assert selection.definition.executable in {"claude", "codex"}
+    assert selection.definition.executable in {"sdlc-claude-2.1.306", "codex"}
 
 
 # -- the TSA-C01 runtime roles (Implementation Spec v0.3 section 15) -----------
@@ -268,7 +268,7 @@ def test_the_shipped_tsa_role_selects_claude_print_with_the_cli_default_model(ro
         selection.definition.name,
         selection.definition.executable,
         selection.definition.invocation_mode,
-    ) == ("claude", "claude", "print")
+    ) == ("claude", "sdlc-claude-2.1.306", "print")
     assert selection.model is None
     assert selection.uses_cli_default_model
 

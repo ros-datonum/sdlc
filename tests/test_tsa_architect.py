@@ -73,7 +73,7 @@ from sdlc.tsa_artifacts import (
 )
 from sdlc.tsa_cycle import DocumentKind
 from standard_fake import REQUIREMENT_ID
-from test_model_runtime import CLAUDE_OK, Runner
+from test_model_runtime import CLAUDE_OK, SHIPPED, Runner, answer
 from test_tsa_admission import (
     APPLICABLE,
     ARCHITECTURE_ID,
@@ -1079,12 +1079,13 @@ def test_the_architect_role_comes_from_i09_through_the_unchanged_selection():
 
 def test_claude_runs_through_the_real_runtime_without_a_model_flag():
     scene = accepted_scene()
-    runner = Runner([(0, CLAUDE_OK, ""), (0, response_text(), "")])
+    runner = Runner([(0, CLAUDE_OK, ""), answer(response_text(), SHIPPED)])
     runtime = LocalCliModelRuntime(
         select_architect_runtime(load_model_runtime_config(Path("config/sdlc.toml"))),
         runner=runner,
         which=lambda name: f"/opt/bin/{name}",
         environment={"PATH": "/usr/bin", "HOME": "/home/someone"},
+        fingerprint=lambda path: SHIPPED.sha256,
     )
 
     result = run(scene, runtime)

@@ -21,7 +21,8 @@ runtime = "claude"
 # the first-party API; ChatGPT login) and the reasoning-child restrictions
 # follow the family and are not configurable here.
 #
-# Support matrix: Claude Code (verified on 2.1.260) executes. Codex is
+# Support matrix: Claude Code executes only as the one build qualified below
+# (Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1). Codex is
 # blocked for SDLC reasoning execution: its tool boundary failed review on
 # codex-cli 0.146.0, so a run selecting it fails with
 # RUNTIME_ISOLATION_UNAVAILABLE before any subprocess and nothing else is
@@ -37,9 +38,45 @@ runtime = "claude"
 # should set `model` here explicitly.
 
 [model_runtime.runtimes.claude]
-executable = "claude"
+# A dedicated, machine-local alias for the qualified build, never the user's
+# interactive `claude`, which its auto-updater repoints. Set it up once per
+# machine (Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1 §2.1):
+#   ln -s <claude versions dir>/2.1.306 <a PATH dir>/sdlc-claude-2.1.306
+# A missing alias, or one naming any other file, refuses every Claude call;
+# nothing falls back to `claude`.
+executable = "sdlc-claude-2.1.306"
 invocation_mode = "print"
 # environment_passthrough = []
+
+# The one Claude Code build qualified for SDLC reasoning execution. `sha256`
+# is the SHA-256 of the executable file `claude` resolves to (symlinks
+# followed); that file runs the login check and the inference. Any other
+# build, an updated one included, fails with RUNTIME_ISOLATION_UNAVAILABLE
+# before any process starts and needs its own qualification. `version` and
+# `builtin_plugins` are what this build must report in its own session init
+# under the SDLC restrictions with telemetry disabled: on 2.1.306 that is the
+# AGENTS.md and plugin-authoring built-ins, and the telemetry plugin is then
+# not registered. Change these only with a new qualification record.
+[model_runtime.runtimes.claude.qualified_binary]
+sha256 = "b5d795b7760032d79954b55a9cd1876dcf3a8dc9608fd6bb9f618593f69fd44b"
+version = "2.1.306"
+builtin_plugins = ["cc-plugin-agents-md", "cc-plugin-plugin-authoring"]
+# The SDK control-protocol features this build advertises in its init record:
+# requests an SDK host could send over `--input-format stream-json`, which SDLC
+# never uses. Protocol support, not model tools; the exact set is required.
+protocol_capabilities = [
+    "interrupt_receipt_v1",
+    "interrupt_cancel_queued_v1",
+    "interrupt_send_now_v1",
+    "msg_lifecycle_v1",
+    "request_marker_lists_v1",
+    "sdk_mcp_tools_list_changed",
+    "sdk_mcp_manifests",
+    "mcp_read_resource_v1",
+    "mcp_tool_ui_meta_v1",
+    "ui_surface_v1",
+    "mcp_call_result_not_for_model_v1",
+]
 
 [model_runtime.runtimes.codex]
 executable = "codex"

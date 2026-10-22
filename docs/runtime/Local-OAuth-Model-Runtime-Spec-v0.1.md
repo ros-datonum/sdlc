@@ -114,6 +114,8 @@ claude -p --safe-mode --restricted --tools "" --strict-mcp-config \
        --no-session-persistence [--model <MODEL>]
 ```
 
+> **Amended for Claude Code 2.1.306** by `Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1.md`: on that build built-in plugins load and their hooks run under `--safe-mode`; executable identity, a fixed `DISABLE_TELEMETRY=1` and per-call stream-json session validation now apply. The 2.1.260 record below is historical.
+
 Prompt and context arrive on stdin. Verified on 2.1.260: `--safe-mode`
 disables CLAUDE.md, skills, plugins, hooks and MCP servers while login and
 model selection work normally; `--restricted` removes the command and code
@@ -252,6 +254,8 @@ coding-tool project configuration, and the restrictions of section 3 live only
 on the spawned process's command line.
 
 ## 8. What the boundary is and is not
+
+> **Amended for Claude Code 2.1.306:** see `Local-OAuth-Model-Runtime-Claude-2.1.306-Amendment-v0.1.md` §5 and §12 for what built-in plugin hooks can still do before validation.
 
 For the Claude family on 2.1.260, the reasoning child cannot, by construction
 of the command line, run shell commands, read or edit local files, call MCP

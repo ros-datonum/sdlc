@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from processor_fake import FakeModelRuntime, build_workspace, candidate, model_output
+from sdlc.claude_session import STREAM_OUTPUT_FLAGS
 from sdlc.model_runtime import (
     CLAUDE_RESTRICTIONS,
     DEFAULT_TIMEOUT_SECONDS,
@@ -27,6 +28,7 @@ from sdlc.model_runtime_config import (
     RAW_REQUIREMENT_PROCESSOR_ROLE,
     TSA_ARCHITECT_ROLE,
     TSA_REVIEWER_ROLE,
+    QualifiedBinary,
     RuntimeDefinition,
     RuntimeSelection,
     load_model_runtime_config,
@@ -37,7 +39,33 @@ from sdlc.raw_processor import process_raw_requirement
 from sdlc.results import ProcessResultCode
 from standard_fake import set_state
 
-CLAUDE = RuntimeDefinition(name="claude", executable="claude", invocation_mode="print")
+QUALIFIED_SHA256 = "a" * 64
+QUALIFIED_VERSION = "9.9.9-test"
+QUALIFIED_PLUGINS = frozenset({"cc-plugin-agents-md", "cc-plugin-plugin-authoring"})
+QUALIFIED_CAPABILITIES = frozenset(
+    {
+        "interrupt_receipt_v1",
+        "interrupt_cancel_queued_v1",
+        "interrupt_send_now_v1",
+        "msg_lifecycle_v1",
+        "request_marker_lists_v1",
+        "sdk_mcp_tools_list_changed",
+        "sdk_mcp_manifests",
+        "mcp_read_resource_v1",
+        "mcp_tool_ui_meta_v1",
+        "ui_surface_v1",
+        "mcp_call_result_not_for_model_v1",
+    }
+)
+QUALIFIED = QualifiedBinary(
+    QUALIFIED_SHA256, QUALIFIED_VERSION, QUALIFIED_PLUGINS, QUALIFIED_CAPABILITIES
+)
+CLAUDE = RuntimeDefinition(
+    name="claude",
+    executable="claude",
+    invocation_mode="print",
+    qualified_binary=QUALIFIED,
+)
 CODEX = RuntimeDefinition(name="codex", executable="codex", invocation_mode="exec")
 
 CLAUDE_OK = (
@@ -60,8 +88,63 @@ PARENT_ENV = {
 }
 
 
+def claude_stream(cwd, text, qualified=QUALIFIED, **init_changes):
+    """A `qualified` Claude session's stream-json stdout for one invocation."""
+    init = {
+        "type": "system",
+        "subtype": "init",
+        "cwd": cwd,
+        "session_id": "s-1",
+        "tools": [],
+        "mcp_servers": [],
+        "skills": [],
+        "slash_commands": [],
+        "agents": ["claude", "Explore"],
+        "apiKeySource": "none",
+        "analytics_disabled": True,
+        "claude_code_version": qualified.version,
+        "model": "some-cli-default",
+        "plugins": [
+            {"name": name, "path": "builtin", "source": f"{name}@builtin"}
+            for name in sorted(qualified.builtin_plugins)
+        ],
+        "capabilities": sorted(qualified.protocol_capabilities),
+        **init_changes,
+    }
+    events = [
+        init,
+        {
+            "type": "assistant",
+            "session_id": "s-1",
+            "message": {"content": [{"type": "text", "text": text}]},
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "session_id": "s-1",
+            "result": text,
+        },
+    ]
+    return "".join(json.dumps(event) + "\n" for event in events)
+
+
+def answer(text, qualified=QUALIFIED):
+    """The inference outcome of a `qualified` session answering `text`."""
+    return lambda invocation: (0, claude_stream(invocation.cwd, text, qualified), "")
+
+
+SHIPPED = runtime_definition(
+    load_model_runtime_config(Path("config/sdlc.toml")), "claude"
+).qualified_binary
+
+
 class Runner:
-    """Records invocations and replays canned CLI results."""
+    """Records invocations and replays canned CLI results.
+
+    An outcome may be a callable of the invocation, for output that depends
+    on it (the session's own working directory).
+    """
 
     def __init__(self, results):
         self.results = list(results)
@@ -72,6 +155,8 @@ class Runner:
         if not self.results:
             raise AssertionError(f"unexpected invocation: {invocation.argv}")
         outcome = self.results.pop(0)
+        if callable(outcome):
+            outcome = outcome(invocation)
         if isinstance(outcome, Exception):
             raise outcome
         code, out, err = outcome
@@ -96,6 +181,11 @@ def build_from(selection, results=(), installed=True, environment=None, which=No
         runner=runner,
         which=which or (lambda name: f"/opt/bin/{name}" if installed else None),
         environment=PARENT_ENV if environment is None else environment,
+        # The fake binary is the build the definition qualifies; identity
+        # itself is tested with explicit fingerprints.
+        fingerprint=lambda path: (
+            (selection.definition.qualified_binary or QUALIFIED).sha256
+        ),
     )
     return runtime, runner
 
@@ -104,18 +194,18 @@ def build_from(selection, results=(), installed=True, environment=None, which=No
 
 
 def test_claude_is_invoked_in_restricted_print_mode():
-    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), (0, "hello", "")])
+    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), answer("hello")])
 
     runtime.run("do the thing")
 
     argv = runner.calls[1].argv
     assert argv[:2] == ("/opt/bin/claude", "-p")
-    assert argv[2:] == CLAUDE_RESTRICTIONS
+    assert argv[2:] == (*CLAUDE_RESTRICTIONS, *STREAM_OUTPUT_FLAGS)
     assert runner.calls[1].stdin_text == "do the thing"
 
 
 def test_the_required_claude_restrictions_are_present():
-    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), (0, "ok", "")])
+    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), answer("ok")])
 
     runtime.run("p")
 
@@ -143,7 +233,7 @@ def test_no_bypass_or_provider_flags_are_ever_sent(definition):
         "--search",
         "--settings",
     }
-    runtime, runner = build(definition, results=[ok(definition), (0, "ok", "")])
+    runtime, runner = build(definition, results=[ok(definition), answer("ok")])
 
     runtime.run("p")
 
@@ -153,31 +243,31 @@ def test_no_bypass_or_provider_flags_are_ever_sent(definition):
 
 def test_a_configured_model_is_passed_after_the_restrictions():
     runtime, runner = build(
-        CLAUDE, model="some-model", results=[ok(CLAUDE), (0, "ok", "")]
+        CLAUDE, model="some-model", results=[ok(CLAUDE), answer("ok")]
     )
 
     runtime.run("p")
 
     argv = runner.calls[1].argv
     assert argv[-2:] == ("--model", "some-model")
-    assert argv[2:-2] == CLAUDE_RESTRICTIONS
+    assert argv[2:-2] == (*CLAUDE_RESTRICTIONS, *STREAM_OUTPUT_FLAGS)
 
 
 def test_a_model_selection_cannot_alter_the_restrictions():
     """A model string is one argv element; it cannot inject or remove flags."""
     hostile = "opus --tools default --dangerously-skip-permissions"
-    runtime, runner = build(CLAUDE, model=hostile, results=[ok(CLAUDE), (0, "", "")])
+    runtime, runner = build(CLAUDE, model=hostile, results=[ok(CLAUDE), answer("ok")])
 
     runtime.run("p")
 
     argv = runner.calls[1].argv
     assert argv[argv.index("--model") + 1] == hostile
-    assert argv[2:-2] == CLAUDE_RESTRICTIONS
+    assert argv[2:-2] == (*CLAUDE_RESTRICTIONS, *STREAM_OUTPUT_FLAGS)
     assert "--dangerously-skip-permissions" not in argv
 
 
 def test_no_model_flag_is_sent_when_the_cli_should_choose():
-    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), (0, "ok", "")])
+    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), answer("ok")])
 
     response = runtime.run("p")
 
@@ -186,7 +276,7 @@ def test_no_model_flag_is_sent_when_the_cli_should_choose():
 
 
 def test_context_is_prepended_to_the_prompt_on_stdin():
-    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), (0, "ok", "")])
+    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), answer("ok")])
 
     runtime.run("PROMPT", context="CONTEXT")
 
@@ -194,7 +284,7 @@ def test_context_is_prepended_to_the_prompt_on_stdin():
 
 
 def test_the_response_reports_the_runtime_and_model():
-    runtime, _ = build(CLAUDE, model="m", results=[ok(CLAUDE), (0, "text", "")])
+    runtime, _ = build(CLAUDE, model="m", results=[ok(CLAUDE), answer("text")])
 
     response = runtime.run("p")
 
@@ -206,7 +296,7 @@ def test_the_response_reports_the_runtime_and_model():
 
 @pytest.mark.parametrize("definition", [CLAUDE], ids=["claude"])
 def test_auth_check_and_inference_share_executable_environment_and_cwd(definition):
-    runtime, runner = build(definition, results=[ok(definition), (0, "ok", "")])
+    runtime, runner = build(definition, results=[ok(definition), answer("ok")])
 
     runtime.run("p")
 
@@ -234,18 +324,25 @@ def test_the_auth_check_uses_the_cli_family_protocol():
 
 @pytest.mark.parametrize("definition", [CLAUDE], ids=["claude"])
 def test_the_child_environment_is_an_explicit_allowlist(definition):
-    runtime, runner = build(definition, results=[ok(definition), (0, "ok", "")])
+    runtime, runner = build(definition, results=[ok(definition), answer("ok")])
 
     runtime.run("p")
 
     for invocation in runner.calls:
-        assert dict(invocation.env) == {"PATH": "/usr/bin", "HOME": "/home/someone"}
+        assert dict(invocation.env) == {
+            "PATH": "/usr/bin",
+            "HOME": "/home/someone",
+            # The fixed values of the Claude child (amendment §3, §7).
+            "DISABLE_TELEMETRY": "1",
+            "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
+            "CLAUDE_CODE_DISABLE_FILE_MENTIONS": "1",
+        }
 
 
 def test_credential_store_locations_are_passed_through():
     environment = {**PARENT_ENV, "CLAUDE_CONFIG_DIR": "/cfg", "CODEX_HOME": "/cdx"}
     runtime, runner = build(
-        CLAUDE, results=[ok(CLAUDE), (0, "ok", "")], environment=environment
+        CLAUDE, results=[ok(CLAUDE), answer("ok")], environment=environment
     )
 
     runtime.run("p")
@@ -261,10 +358,11 @@ def test_configured_passthrough_adds_only_allowed_names():
         executable="claude",
         invocation_mode="print",
         environment_passthrough=("HTTPS_PROXY",),
+        qualified_binary=QUALIFIED,
     )
     environment = {**PARENT_ENV, "HTTPS_PROXY": "http://proxy.local:3128"}
     runtime, runner = build(
-        definition, results=[ok(CLAUDE), (0, "ok", "")], environment=environment
+        definition, results=[ok(CLAUDE), answer("ok")], environment=environment
     )
 
     runtime.run("p")
@@ -278,6 +376,7 @@ def test_a_hand_built_definition_cannot_pass_a_provider_override_through():
         executable="claude",
         invocation_mode="print",
         environment_passthrough=("ANTHROPIC_BASE_URL",),
+        qualified_binary=QUALIFIED,
     )
     runtime, runner = build(definition, results=[])
 
@@ -288,7 +387,7 @@ def test_a_hand_built_definition_cannot_pass_a_provider_override_through():
 
 
 def test_the_working_directory_is_a_fresh_temporary_directory_outside_the_repo():
-    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), (0, "ok", "")])
+    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), answer("ok")])
 
     runtime.run("p")
 
@@ -583,7 +682,7 @@ def test_no_fallback_runtime_is_attempted_when_codex_is_refused():
     looked_up = []
     runtime, runner = build(
         CODEX,
-        results=[ok(CLAUDE), (0, "hello", "")],
+        results=[ok(CLAUDE), answer("hello")],
         which=lambda n: looked_up.append(n),
     )
 
@@ -635,14 +734,19 @@ def test_a_shipped_tsa_role_runs_restricted_claude_after_its_own_auth_check(role
         load_model_runtime_config(Path("config/sdlc.toml")), role
     )
     runtime, runner = build_from(
-        selection, results=[(0, CLAUDE_OK, ""), (0, "answer", "")]
+        selection, results=[(0, CLAUDE_OK, ""), answer("answer", SHIPPED)]
     )
 
     response = runtime.run("PROMPT", context="CONTEXT")
 
     auth, inference = runner.calls
-    assert auth.argv == ("/opt/bin/claude", "auth", "status", "--json")
-    assert inference.argv == ("/opt/bin/claude", "-p", *CLAUDE_RESTRICTIONS)
+    assert auth.argv == ("/opt/bin/sdlc-claude-2.1.306", "auth", "status", "--json")
+    assert inference.argv == (
+        "/opt/bin/sdlc-claude-2.1.306",
+        "-p",
+        *CLAUDE_RESTRICTIONS,
+        *STREAM_OUTPUT_FLAGS,
+    )
     assert "--model" not in inference.argv
     assert inference.stdin_text == "CONTEXT\n\nPROMPT"
     assert inference.timeout == DEFAULT_TIMEOUT_SECONDS
@@ -667,7 +771,7 @@ def test_a_tsa_role_selecting_codex_is_refused_with_no_subprocess_or_fallback(
     looked_up = []
     runtime, runner = build_from(
         selection,
-        results=[(0, CLAUDE_OK, ""), (0, "hello", "")],
+        results=[(0, CLAUDE_OK, ""), answer("hello")],
         which=lambda name: looked_up.append(name),
     )
 
@@ -838,7 +942,7 @@ def test_a_short_unknown_status_value_stays_out_of_results_and_cli_output(
 
 
 def test_the_known_valid_status_is_still_accepted_as_a_control():
-    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), (0, "answer", "")])
+    runtime, runner = build(CLAUDE, results=[ok(CLAUDE), answer("answer")])
 
     assert runtime.run("p").text == "answer"
     assert len(runner.calls) == 2

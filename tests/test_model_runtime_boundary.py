@@ -5,6 +5,7 @@ its argv, working directory and environment names. A mocked runner cannot
 prove that inheritance was fixed; a real child can.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -13,7 +14,12 @@ from pathlib import Path
 import pytest
 
 from sdlc.model_runtime import LocalCliModelRuntime, RuntimeIsolationUnavailable
-from sdlc.model_runtime_config import RuntimeDefinition, RuntimeSelection
+from sdlc.model_runtime_config import (
+    QualifiedBinary,
+    RuntimeDefinition,
+    RuntimeSelection,
+)
+from sdlc.model_runtime_environment import FIXED_CHILD_ENVIRONMENT
 
 CLAUDE_STATUS = {
     "loggedIn": True,
@@ -22,6 +28,15 @@ CLAUDE_STATUS = {
     "subscriptionType": "synthetic",
 }
 
+# What the runtime itself sets in every Claude child (amendment §3, §7).
+FIXED_NAMES = set(FIXED_CHILD_ENVIRONMENT["print"])
+STAND_IN_VERSION = "0.0.0-stand-in"
+STAND_IN_PLUGINS = ["cc-plugin-agents-md", "cc-plugin-plugin-authoring"]
+STAND_IN_CAPABILITIES = ["interrupt_receipt_v1", "msg_lifecycle_v1"]
+
+# A stand-in CLI: it records how it was started, answers the status command,
+# and otherwise emits the stream-json session a qualified build would, for its
+# own working directory, answering with what it read on stdin.
 HELPER = """#!{python}
 import json, os, sys
 argv = sys.argv[1:]
@@ -32,7 +47,22 @@ if argv[:2] == ["auth", "status"]:
 elif argv[:2] == ["login", "status"]:
     print("Logged in using ChatGPT", file=sys.stderr)
 else:
-    print("RESPONSE:" + sys.stdin.read())
+    answer = "RESPONSE:" + sys.stdin.read()
+    for event in (
+        {{"type": "system", "subtype": "init", "cwd": os.getcwd(), "session_id": "s",
+          "tools": [], "mcp_servers": [], "skills": [], "slash_commands": [],
+          "agents": [], "apiKeySource": "none",
+          "analytics_disabled": os.environ.get("DISABLE_TELEMETRY") == "1",
+          "claude_code_version": {version!r},
+          "capabilities": {capabilities!r},
+          "plugins": [{{"name": n, "path": "builtin", "source": n + "@builtin"}}
+                      for n in {plugins!r}]}},
+        {{"type": "assistant", "session_id": "s",
+          "message": {{"content": [{{"type": "text", "text": answer}}]}}}},
+        {{"type": "result", "subtype": "success", "is_error": False,
+          "session_id": "s", "result": answer}},
+    ):
+        print(json.dumps(event))
 """
 
 
@@ -42,7 +72,14 @@ def stand_in(tmp_path):
     log = tmp_path / "calls.jsonl"
     script = tmp_path / "fake-cli"
     script.write_text(
-        HELPER.format(python=sys.executable, log=str(log), status=CLAUDE_STATUS)
+        HELPER.format(
+            python=sys.executable,
+            log=str(log),
+            status=CLAUDE_STATUS,
+            version=STAND_IN_VERSION,
+            plugins=STAND_IN_PLUGINS,
+            capabilities=STAND_IN_CAPABILITIES,
+        )
     )
     script.chmod(0o755)
     return script, log
@@ -52,12 +89,23 @@ def calls(log):
     return [json.loads(line) for line in log.read_text().splitlines()]
 
 
-def runtime_for(script, mode, passthrough=()):
+def qualified(script):
+    """The stand-in file itself, qualified by its real SHA-256."""
+    return QualifiedBinary(
+        sha256=hashlib.sha256(Path(script).read_bytes()).hexdigest(),
+        version=STAND_IN_VERSION,
+        builtin_plugins=frozenset(STAND_IN_PLUGINS),
+        protocol_capabilities=frozenset(STAND_IN_CAPABILITIES),
+    )
+
+
+def runtime_for(script, mode, passthrough=(), executable=None):
     definition = RuntimeDefinition(
         name="fake",
-        executable=str(script),
+        executable=str(executable or script),
         invocation_mode=mode,
         environment_passthrough=passthrough,
+        qualified_binary=qualified(script),
     )
     return LocalCliModelRuntime(
         RuntimeSelection(role="r", definition=definition, model=None)
@@ -81,10 +129,10 @@ def test_parent_secrets_never_reach_either_child(stand_in, monkeypatch, mode):
         assert "FIBERY_TOKEN" not in record["env"]
         assert not any(
             name.startswith(("ANTHROPIC_", "OPENAI_", "CLAUDE_CODE_", "CLAUDECODE"))
-            for name in record["env"]
+            for name in set(record["env"]) - FIXED_NAMES
         )
         assert {"PATH", "HOME"} <= set(record["env"])
-    assert response.text == "RESPONSE:CONTEXT\n\nPROMPT\n"
+    assert response.text == "RESPONSE:CONTEXT\n\nPROMPT"
 
 
 @pytest.mark.parametrize("mode", ["print"])
@@ -140,7 +188,7 @@ def test_the_environment_seen_by_the_child_is_exactly_the_allowlist(stand_in):
             "CODEX_HOME",
         )
         if name in os.environ
-    }
+    } | FIXED_NAMES
 
     runtime_for(script, "print").run("p")
 
