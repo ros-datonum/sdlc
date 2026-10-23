@@ -299,7 +299,11 @@ def configured(clauses=None, **policy):
 
 def test_the_repository_ships_default_deny():
     root = Path(__file__).parent.parent
-    assert load_autonomy_policies(root / "config" / "sdlc.toml") == DISABLED
+    # The repository's [autonomy] delegates nothing. Its operator attestations
+    # are human decisions, never policy, and are pinned in test_human_attestation.
+    shipped = load_autonomy_policies(root / "config" / "sdlc.toml")
+    assert shipped.policies == DISABLED.policies
+    assert shipped.for_project("ARP1") is None and shipped.for_project("SDLC") is None
     assert parse_autonomy_policies(None) == DISABLED
     assert parse_autonomy_policies({"mode": "disabled"}) == DISABLED
     assert DISABLED.for_project("SDLC") is None

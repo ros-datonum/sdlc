@@ -144,3 +144,11 @@ mode = "disabled"
 # repository.
 [ready_decisions]
 mode = "disabled"
+
+[[attestations.clarifications]]
+project_code = "ARP1"
+requirement_id = "ARP1-CON-0132"
+entity_id = "7355aefe-25c0-5188-aba7-dbb81b91b919"
+text = "For this service, the prohibition on persistent data storage includes service-generated logs, request and response records, and other operational records. The service must not write or retain any of these records persistently, whether or not they contain request data."
+approved_by = "Rostyslav Bachyk"
+approved_fingerprint = "e09cae68cb3db460170b1f00458931733c90af0a0960473336a77e1b42b56974"

@@ -596,8 +596,22 @@ def test_the_snapshot_carries_attestations_and_delegates_nothing(tmp_path):
     ]
 
 
-def test_the_repository_ships_no_attestation():
-    assert load_autonomy_policies().attestations == HumanAttestations()
+def test_the_repository_ships_exactly_the_approved_attestations():
+    """The only attestation is the operator-approved ARP1-CON-0132 decision
+    (ARP1 Gate 2T). Any other, changed or extra attestation fails here."""
+    shipped = load_autonomy_policies().attestations.attestations
+    assert [
+        (a.project_code, a.requirement_id, a.entity_id, a.approved_by, a.fingerprint)
+        for a in shipped
+    ] == [
+        (
+            "ARP1",
+            "ARP1-CON-0132",
+            "7355aefe-25c0-5188-aba7-dbb81b91b919",
+            "Rostyslav Bachyk",
+            "e09cae68cb3db460170b1f00458931733c90af0a0960473336a77e1b42b56974",
+        )
+    ]
 
 
 def test_an_attestation_is_not_part_of_policy_identity():
