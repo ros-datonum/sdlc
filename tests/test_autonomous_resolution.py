@@ -1599,7 +1599,12 @@ INVENTED = "Every request is capped at 7 retries per hour."
 
 
 def rejected_invention():
-    """Iteration 1 adopted an invented answer; Review 1 rejected it."""
+    """Iteration 1 adopted an invented answer; Review 1 rejected it.
+
+    The invented text stays in iteration 1's output, so it is in the next
+    iteration's input: a REQUIREMENT citation of it binds, and only the
+    attestation rule stands between it and authority.
+    """
     ws, requirement, root = scene()
     ws.content[root.secret] = ws.content[root.secret].replace(DRAFT_QUOTE, INVENTED)
     invented = resolution(
@@ -1607,7 +1612,14 @@ def rejected_invention():
         answer=INVENTED,
         sources=[citation("REQUIREMENT", INVENTED)],
     )
-    processed(ws, requirement, analysis_output(resolutions=[invented]))
+    processed(
+        ws,
+        requirement,
+        analysis_output(
+            normalized_changes={"constraints_edge_cases": INVENTED},
+            resolutions=[invented],
+        ),
+    )
     reviewed(
         ws,
         requirement,
@@ -1647,9 +1659,7 @@ def test_a_rejected_answer_cannot_become_its_own_source(response, resolutions):
         authorized_new_cycle=True,
     )
     assert result.code is ProcessCode.INVALID_MODEL_OUTPUT, result
-    assert "not authority" in " ".join(result.details) or "not this Requirement" in (
-        " ".join(result.details)
-    )
+    assert "no current operator attestation" in " ".join(result.details)
     assert ws.mutations[before:] == []
 
 

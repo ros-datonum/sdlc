@@ -18,6 +18,12 @@ Three moments:
   (`require_current_citations`, `require_current_policy`).
 - **Ready, Apply and TSA admission** refuse evidence whose policy or cited
   sources changed since it was bound (`require_current_resolutions`).
+
+At every one of those moments a REQUIREMENT citation that answers a material
+WHAT item of the Rework Brief must also be covered by a current operator
+attestation of this exact Requirement (`require_attested_authority`,
+Requirement-Human-Attestation-v0.1): the Requirement's own text is otherwise
+indistinguishable from what an earlier model iteration wrote into it.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from typing import Protocol
 
 from sdlc.autonomy_policy import AutonomyPolicies, AutonomyPolicy, PolicyBinding
 from sdlc.fibery_workspace import DocumentNode, FiberyError, RequirementRecord
+from sdlc.human_attestation import HumanAttestations
 from sdlc.normative_tree import (
     NormativeTreeError,
     document_fingerprint,
@@ -37,11 +44,14 @@ from sdlc.normative_tree import (
 )
 from sdlc.process_result import ProcessResult
 from sdlc.review_result import ReviewResult
+from sdlc.rework_brief import ReworkBrief
 from sdlc.standard_analysis import (
     AnalysisResult,
     InvalidAnalysisOutput,
     Resolution,
     ResolutionClass,
+    ReworkOutcome,
+    ReworkResponse,
     SourceCitation,
     SourceKind,
 )
@@ -213,6 +223,89 @@ def _bind(source: SourceCitation, where: str, corpus: SourceCorpus) -> SourceCit
     )
 
 
+# -- human attestation ----------------------------------------------------------
+
+
+def attested_reliance(
+    brief: ReworkBrief | None,
+    responses: Iterable[ReworkResponse],
+    resolutions: tuple[Resolution, ...],
+) -> tuple[tuple[str, SourceCitation], ...]:
+    """Each REQUIREMENT citation an answer to a material Brief item relies on.
+
+    A material item is one the source Review left blocking WHAT, or one that
+    carries a resolution it did not confirm. A RESOLVED answer relies on the
+    sources of the resolution it names, a REBUTTED one on its evidence; an
+    ESCALATED answer, and a delegated default (whose authority is its
+    clause), rely on none. Mixing in a RAW or dependency source
+    does not exempt the REQUIREMENT one: each is answered for on its own.
+    """
+    if brief is None:
+        return ()
+    material = brief.what_refs | brief.resolution_refs
+    relied: list[tuple[str, SourceCitation]] = []
+    for response in responses:
+        if response.item not in material:
+            continue
+        if response.outcome is ReworkOutcome.REBUTTED:
+            cited = response.evidence
+        elif (
+            response.outcome is ReworkOutcome.RESOLVED
+            and response.resolution_index is not None
+        ):
+            resolution = resolutions[response.resolution_index]
+            if resolution.resolution_class is ResolutionClass.DELEGATED_DEFAULT:
+                # Its authority is the bound clause; a REQUIREMENT source is
+                # applicability evidence, which the policy checks govern.
+                continue
+            cited = resolution.sources
+        else:
+            continue
+        relied += [
+            (response.item, source)
+            for source in cited
+            if source.kind is SourceKind.REQUIREMENT
+        ]
+    return tuple(relied)
+
+
+def require_attested_authority(
+    requirement_id: str,
+    entity_id: str,
+    brief: ReworkBrief | None,
+    responses: Iterable[ReworkResponse],
+    resolutions: tuple[Resolution, ...],
+    attestations: HumanAttestations,
+) -> None:
+    """Every relied-on REQUIREMENT quote is a current attestation of this Requirement.
+
+    Requirement-Human-Attestation-v0.1: once a review has left a material
+    question open, this Requirement's own text answers it only where the
+    operator attested that exact text as a human decision for this entity
+    and Requirement ID. Text an earlier iteration wrote is never attested,
+    so a model cannot turn its own answer into authority. The quote must
+    occur in an attestation (whitespace runs as one space); an attestation
+    removed, changed or naming another Requirement covers nothing.
+    Raises ResolutionEvidenceError(STALE): at Process the caller reports it
+    as the model's invalid output.
+    """
+    attested = attestations.for_requirement(entity_id, requirement_id)
+    uncovered = [
+        item
+        for item, citation in attested_reliance(brief, responses, resolutions)
+        if not any(quote_occurs(citation.quote, entry.text) for entry in attested)
+    ]
+    if uncovered:
+        raise ResolutionEvidenceError(
+            ResolutionFailure.STALE,
+            f"An answer to a material item of {requirement_id}'s Rework Brief "
+            "cites this Requirement's own text, and no current operator "
+            "attestation of this Requirement contains the quoted text: it is "
+            "not established as a human decision.",
+            tuple(sorted(set(uncovered))),
+        )
+
+
 # -- currentness ----------------------------------------------------------------
 
 
@@ -380,13 +473,17 @@ def require_current_resolutions(
     process: ProcessResult,
     review: ReviewResult,
     policies: AutonomyPolicies,
+    *,
+    entity_id: str,
 ) -> None:
     """Ready, Apply and TSA admission: the reviewed evidence is still current.
 
     Only resolution-bound (0.7) evidence carries resolutions; older evidence
     recorded none and is governed by the earlier rules alone. The caller has
     already checked, through `what_clearance`, that the review verified
-    exactly `process`'s resolutions and policy binding.
+    exactly `process`'s resolutions and policy binding. `entity_id` is the
+    Requirement the evidence belongs to: an attestation it relies on must
+    still name it.
     """
     if not review.is_resolution_bound:
         return
@@ -404,4 +501,12 @@ def require_current_resolutions(
         workspace,
         review.citations,
         process.input_tree.fingerprint if process.input_tree else None,
+    )
+    require_attested_authority(
+        process.requirement_id,
+        entity_id,
+        process.rework_brief,
+        process.rework_responses,
+        process.resolutions,
+        policies.attestations,
     )

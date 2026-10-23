@@ -523,43 +523,23 @@ def _require_evidence_bound(
             "a REBUTTED response cites evidence and no other response does."
         )
     if response.item in rework.resolution_refs:
-        _require_outside_authority(response, resolutions)
+        _require_named_resolution(response)
 
 
-def _require_outside_authority(
-    response: ReworkResponse, resolutions: tuple[Resolution, ...]
-) -> None:
-    """An unconfirmed resolution cannot become its own source on rework.
+def _require_named_resolution(response: ReworkResponse) -> None:
+    """An unconfirmed resolution is answered again only by a named resolution.
 
     Its answer was written into the Requirement, so that text is the earlier
-    model's output, not authority. Resolving or rebutting the item needs the
-    RAW, a dependency or a policy clause (Autonomous Resolution v0.1 §7).
+    model's output, not authority (Autonomous Resolution v0.1 §7). Which
+    sources may answer it depends on the operator's attestations, which a
+    persisted Result is not read against: that check is
+    `resolution_evidence.require_attested_authority`, run at Process, Review,
+    Ready, Apply and TSA admission (Requirement-Human-Attestation-v0.1).
     """
-    outcome = response.outcome
-    if outcome is ReworkOutcome.RESOLVED:
-        if response.resolution_index is None:
-            raise InvalidAnalysisOutput(
-                f"Brief item {response.item} carries an unconfirmed resolution; "
-                "resolving it must name the resolution that answers it."
-            )
-        resolution = resolutions[response.resolution_index]
-        cited = {source.kind for source in resolution.sources}
-        if (
-            resolution.resolution_class is not ResolutionClass.DELEGATED_DEFAULT
-            and cited <= {SourceKind.REQUIREMENT}
-        ):
-            raise InvalidAnalysisOutput(
-                f"Brief item {response.item} carries an unconfirmed resolution whose "
-                "answer is now in this Requirement's text; that text is not "
-                "authority for it. Cite the RAW or a dependency, or apply a clause."
-            )
-    elif outcome is ReworkOutcome.REBUTTED and {
-        source.kind for source in response.evidence
-    } <= {SourceKind.REQUIREMENT}:
+    if response.outcome is ReworkOutcome.RESOLVED and response.resolution_index is None:
         raise InvalidAnalysisOutput(
-            f"Brief item {response.item} carries an unconfirmed resolution; a "
-            "rebuttal must cite the RAW or a dependency, not this Requirement's "
-            "own text, which holds the unconfirmed answer."
+            f"Brief item {response.item} carries an unconfirmed resolution; "
+            "resolving it must name the resolution that answers it."
         )
 
 

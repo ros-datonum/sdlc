@@ -74,6 +74,7 @@ from sdlc.resolution_evidence import (
     ResolutionFailure,
     SourceText,
     render_raw_ancestry,
+    require_attested_authority,
     require_current_citations,
     require_current_policy,
 )
@@ -950,6 +951,9 @@ def _verify(
         comparison=comparison,
         dependencies=_dependency_lines(dependencies),
         policy=policy,
+        attestations=policies.attestations.for_requirement(
+            context.requirement.id, context.requirement.requirement_id
+        ),
     )
     try:
         require_input_within_budget("Standard Review", prompt, model_context)
@@ -1010,7 +1014,9 @@ def _current_resolution_evidence(
     Section 6: each RAW is still an originating RAW and each DEPENDENCY still
     an existing or proposed DEPENDS_ON target, each the same entity with the
     same Root fingerprint and the quote present; a REQUIREMENT citation
-    carries the Result's own input tree. Nothing is checked for a Process
+    carries the Result's own input tree, and one that answers a material
+    Brief item is still an operator attestation of this Requirement
+    (Requirement-Human-Attestation-v0.1). Nothing is checked for a Process
     Result that predates resolutions.
     """
     process = context.process_result
@@ -1034,6 +1040,14 @@ def _current_resolution_evidence(
                 for relation in process.proposed_relations
                 if relation.kind is RelationKind.DEPENDS_ON
             },
+        )
+        require_attested_authority(
+            process.requirement_id,
+            context.requirement.id,
+            process.rework_brief,
+            process.rework_responses,
+            process.resolutions,
+            policies.attestations,
         )
     except ResolutionEvidenceError as error:
         raise _StageFailed(

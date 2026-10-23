@@ -16,6 +16,11 @@ The default, and what this repository ships, is `mode = "disabled"`: no
 Project has delegated defaults. A configuration without an `[autonomy]` table
 is the same. The policy is read as each invocation or worker stage starts and
 is immutable for that stage; a running worker never reuses it for the next one.
+
+The same snapshot carries the operator's attestations of human decisions
+(`[attestations]`, Requirement-Human-Attestation-v0.1), read from the same file
+at the same moment. They are kept apart: an attestation is never a policy,
+never a clause, and never part of a policy's fingerprint or identity.
 """
 
 from __future__ import annotations
@@ -24,11 +29,18 @@ import hashlib
 import json
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from sdlc.config import ConfigurationError
+from sdlc.human_attestation import (
+    ATTESTATIONS_KEY,
+    NO_ATTESTATIONS,
+    HumanAttestationError,
+    HumanAttestations,
+    parse_human_attestations,
+)
 from sdlc.model_runtime_config import DEFAULT_CONFIG_PATH
 from sdlc.project_code import InvalidProjectCode, validate_project_code
 
@@ -169,9 +181,14 @@ def policy_fingerprint(
 
 @dataclass(frozen=True)
 class AutonomyPolicies:
-    """Every approved policy, by Project code. Empty is default deny."""
+    """Every approved policy, by Project code. Empty is default deny.
+
+    `attestations` are the operator's attested human decisions, read in the
+    same snapshot; they delegate nothing and no policy method consults them.
+    """
 
     policies: tuple[AutonomyPolicy, ...] = ()
+    attestations: HumanAttestations = NO_ATTESTATIONS
 
     def for_project(self, project_code: str | None) -> AutonomyPolicy | None:
         """The active policy of a Project, or None: Class C is unavailable."""
@@ -225,7 +242,13 @@ def load_autonomy_policies(path: Path | None = None) -> AutonomyPolicies:
         raise AutonomyPolicyError(
             f"{config_path} is not valid TOML: {error}"
         ) from error
-    return parse_autonomy_policies(raw.get(AUTONOMY_KEY))
+    policies = parse_autonomy_policies(raw.get(AUTONOMY_KEY))
+    try:
+        attestations = parse_human_attestations(raw.get(ATTESTATIONS_KEY))
+    except HumanAttestationError as error:
+        # One refusal for the whole snapshot: a stage never runs on part of it.
+        raise AutonomyPolicyError(str(error)) from error
+    return replace(policies, attestations=attestations)
 
 
 def parse_autonomy_policies(section: object) -> AutonomyPolicies:

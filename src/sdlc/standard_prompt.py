@@ -20,7 +20,9 @@ the previous independent Review's actionable items, as claims to examine.
 
 The context always carries the Project's delegated decision policy section
 (Requirement-Autonomous-Resolution-v0.1): the approved clauses, or a statement
-that none is approved and DELEGATED_DEFAULT is unavailable.
+that none is approved and DELEGATED_DEFAULT is unavailable, and the operator's
+attestations of this Requirement's text (Requirement-Human-Attestation-v0.1),
+the only evidence that any of that text is a human decision.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from sdlc.comparison_context import (
     render_target_metadata,
 )
 from sdlc.fibery_workspace import RequirementRecord, RequirementRelations
+from sdlc.human_attestation import HumanAttestation, render_attestation_section
 from sdlc.rework_brief import BriefItem, ReworkBrief
 from sdlc.standard_analysis import (
     AUTONOMOUS_CLASSES,
@@ -388,8 +391,17 @@ Rework (only when the context has a section headed
   confirm. Its adopted answer is now in this Requirement's text, but that
   text is the earlier analysis's output, not authority: never cite it (kind
   REQUIREMENT) for this item. Resolve it again only from the RAW source, a
-  dependency or a correctly applied clause, otherwise ESCALATE it as a
-  product question.
+  dependency, a correctly applied clause or an operator-attested
+  clarification, otherwise ESCALATE it as a product question.
+- For an item of category RESOLUTION, an item marked "material WHAT
+  question", or a claim re-raising either, a kind REQUIREMENT citation (in
+  the resolution you name, or in REBUTTED evidence) must quote text listed
+  under OPERATOR-ATTESTED CLARIFICATIONS, which the operator attested as a
+  human decision for this Requirement. Any other text of this Requirement
+  is not authority for such an item, even beside a RAW citation, and a
+  citation of it rejects the whole output. An attested text settles who
+  decided, not that it is right: cite it only where it actually states the
+  answer and is consistent with the RAW source and related Requirements.
 - An item marked "material WHAT question" is a product decision the review
   found open. RESOLVED means the Requirement's normative content now answers
   it from the evidence, not that you chose an answer. When no evidence
@@ -416,6 +428,7 @@ def build_analysis_prompt(
     rework_brief: ReworkBrief | None = None,
     relations: RequirementRelations | None = None,
     policy: AutonomyPolicy | None = None,
+    attestations: tuple[HumanAttestation, ...] = (),
 ) -> tuple[str, str]:
     """Return the instruction prompt and the context sent on stdin.
 
@@ -423,6 +436,8 @@ def build_analysis_prompt(
     normative and source section; without one there is no such section.
     `policy` is the Project's approved autonomy policy, None when there is
     none: the section then says DELEGATED_DEFAULT is unavailable.
+    `attestations` are the operator attestations of this exact Requirement
+    (Requirement-Human-Attestation-v0.1); the section says when there are none.
     """
     context = "\n".join(
         [
@@ -439,6 +454,8 @@ def build_analysis_prompt(
             _section("Normative child documents", child_content),
             "",
             _section("Originating RAW requirement source", raw_ancestry),
+            "",
+            render_attestation_section(attestations),
             "",
             _relations_section(relations or RequirementRelations()),
             "",

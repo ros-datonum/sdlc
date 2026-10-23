@@ -57,6 +57,7 @@ from sdlc.fibery_workspace import (
     RequirementRecord,
     RequirementRelations,
 )
+from sdlc.human_attestation import HumanAttestation, HumanAttestations
 from sdlc.model_runtime import ModelRuntime, ModelRuntimeError
 from sdlc.normative_tree import (
     NormativeTree,
@@ -84,6 +85,7 @@ from sdlc.resolution_evidence import (
     SourceText,
     bind_citations,
     render_raw_ancestry,
+    require_attested_authority,
     require_current_policy,
 )
 from sdlc.result_shell import (
@@ -173,6 +175,9 @@ class _Context:
     # approved autonomy policy, None when delegated defaults are unavailable.
     raws: tuple[SourceText, ...] = ()
     policy: AutonomyPolicy | None = None
+    # The operator's attestations of exactly this Requirement's text
+    # (Requirement-Human-Attestation-v0.1), from the same snapshot.
+    attestations: tuple[HumanAttestation, ...] = ()
     # The Reviewer's own artifacts under the Root: history, never content.
     reviews: tuple[DocumentNode, ...] = ()
     # An empty Process Result shell the operator named for recovery, with the
@@ -524,6 +529,9 @@ def _load_context(
         shell=shell,
         raws=raws,
         policy=policies.for_project(project.code),
+        attestations=policies.attestations.for_requirement(
+            requirement.id, requirement.requirement_id
+        ),
     )
 
 
@@ -1395,6 +1403,7 @@ def _analyze(
         rework_brief=brief,
         relations=relations,
         policy=context.policy,
+        attestations=context.attestations,
     )
     try:
         require_input_within_budget("Standard Process", prompt, model_context)
@@ -1422,15 +1431,40 @@ def _analyze(
                 else None
             ),
         )
-        return bind_citations(
+        bound = bind_citations(
             analysis,
             _source_corpus(context, comparison, relations, children, analysis),
         )
+        _require_attested(context, brief, bound)
+        return bound
     except InvalidAnalysisOutput as error:
         raise _StageFailed(
             StandardProcessResultCode.INVALID_MODEL_OUTPUT,
             "The model's response does not satisfy the analysis contract.",
             (str(error),),
+        ) from error
+
+
+def _require_attested(
+    context: _Context, brief: ReworkBrief | None, analysis: AnalysisResult
+) -> None:
+    """A material Brief item answered from this Requirement's text needs a human.
+
+    Requirement-Human-Attestation-v0.1: the text must be an operator
+    attestation of this Requirement; anything else is the model's error.
+    """
+    try:
+        require_attested_authority(
+            context.requirement.requirement_id,
+            context.requirement.id,
+            brief,
+            analysis.rework_responses,
+            analysis.resolutions,
+            HumanAttestations(context.attestations),
+        )
+    except ResolutionEvidenceError as error:
+        raise InvalidAnalysisOutput(
+            f"{error.message} Unattested items: {', '.join(error.details)}."
         ) from error
 
 

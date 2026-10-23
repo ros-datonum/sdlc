@@ -31,7 +31,9 @@ The resolutions the earlier analysis adopted itself
 (Requirement-Autonomous-Resolution-v0.1) are sent as claims too, each with
 its bound citations, and for a delegated default the clauses of the policy it
 bound with the human-only domains no clause can cover. The reviewer answers
-ten checks per resolution; code holds its outcome to them.
+ten checks per resolution; code holds its outcome to them. The operator's
+attestations of this Requirement's text (Requirement-Human-Attestation-v0.1)
+are listed as the only evidence that any of its text is a human decision.
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ from sdlc.comparison_context import (
     render_target_metadata,
 )
 from sdlc.fibery_workspace import RequirementRecord, RequirementRelations
+from sdlc.human_attestation import HumanAttestation, render_attestation_section
 from sdlc.process_result import ProcessResult
 from sdlc.standard_analysis import FindingKind
 from sdlc.standard_review import (
@@ -383,10 +386,20 @@ Rules:
     left open by the adopted answer.
   * testable_at_what_level: with the answer, the affected obligation can be
     judged objectively at the WHAT level.
-  This Requirement's current content was written by the earlier analysis
-  and may hold answers an earlier review did not confirm: such an answer is
+  This Requirement's current content may hold text an earlier analysis
+  wrote, including answers an earlier review did not confirm: such text is
   not authority, and a REQUIREMENT citation of it does not pass
-  source_supports_answer or authority_class_correct.
+  source_supports_answer or authority_class_correct. The one exception is a
+  text listed under OPERATOR-ATTESTED CLARIFICATIONS: code verified that the
+  operator's configuration attests that exact text as a human decision for
+  this Requirement, and code refuses any REQUIREMENT citation answering a
+  material item carried over from an earlier review that is not quoted from
+  one. A citation of an attested text settles who decided: it passes
+  authority_class_correct, and source_supports_answer when the text actually
+  states the answer, and an obligation it states is not unsupported. It does
+  not make the decision correct: still FAIL consistent_with_raw,
+  consistent_with_related or no_new_contradiction when it contradicts the RAW
+  source, a related Requirement or this Requirement.
   CONFIRMED requires every check to PASS (within_policy_clause may be
   NOT_APPLICABLE as above), with no severity. Any FAIL is REJECTED, with the severity of the
   unsupported or unauthorized decision. Otherwise any UNCERTAIN is
@@ -417,12 +430,15 @@ def build_review_prompt(
     comparison: ComparisonContext,
     dependencies: tuple[str, ...] = (),
     policy: AutonomyPolicy | None = None,
+    attestations: tuple[HumanAttestation, ...] = (),
 ) -> tuple[str, str]:
     """Return the instruction prompt and the context sent on stdin.
 
     `dependencies` describes the interpretation set, one line per member.
     `policy` is the autonomy policy a delegated default bound, already proved
     current; it is shown only when a resolution relies on it.
+    `attestations` are the operator attestations of this exact Requirement in
+    the stage's configuration snapshot (Requirement-Human-Attestation-v0.1).
     """
     context = "\n".join(
         [
@@ -439,6 +455,8 @@ def build_review_prompt(
             _section("Normative child documents", child_content),
             "",
             _section("Originating RAW requirement source", raw_ancestry),
+            "",
+            render_attestation_section(attestations),
             "",
             _findings_section(process_result),
             "",

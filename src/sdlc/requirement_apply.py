@@ -681,7 +681,11 @@ def _check_resolutions(
     """
     try:
         require_current_resolutions(
-            workspace, evidence.latest_process, evidence.latest_review, policies
+            workspace,
+            evidence.latest_process,
+            evidence.latest_review,
+            policies,
+            entity_id=requirement.id,
         )
     except ResolutionEvidenceError as error:
         code = {

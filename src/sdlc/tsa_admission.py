@@ -750,6 +750,7 @@ def _require_current_dependencies(
 
 def _require_current_resolutions(
     evidence: RequirementEvidenceWorkspace,
+    record: RequirementRecord,
     requirement_id: str,
     process: ProcessResult,
     review: ReviewResult,
@@ -762,7 +763,11 @@ def _require_current_resolutions(
     """
     try:
         require_current_resolutions(
-            evidence, process, review, _approved_policies(evidence)
+            evidence,
+            process,
+            review,
+            _approved_policies(evidence),
+            entity_id=record.id,
         )
     except ResolutionEvidenceError as error:
         if error.failure is ResolutionFailure.READ_FAILED:
@@ -825,7 +830,7 @@ def _admit_requirement(
     )
     _require_exact_bindings(requirement_id, tree.manifest, process, review)
     _require_what_clearance(requirement_id, process, review)
-    _require_current_resolutions(evidence, requirement_id, process, review)
+    _require_current_resolutions(evidence, record, requirement_id, process, review)
     closure = _require_current_dependencies(evidence, record, requirement_id, review)
     return {
         "requirement_id": requirement_id,
