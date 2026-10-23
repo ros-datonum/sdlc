@@ -132,11 +132,12 @@ EXIT_INTERRUPTED = 130
 
 WORKER_SETUP_DOCUMENT = "docs/fibery/Worker-Runner-Setup-v0.1.md"
 POLICY_REFUSAL = (
-    "The autonomy policy configuration could not be read or validated as this "
-    "stage started, so the stage did not run: it read nothing from Fibery, "
-    "no model was invoked and nothing was written. No earlier policy is reused. "
-    "Correct [autonomy] in the runtime configuration, then reset Processing "
-    "Status."
+    "The autonomy policy or operator attestation configuration could not be "
+    "read or validated as this stage started, so the stage did not run: it "
+    "read nothing from Fibery, no model was invoked and nothing was written. "
+    "No earlier configuration is reused. Correct [autonomy] or [attestations] "
+    "(the details name which) in the runtime configuration, then reset "
+    "Processing Status."
 )
 RUNNER_STOPPED_NOTE = (
     "Stopped. A Requirement whose worker was interrupted keeps its Processing "

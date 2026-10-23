@@ -706,6 +706,8 @@ def _guard(
             return "The Ready delegation changed after the decision was made."
         if _policy_identity(current) != _policy_identity(policies):
             return "The autonomy policies changed after the decision was made."
+        if current.attestations != policies.attestations:
+            return "The operator attestations changed after the decision was made."
         return None
 
     return still_holds

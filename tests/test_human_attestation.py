@@ -11,10 +11,12 @@ whether it is right.
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 from review_fake import verify_resolution
+from sdlc.autonomous_ready import _guard
 from sdlc.autonomy_policy import (
     DISABLED,
     AutonomyPolicies,
@@ -49,14 +51,18 @@ from standard_fake import (
 )
 from test_autonomous_resolution import (
     DRAFT_QUOTE,
+    INVENTED,
     LIMIT_QUOTE,
+    POLICIES,
     SOURCE,
     admit,
     artifacts,
+    delegated_resolution,
     latest_process,
     latest_review,
     process,
     processed,
+    rejected_invention,
     review,
     reviewed,
     scene,
@@ -597,3 +603,76 @@ def test_the_repository_ships_no_attestation():
 def test_an_attestation_is_not_part_of_policy_identity():
     with_attestation = replace(DISABLED, attestations=ATTESTED.attestations)
     assert with_attestation.policies == DISABLED.policies
+
+
+# -- review findings on b258865 ------------------------------------------------------
+
+
+def test_a_delegated_default_keeps_its_clause_authority_on_rework():
+    """Its REQUIREMENT source is applicability evidence, not attested authority."""
+    ws, requirement = rejected_invention()
+    answer = {
+        "item": "R0001.A0",
+        "outcome": "RESOLVED",
+        "explanation": "Clause ERR-BODY permits it.",
+        "resolution_index": 0,
+    }
+    result, _ = process(
+        ws,
+        requirement,
+        analysis_output(
+            normalized_changes={"constraints_edge_cases": INVENTED},
+            rework=[answer],
+            resolutions=[
+                delegated_resolution(sources=[citation("REQUIREMENT", INVENTED)])
+            ],
+        ),
+        policies=POLICIES,
+        authorized_new_cycle=True,
+    )
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+
+
+def test_the_reviewer_is_shown_only_this_requirements_attestations():
+    ws, requirement, root = open_question_reviewed()
+    human_edit(ws, root)
+    assert second_process(ws, requirement)[0].code is ProcessCode.REQUIREMENT_PROCESSED
+    other = HumanAttestation("SDLC", "SDLC-FR-0099", ENTITY, "Elsewhere decided.", "Op")
+    _, model = confirming_review(
+        ws,
+        requirement,
+        policies=attested(ATTESTED.attestations.attestations[0], other),
+    )
+    listed = model.calls[0]["context"].split("# OPERATOR-ATTESTED CLARIFICATIONS", 1)
+    assert listed[1].split("\n# ", 1)[0].count(DECISION) == 1
+    assert "Elsewhere decided." not in listed[1]
+
+
+def test_the_process_prompt_lets_a_rejected_item_cite_attested_text():
+    from sdlc.standard_prompt import INSTRUCTIONS
+
+    assert "never cite it (kind\n  REQUIREMENT) for this item" not in INSTRUCTIONS
+    assert "even when the rejected answer itself\n  came from that text" in (
+        INSTRUCTIONS
+    )
+
+
+def test_autonomous_ready_refuses_when_attestations_change_before_its_write():
+    ws, requirement, _, _ = human_decision_at_ready()
+    project = ws.read_project(requirement.project_id)
+    current = ws.read_requirement(requirement.id)
+    evidence = SimpleNamespace(identity="evidence", requirement=current)
+    delegation = SimpleNamespace(
+        for_project=lambda code: SimpleNamespace(binding="authorization")
+    )
+    record = SimpleNamespace(project_code=project.code, authorization="authorization")
+
+    def guard(after):
+        return _guard(
+            ws, current, record, evidence, ATTESTED, lambda: (delegation, after)
+        )
+
+    assert guard(ATTESTED)(evidence) is None
+    assert guard(DISABLED)(evidence) == (
+        "The operator attestations changed after the decision was made."
+    )

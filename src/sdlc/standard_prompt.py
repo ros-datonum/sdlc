@@ -389,10 +389,12 @@ Rework (only when the context has a section headed
     cannot settle it. Say what remains open and why.
 - An item of category RESOLUTION is an earlier resolution the review did not
   confirm. Its adopted answer is now in this Requirement's text, but that
-  text is the earlier analysis's output, not authority: never cite it (kind
-  REQUIREMENT) for this item. Resolve it again only from the RAW source, a
-  dependency, a correctly applied clause or an operator-attested
-  clarification, otherwise ESCALATE it as a product question.
+  text is not authority merely because it is there: cite this Requirement
+  (kind REQUIREMENT) for this item only by quoting a text listed under
+  OPERATOR-ATTESTED CLARIFICATIONS, even when the rejected answer itself
+  came from that text. Resolve it again only from the RAW source, a
+  dependency, a correctly applied clause or such an attested text, otherwise
+  ESCALATE it as a product question.
 - For an item of category RESOLUTION, an item marked "material WHAT
   question", or a claim re-raising either, a kind REQUIREMENT citation (in
   the resolution you name, or in REBUTTED evidence) must quote text listed

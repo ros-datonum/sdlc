@@ -46,8 +46,11 @@ approved_fingerprint = "<64 hex>"        # SHA-256 of the canonical content
 
 - **Canonical content:**
   - the fields `project_code`, `requirement_id`, `entity_id` and `text`;
+  - `requirement_id` and `text` are taken with leading and trailing whitespace stripped;
   - serialized as sorted-key, compact UTF-8 JSON and hashed with SHA-256;
   - `approved_by` is outside the fingerprint, as for a policy.
+  - No command computes the fingerprint. A mismatch refusal prints the computed value, so re-approval is a deliberate copy by the operator: change detection, not a second factor.
+- **Exact text.** A quote must occur, apart from whitespace runs, both in the Requirement's input as Process reads it (rendered Markdown) and in the attested `text`. Attest the text exactly as it stands in the Root, including any Markdown markers such as list bullets or emphasis; otherwise a legitimate citation is refused.
 - **Load refusals.** The whole configuration is refused before any Fibery read when:
   - an unknown key appears or a key is missing;
   - any text is empty;
@@ -80,6 +83,8 @@ An answer to a material item **relies on** a REQUIREMENT citation when either:
 
 This replaces the Autonomous Resolution §7 sentence "RESOLVED must name a resolution that cites the RAW or a dependency, or is a delegated default. REBUTTED must cite the RAW or a dependency." The structural rule that a `RESOLVED` answer to a `RESOLUTION` item names a resolution is kept.
 
+**Scope of the narrowing.** This applies to every material item, not only to the `RESOLUTION` items the old §7 rule covered. That rule never applied to a blocking `PRODUCT_QUESTION`, a `MATERIAL_WHAT` item or a claim re-raising one, so before this delta a REQUIREMENT-only answer to such an item could pass Process, Review and Ready. It no longer can: closing a material question a Review left open from this Requirement's own text now needs a human attestation of that text. This narrows Autonomous Resolution §2 Class A for material Brief items, deliberately: unattested Requirement text at that point is indistinguishable from model output.
+
 Everything else is unchanged:
 - a REQUIREMENT citation must still quote the run's input, never its output, and binds the input-tree fingerprint (§4 of Autonomous Resolution);
 - an answer to a non-material item, or a resolution no material item relies on, is governed by the earlier rules alone.
@@ -99,6 +104,9 @@ The attestations travel in the same per-stage configuration snapshot as the auto
 | Process | After citations are bound, before anything is persisted. The model is shown this Requirement's attestations (`# OPERATOR-ATTESTED CLARIFICATIONS`). | `INVALID_MODEL_OUTPUT`; nothing written |
 | Review | Before the reviewer is invoked, with the citation and policy re-checks. The reviewer is shown this Requirement's current attestations. | `RESOLUTION_EVIDENCE_STALE`; reviewer not invoked |
 | Ready approval, Apply (before and after its writes), TSA admission | Inside the resolution currentness check, against the Requirement's entity. | `RESOLUTION_EVIDENCE_STALE` (Ready, Apply); `REQUIREMENT_NOT_ADMISSIBLE` (TSA) |
+| Autonomous Ready, just before its State write | The reloaded snapshot's attestations must equal the ones the decision was made under. | The decision's guard refuses the transition |
+
+A broken `[attestations]` table refuses the whole snapshot. A worker stage reports it under the existing `AUTONOMY_POLICY_INVALID` code, and the details name the `[attestations]` error.
 
 Evidence becomes stale when:
 - the relied-on attestation is removed;
@@ -107,6 +115,8 @@ Evidence becomes stale when:
 - the Root changes after Review, which the existing tree bindings already refuse.
 
 An attestation changed but still containing the exact quote keeps attesting that exact text, so evidence relying on that quote stays current.
+
+**Operator obligation.** Evidence that relied on an attestation stays current only while the attestation does. Removing one after Apply makes that Requirement inadmissible to TSA, and with it any TSA selection containing it. Keep an attestation for as long as any evidence relies on it.
 
 **Not covered.** `--resume-result` replays a persisted iteration without a model call and does not re-check attestations. The Review that must follow refuses a revoked one before its reviewer runs.
 
@@ -130,7 +140,14 @@ For ARP1-CON-0132, the Root already equals Process Result 2's output, so an ordi
 
 - No Process or Review Result schema changes; every persisted Result stays readable and is never rewritten.
 - `run_input_identity` is unchanged: it is recomputed on read-back from persisted fields, which carry no attestation. A repeat run whose only change is a newly recorded attestation is therefore reported as identical. The authorized-new-cycle route runs it.
-- Existing Results that relied on a REQUIREMENT citation for a material item were refused at Process under the old §7 when REQUIREMENT-only. A mixed one that was accepted is now held to this rule at Review, Ready, Apply and TSA. With no attestation it refuses as stale until a new iteration supplies authority.
+- **Behaviour change for existing evidence.** Resolution-bound evidence whose rework answer to a material item relies on a REQUIREMENT citation is now refused unless a current attestation covers the quote:
+  - at Review as `RESOLUTION_EVIDENCE_STALE`;
+  - at Ready and Apply as `RESOLUTION_EVIDENCE_STALE`;
+  - at TSA admission as `REQUIREMENT_NOT_ADMISSIBLE`.
+
+  This includes answers the old rules accepted: a REQUIREMENT-only answer to a blocking question or `MATERIAL_WHAT` item, and a mixed RAW + REQUIREMENT answer to a `RESOLUTION` item. It applies to Requirements already in Ready, Apply or Applied.
+- **Recovery.** If the cited text really is a human decision, the operator attests it, and the existing evidence becomes current again without a new iteration. Otherwise the Requirement goes through a new Process and Review cycle.
+- **Inventory.** Before this change was integrated, every Standard Requirement in the live workspace (64, of which 61 have Process Results) was read without writes. Each one's latest Process Result was checked against this rule. Only ARP1-CON-0132's Process Result 2 relies on such a citation, and its Review 2 is BLOCKING. Earlier, superseded iterations were not checked: no consumer reads them as current evidence.
 
 ## 9. Non-goals
 
