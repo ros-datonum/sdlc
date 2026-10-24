@@ -32,7 +32,10 @@ from sdlc.dependency_evidence import (
     Phase,
     require_current_dependencies,
 )
-from sdlc.ready_decision import rework_standard_requirement
+from sdlc.ready_decision import (
+    approve_standard_requirement,
+    rework_standard_requirement,
+)
 from sdlc.ready_delegation import NOT_DELEGATED, load_ready_delegation
 from sdlc.requirement_apply import apply_standard_requirement
 from sdlc.requirement_dispatcher import (
@@ -42,6 +45,7 @@ from sdlc.requirement_dispatcher import (
     select_route,
 )
 from sdlc.results import ApplyResultCode as ApplyCode
+from sdlc.results import ReadyDecisionResultCode as ReadyCode
 from sdlc.results import StandardProcessResultCode as ProcessCode
 from sdlc.results import StandardReviewResultCode as ReviewCode
 from sdlc.review_result import parse_review_result
@@ -123,13 +127,16 @@ def history(ws):
     return {node.secret: ws.content[node.secret] for node in nodes}
 
 
-def identity(record):
+def identity(ws, record):
+    """Everything requalification must keep, the Root Document included."""
+    root = next(d for d in ws.documents if d.entity_public_id == record.public_id)
     return (
         record.id,
         record.public_id,
         record.requirement_id,
         record.type_name,
         record.project_id,
+        root.id,
     )
 
 
@@ -186,7 +193,7 @@ def reapplied(ws, record):
 def test_a_human_applied_to_process_runs_the_next_iteration(edit):
     ws, record, _ = applied()
     assert select_route(record, NOT_PROCESSED).decision is RouteDecision.NO_MACHINE_WORK
-    before, who = history(ws), identity(record)
+    before, who = history(ws), identity(ws, record)
 
     requalify(ws, record, edit)
     route = select_route(ws.requirements[record.id], NOT_PROCESSED)
@@ -204,7 +211,7 @@ def test_a_human_applied_to_process_runs_the_next_iteration(edit):
     assert ws.requirements[record.id].state == REVIEW
     assert len(process_result_nodes(ws)) == 2
     assert {secret: history(ws)[secret] for secret in before} == before
-    assert identity(ws.requirements[record.id]) == who
+    assert identity(ws, ws.requirements[record.id]) == who
 
 
 def test_an_unedited_requalification_needs_the_dispatcher_route():
@@ -253,7 +260,7 @@ def test_review_judges_the_new_iteration_and_stops_at_ready():
 
 def test_a_fresh_human_approval_re_applies_with_revision_unchanged():
     ws, record, _ = applied()
-    who, revision = identity(record), record.revision
+    who, revision = identity(ws, record), record.revision
     processed(ws, record, edit=CLARIFICATION)
     reviewed(ws, record)
 
@@ -261,9 +268,9 @@ def test_a_fresh_human_approval_re_applies_with_revision_unchanged():
 
     stored = ws.requirements[record.id]
     assert stored.state == APPLIED
-    assert identity(stored) == who
+    assert identity(ws, stored) == who
+    # The fake writes no Revision; the guarantee is each stage's read-back.
     assert stored.revision == revision == 1
-    assert not [m for m in ws.mutations if "revision" in m.lower()]
 
 
 # -- K, L: Apply is additive; the existing graph must stay valid ------------------
@@ -434,6 +441,19 @@ def assert_cycle_stale(cycle):
     assert json_of(cycle(*INSPECT, "--json"))["code"] == "INSPECT_STALE"
 
 
+def test_leaving_applied_alone_makes_the_bound_cycle_stale(lifecycle):  # noqa: F811
+    cycle = lifecycle()
+    started(cycle)
+    record = tsa_requirement(cycle.scene)
+    mark = cycle.mark()
+
+    requalify(cycle.scene.req, record)  # State only: the tree is unchanged
+
+    assert_cycle_stale(cycle)
+    assert cycle.mutations_since(mark) == []
+    assert cycle.models.counts == (1, 1)
+
+
 def test_requalification_makes_the_bound_cycle_stale_and_a_new_cycle_admits_it(
     lifecycle,  # noqa: F811
 ):
@@ -474,13 +494,14 @@ def test_requalification_makes_the_bound_cycle_stale_and_a_new_cycle_admits_it(
 
 
 def test_requalification_writes_only_the_requalified_requirement():
-    ws, record, _ = applied()
+    ws, record, _ = applied(with_relation=True)
+    target = ws.requirements[ws.depends_on_ids[record.id][0]]
     others = {k: v for k, v in ws.requirements.items() if k != record.id}
     graph = relation_state(ws)
     mark = len(ws.mutations)
 
     processed(ws, record, edit=CLARIFICATION)
-    reviewed(ws, record)
+    reviewed(ws, record, dependency_verifications=[dep(target)])
     reapplied(ws, record)
 
     own = {d.secret for d in ws.documents if d.name.startswith(REQUIREMENT_ID)}
@@ -574,6 +595,8 @@ def test_an_attested_answer_inside_a_requalification_needs_a_current_attestation
     assert refused.code is ReviewCode.RESOLUTION_EVIDENCE_STALE, refused
     assert not model.was_invoked
     attested_reviewed(ws, requirement, policies=ATTESTED, **confirm)
+    ready = approve_standard_requirement(ws, requirement.id, policies=DISABLED)
+    assert ready.code is ReadyCode.RESOLUTION_EVIDENCE_STALE, ready
     ws.set_requirement_state(requirement.id, APPLY)  # the fresh human approval
     stale_apply = apply_standard_requirement(ws, requirement.id, policies=DISABLED)
     assert stale_apply.code is ApplyCode.RESOLUTION_EVIDENCE_STALE, stale_apply
@@ -592,8 +615,9 @@ def test_reliance_is_recomputed_from_the_requalified_evidence():
     ws, requirement, _, _ = human_decision_at_ready()
     ws.set_requirement_state(requirement.id, APPLY)
     assert apply_standard_requirement(ws, requirement.id, policies=ATTESTED).is_normal
-    with pytest.raises(AdmissionRefused):
+    with pytest.raises(AdmissionRefused) as caught:
         admit(ws, DISABLED)  # current evidence relies on the attestation
+    assert caught.value.code is AdmissionResultCode.REQUIREMENT_NOT_ADMISSIBLE
 
     requalify(ws, ws.requirements[requirement.id])
     model = FakeModelRuntime([analysis_output()])

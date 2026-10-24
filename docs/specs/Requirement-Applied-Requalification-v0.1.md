@@ -6,10 +6,11 @@
 - Requirement-Lifecycle-Ownership-v0.2 §12 (one row) and §13 (one chaining segment);
 - Requirement-Lifecycle-v0.2-Current §2 (one more human transition);
 - Requirement-Dependency-Bindings-v0.1 §9 (one more recovery route);
-- Standard-Requirement-Process-Spec-v0.1 §17, Standard-Requirement-Apply-Spec-v0.1 §13 and §26, Requirement-Dependency-Bindings-v0.1 §14, Requirement-Rework-Brief-v0.1 and Requirement-Autonomous-Ready-v0.1 non-goals: "Applied revision" stays a non-goal except for the bounded requalification defined here;
+- the "Applied revision" non-goals of Standard-Requirement-Process-Spec-v0.1 §17, Standard-Requirement-Apply-Spec-v0.1 §26 (and the undesigned "revision question" of §13 and §17), Requirement-Dependency-Bindings-v0.1 §14, Requirement-Rework-Brief-v0.1, Requirement-Autonomous-Ready-v0.1, Requirement-Autonomous-Resolution-v0.1 §12 and Requirement-Material-WHAT-Gate-v0.1 §13: Applied revision stays a non-goal except for the bounded requalification defined here;
+- Requirement-Material-WHAT-Gate-v0.1 §10 and §11: "requalification of an Applied Requirement", left there to "the separate Applied-revision work item", is this delta;
 - TSA-C01-Contract-v0.2 §7.4: "the existing Requirement lifecycle" through which a Requirement is "separately changed and approved" is this requalification.
 
-Those documents are unchanged on disk. Where this delta and they disagree, this delta governs for the listed points only. Material-WHAT Gate v0.1, Rework Brief v0.1, Dependency Bindings v0.1, Normative Tree Binding v0.1, Human Attestation v0.1, Autonomous Ready v0.1 and TSA-C01 are otherwise unchanged.
+Those documents are unchanged on disk. Where this delta and they disagree, this delta governs for the listed points only. Apart from the points listed, Material-WHAT Gate v0.1, Rework Brief v0.1, Dependency Bindings v0.1, Normative Tree Binding v0.1, Human Attestation v0.1, Autonomous Ready v0.1 and TSA-C01 are otherwise unchanged.
 
 ## 1. The defect
 
@@ -18,8 +19,8 @@ TSA-C01 §7.4 requires a material WHAT question found by TSA to be answered by c
 | | What it is | Before this delta |
 |---|---|---|
 | A. Implementation route | A human may set any State in Fibery. A `Standard + Process + Not Processed` Requirement is routed to Process, which the dispatcher runs as an authorized new cycle (CR-002). The dispatcher cannot see the previous State. | Present. A hand-made `Applied -> Process` runs Process, Review and, after a human approval, Apply. |
-| B. Lifecycle contract | The ownership table (Lifecycle Ownership v0.2 §12) lists every authorized transition; "No other normal-flow transition is authorized." | No row leaves `Applied`. Applied revision is a non-goal in five specifications. Dependency Bindings §9 names only `Ready -> Process` and `Apply -> Process` as recovery. |
-| C. Generic revision | Revision numbering, update, supersession, split, merge, relation restructuring. | Unsupported, and still unsupported (§10). |
+| B. Lifecycle contract | The ownership table (Lifecycle Ownership v0.2 §12) lists every authorized transition; "No other normal-flow transition is authorized." | No row leaves `Applied`. Applied revision is a non-goal in seven specifications. Dependency Bindings §9 names only `Ready -> Process` and `Apply -> Process` as recovery. |
+| C. Generic revision | Revision numbering, update, supersession, split, merge, relation restructuring. | Unsupported, and still unsupported (§11). |
 
 A successful fake-workspace probe of A is not authorization. This delta adds B for one bounded case and leaves C out.
 
@@ -52,7 +53,7 @@ STOP
 
 ## 3. Execution
 
-- **Process runs through the dispatcher route** (`Standard + Process + Not Processed`). The dispatcher invokes it as an authorized new cycle, so it creates the next iteration even when the Root is unedited. That is required for a dependent requalified only because its dependency changed (§7).
+- **Process runs through the dispatcher route** (`Standard + Process + Not Processed`). The dispatcher invokes it as an authorized new cycle, so it creates the next iteration even when the Root is unedited. That is required for a dependent requalified only because its dependency changed (§7). Use a runner scoped to the Project (`sdlc worker run --project <CODE>`), after checking that no other Requirement of that Project is machine-eligible.
 - The manual `sdlc project requirement process` command is not an authorized new cycle. Over an unedited Root it reports `NO_CHANGES_TO_PROCESS` and writes nothing.
 - The Rework Brief of the new iteration comes from the latest historical Review, as for any iteration (Rework Brief v0.1). A TSA Review is never Requirement input; a TSA question reaches the Requirement only through a human Root edit (§4).
 - **Review** reviews the new Process iteration over the current tree. A Review over an unchanged tree reports `NO_CHANGES_TO_REVIEW`, so there is no Review-only requalification.
@@ -60,10 +61,11 @@ STOP
 
 ## 4. Authoritative input
 
-- **When.** A human clarification may be written into the normative Root only after the human `Applied -> Process`, before the Process run. An edit to the Root of an `Applied` Requirement is not requalification: it makes the Requirement inadmissible to TSA (tree no longer matches its Review) and starts nothing.
+- **When.** A human clarification is written into the normative Root as part of the requalification, before its Process run. With no runner working on the Project, the edit may follow the human `Applied -> Process`. With a runner working on it, the reset automation and the runner would start Process within seconds of the transition, so the edit is made just before it. An edited Root of an `Applied` Requirement is not by itself requalification: it only makes the Requirement inadmissible to TSA (its tree no longer matches its Review) and starts nothing.
 - **Root editing proves nothing about authorship** (Human Attestation v0.1 §2). The model never creates an attestation, and its earlier output never becomes authority.
 - **Attestation.** The operator attests each new clarification under Human Attestation v0.1 §3, with the exact Root text, before the Process run. Process and Review are then shown it under `# OPERATOR-ATTESTED CLARIFICATIONS`. Wherever a material Rework Brief item's answer relies on a REQUIREMENT citation, the citation must be covered by a current attestation, inside a requalification as anywhere else: Process refuses (`INVALID_MODEL_OUTPUT`), Review (`RESOLUTION_EVIDENCE_STALE`, no model call), Ready and Apply (`RESOLUTION_EVIDENCE_STALE`) and TSA admission (`REQUIREMENT_NOT_ADMISSIBLE`).
-- **What is not code-enforced.** A requalification starts from an Applied Requirement whose latest Review derived WHAT `CLEAR`. That Review's Rework Brief carries no material item, so a clarification answering a TSA question relies on no Brief item, and no code binds it to an attestation. Its authority is the operator's attestation shown to both stages, the independent Review, the fresh human `Ready -> Apply`, and the explicit Input Manifest acceptance of the next TSA cycle (TSA-C01 §2.2). The operational gate verifies that each clarification is attested exactly as it stands in the Root.
+- **What is not code-enforced.** A requalification normally starts from an Applied Requirement whose latest current-format Review derived WHAT `CLEAR`. That Review's Rework Brief carries no material item, so a clarification answering a TSA question relies on no Brief item, and no code binds it to an attestation. Its authority is the operator's attestation shown to both stages, the independent Review, the fresh human `Ready -> Apply`, and the explicit Input Manifest acceptance of the next TSA cycle (TSA-C01 §2.2). Process may normalize the wording, so the operational gate checks each attestation against the Root before the Process run and again against the processed Root at `Ready`, before `Ready -> Apply` (§10).
+- **Legacy Applied rows.** A historical Applied Requirement with pre-0.4 or pre-0.6 evidence, or a hand-placed `Applied`, may also be requalified; Material-WHAT Gate v0.1 §11 and Dependency Bindings v0.1 §12 already name requalification as its only route to current evidence. Its latest Review may not be `CLEAR` current-format evidence, so its Brief may carry material items, which the attestation rule then governs as above.
 - **Existing attestations are kept** unless the operator explicitly revokes one. Reliance is recomputed from the current evidence (Human Attestation v0.1 §5). Once a requalified iteration no longer cites an attested text, revoking that attestation refuses nothing. Keeping it remains the operator's obligation.
 - **The RAW is never touched.** Its Processing Result and the `Derived From` provenance are unchanged.
 
@@ -92,6 +94,7 @@ STOP
 - Any new Review Result or tree change of a dependency D makes every Requirement whose Review bound D stale (Dependency Bindings v0.1 §9), directly or transitively. TSA admission then refuses any selection containing it.
 - A stale dependent is requalified on its own: `Applied -> Process`, an unedited Root is enough, Process through the dispatcher, then Review binds the current versions. No binding is rewritten by hand or by code.
 - **Order.** A dependent's Review refuses while any member of its interpretation set has stale evidence (`DEPENDENCY_EVIDENCE_INVALID`, no model call), and its Apply refuses until every direct dependency is Applied (`DEPENDENCY_NOT_APPLIED`). Requalify dependencies first, each to `Applied`, then their dependents.
+- **Out of order.** A refused Review leaves the dependent at `Review` with Processing Status `Failed`, which the runner never retries. Once its dependencies are current, the operator runs the stage explicitly (`sdlc project requirement review`); nothing recovers it automatically.
 - **ARP1:** FR-0130 DEPENDS_ON FR-0129; CON-0133 DEPENDS_ON FR-0129 and FR-0130. A change to FR-0129 requires FR-0129, then FR-0130, then CON-0133. CON-0132 is outside that chain.
 - **AFFECTS** invalidates nothing and supplies no definition. NFR-0131, connected to CON-0132 by AFFECTS both ways, keeps its evidence. It needs its own requalification only if an approved clarification changes its normative meaning, which is a human judgement.
 
@@ -109,7 +112,20 @@ TSA-C01 is unchanged. Bounded requalification relies on it as follows:
 - `[autonomy]` delegated defaults are unchanged and authorize no transition.
 - The repository ships no Ready delegation (`mode = "disabled"`), and a test pins it.
 
-## 10. Not supported
+## 10. Operational recovery gate
+
+Every live requalification runs under a separately authorized, read-mostly gate, run by the operator or an assistant on the operator's instruction. Code does not enforce these checks. For each Requirement:
+
+1. **Before `Applied -> Process`:** no Ready delegation for the Project (§9); the dependency order of §7; each clarification approved by the operator and attested exactly as it will stand in the Root (§4); a snapshot of the Requirement's relations.
+2. **At `Ready`, before `Ready -> Apply`:**
+   - the new Review is current, and its WHAT status and verdict are what the operator accepts;
+   - each attestation still matches the processed Root text (§4);
+   - the relation comparison of §6. STOP if an existing edge would need removal or replacement: human `approve` needs only an acknowledgement of a BLOCKING verdict, and a direct Fibery `Ready -> Apply` needs nothing, so this STOP is procedural.
+3. **After `Applied`:** dependents now stale are listed for their own requalification (§7). TSA admission of the intended selection is checked read-only before any new cycle (§8).
+
+Not yet live-verified: that the Fibery reset automation sets `Not Processed` on `Standard Applied -> Process`. Its condition is the target State, which makes this plausible, but the project rule for new Fibery semantics requires a narrow probe on temporary state before the first live requalification.
+
+## 11. Not supported
 
 - Revision numbering, update, retirement, supersession, split or merge.
 - Relation removal, replacement or pruning, and any restructuring of the relation graph.
@@ -119,7 +135,7 @@ TSA-C01 is unchanged. Bounded requalification relies on it as follows:
 - Any change to TSA-C01, its artifacts or its result codes.
 - Any change to the Fibery schema, automations or runtime configuration.
 
-## 11. Verification
+## 12. Verification
 
 `tests/test_applied_requalification.py` uses the in-memory fakes, fake model runtimes and the production entry points. No Fibery call, no model call.
 
@@ -128,15 +144,15 @@ TSA-C01 is unchanged. Bounded requalification relies on it as follows:
 | A–D, I: re-entry, authorized new cycle, next iteration, history immutable, identity | `test_a_human_applied_to_process_runs_the_next_iteration` (edited and unedited Root) |
 | manual command over an unedited Root | `test_an_unedited_requalification_needs_the_dispatcher_route` |
 | E, F, H: independent Review of the current input, stop at Ready, no Apply without a human | `test_review_judges_the_new_iteration_and_stops_at_ready` |
-| G, I, J: fresh approval re-Applies; identity and Revision unchanged | `test_a_fresh_human_approval_re_applies_with_revision_unchanged` |
+| G, I, J: fresh approval re-Applies; identity and Revision unchanged | `test_a_fresh_human_approval_re_applies_with_revision_unchanged` (the fake has no Revision write, so the guarantee is the production read-back of every stage) |
 | K: existing edges re-verified and kept | `test_existing_edges_are_reverified_and_kept` |
 | L: no removal (out of scope) | `test_a_rejected_existing_edge_is_never_removed_by_apply` |
 | M: FR-0129 change makes FR-0130 and CON-0133 stale | `test_a_requalified_fr_0129_makes_fr_0130_and_con_0133_stale` |
 | N: no Review-only shortcut; order; restored bindings; TSA admits | `test_dependents_requalify_in_order_and_restore_current_bindings` |
-| O: AFFECTS invalidates nothing | `test_an_affects_peer_is_not_invalidated_by_requalification` |
-| P, Q: old cycle stale at every step; new cycle admits; old Manifest kept | `test_requalification_makes_the_bound_cycle_stale_and_a_new_cycle_admits_it` |
+| O: AFFECTS invalidates nothing | `test_an_affects_peer_is_not_invalidated_by_requalification` (an AFFECTS pair modelled like NFR-0131 and CON-0132, both ways) |
+| P, Q: leaving Applied alone makes the old cycle stale; so does each later step; a new cycle admits; the old Manifest is kept | `test_leaving_applied_alone_makes_the_bound_cycle_stale`, `test_requalification_makes_the_bound_cycle_stale_and_a_new_cycle_admits_it` |
 | R: attestation currentness inside requalification; recomputed reliance | `test_an_attested_answer_inside_a_requalification_needs_a_current_attestation`, `test_reliance_is_recomputed_from_the_requalified_evidence` |
 | S: only the requalified Requirement is written | `test_requalification_writes_only_the_requalified_requirement` |
 | T: no Ready delegation | `test_the_repository_delegates_no_ready_decision_for_requalification` |
 
-In M, N and O the predecessor's completed requalification is represented by replacing its evidence with a new reviewed iteration. The real Process, Review and Apply path of a requalified Requirement is exercised on the dependent itself.
+In M, N and O the predecessor's completed requalification is represented by replacing its evidence with a new reviewed iteration. The real Process, Review and Apply path of a requalified Requirement is exercised on the dependent itself. In N the refused out-of-order Review is retried by calling the dispatcher again, as the explicit `review` command would; a live runner does not retry it (§7).
