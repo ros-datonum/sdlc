@@ -77,6 +77,10 @@ DECISION = (
 )
 # Text an earlier iteration wrote: present in the input, attested by nobody.
 MODEL_TEXT = "Logs may be kept for seven days when they hold no request data."
+# The live ARP1 Requirements the shipped configuration attests (Requirement ID, entity).
+CON_0132 = ("ARP1-CON-0132", "7355aefe-25c0-5188-aba7-dbb81b91b919")
+FR_0129 = ("ARP1-FR-0129", "d13970e6-a090-5f20-bdb9-6c91f19f3981")
+FR_0130 = ("ARP1-FR-0130", "30171077-3f8b-5da5-adfc-4305eef70c49")
 
 
 def attested(*attestations):
@@ -597,21 +601,58 @@ def test_the_snapshot_carries_attestations_and_delegates_nothing(tmp_path):
 
 
 def test_the_repository_ships_exactly_the_approved_attestations():
-    """The only attestation is the operator-approved ARP1-CON-0132 decision
-    (ARP1 Gate 2T). Any other, changed or extra attestation fails here."""
+    """The attestations are exactly the operator-approved ARP1 decisions: the
+    ARP1-CON-0132 logging decision (ARP1 Gate 2T) and decisions A, B, C and D
+    (ARP1 Gate 3F1). Any other, changed or extra attestation fails here."""
     shipped = load_autonomy_policies().attestations.attestations
     assert [
         (a.project_code, a.requirement_id, a.entity_id, a.approved_by, a.fingerprint)
         for a in shipped
     ] == [
-        (
-            "ARP1",
-            "ARP1-CON-0132",
-            "7355aefe-25c0-5188-aba7-dbb81b91b919",
-            "Rostyslav Bachyk",
-            "e09cae68cb3db460170b1f00458931733c90af0a0960473336a77e1b42b56974",
+        ("ARP1", *requirement, "Rostyslav Bachyk", fingerprint)
+        for requirement, fingerprint in (
+            (
+                CON_0132,
+                "e09cae68cb3db460170b1f00458931733c90af0a0960473336a77e1b42b56974",
+            ),
+            (
+                CON_0132,
+                "75b83c900bc9349363e88f648a8275940edc5b4089e20ebd304f0e45d3a4c31d",
+            ),
+            (
+                FR_0129,
+                "7f9bf51f8564190d03dae882b7ae2e21b8945f217689f4aafb568c7f76ef86e2",
+            ),
+            (
+                CON_0132,
+                "ab2ea09f0de1ad63778152bc67a7818cdc73881dad37c2849b4cd75cbb61f9d0",
+            ),
+            (
+                FR_0129,
+                "4f2e1e4b0b5030715e19566e133c1d3db99ad4ee67e813dae5652d6442351218",
+            ),
+            (
+                FR_0130,
+                "d0ff533b0304ebd047a1da134edf8bf151490bdb6aafad5d02d0049b670a2d25",
+            ),
         )
     ]
+
+
+def test_each_shipped_attestation_binds_only_its_own_requirement():
+    """Two decisions for one Requirement stay two attestations, and none
+    attests another Requirement, nor the same ID under another entity."""
+    shipped = load_autonomy_policies().attestations
+    counts = {
+        CON_0132: 3,
+        FR_0129: 2,
+        FR_0130: 1,
+        ("ARP1-NFR-0131", "a5792537-2fdf-5716-ac1d-4b590765e4a8"): 0,
+        ("ARP1-CON-0133", "2be6e169-8e75-5171-9dbe-7740cc63e1b0"): 0,
+        ("ARP1-CON-0132", FR_0129[1]): 0,
+    }
+    for (requirement_id, entity_id), count in counts.items():
+        assert len(shipped.for_requirement(entity_id, requirement_id)) == count
 
 
 def test_an_attestation_is_not_part_of_policy_identity():
