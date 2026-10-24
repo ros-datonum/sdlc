@@ -94,7 +94,7 @@ STOP
 - Any new Review Result or tree change of a dependency D makes every Requirement whose Review bound D stale (Dependency Bindings v0.1 §9), directly or transitively. TSA admission then refuses any selection containing it.
 - A stale dependent is requalified on its own: `Applied -> Process`, an unedited Root is enough, Process through the dispatcher, then Review binds the current versions. No binding is rewritten by hand or by code.
 - **Order.** A dependent's Review refuses while any member of its interpretation set has stale evidence (`DEPENDENCY_EVIDENCE_INVALID`, no model call), and its Apply refuses until every direct dependency is Applied (`DEPENDENCY_NOT_APPLIED`). Requalify dependencies first, each to `Applied`, then their dependents.
-- **Out of order.** A refused Review leaves the dependent at `Review` with Processing Status `Failed`, which the runner never retries. Once its dependencies are current, the operator runs the stage explicitly (`sdlc project requirement review`); nothing recovers it automatically.
+- **Out of order.** A refused Review leaves the dependent at `Review` with Processing Status `Failed`, which the runner never retries. Once its dependencies are current, the operator runs the stage explicitly (`sdlc project requirement review`); nothing recovers it automatically. After that Review succeeds the Requirement is at `Ready` with Processing Status still `Failed`, because `Ready` is not a reset target; the next human `Ready -> Apply` resets it.
 - **ARP1:** FR-0130 DEPENDS_ON FR-0129; CON-0133 DEPENDS_ON FR-0129 and FR-0130. A change to FR-0129 requires FR-0129, then FR-0130, then CON-0133. CON-0132 is outside that chain.
 - **AFFECTS** invalidates nothing and supplies no definition. NFR-0131, connected to CON-0132 by AFFECTS both ways, keeps its evidence. It needs its own requalification only if an approved clarification changes its normative meaning, which is a human judgement.
 
@@ -149,7 +149,7 @@ Not yet live-verified: that the Fibery reset automation sets `Not Processed` on 
 | L: no removal (out of scope) | `test_a_rejected_existing_edge_is_never_removed_by_apply` |
 | M: FR-0129 change makes FR-0130 and CON-0133 stale | `test_a_requalified_fr_0129_makes_fr_0130_and_con_0133_stale` |
 | N: no Review-only shortcut; order; restored bindings; TSA admits | `test_dependents_requalify_in_order_and_restore_current_bindings` |
-| O: AFFECTS invalidates nothing | `test_an_affects_peer_is_not_invalidated_by_requalification` (an AFFECTS pair modelled like NFR-0131 and CON-0132, both ways) |
+| O: AFFECTS invalidates nothing | `test_an_affects_peer_is_not_invalidated_by_requalification` (a symmetric AFFECTS pair, the CON-0133 role <-> NFR-0131, with NFR-0131 requalified) |
 | P, Q: leaving Applied alone makes the old cycle stale; so does each later step; a new cycle admits; the old Manifest is kept | `test_leaving_applied_alone_makes_the_bound_cycle_stale`, `test_requalification_makes_the_bound_cycle_stale_and_a_new_cycle_admits_it` |
 | R: attestation currentness inside requalification; recomputed reliance | `test_an_attested_answer_inside_a_requalification_needs_a_current_attestation`, `test_reliance_is_recomputed_from_the_requalified_evidence` |
 | S: only the requalified Requirement is written | `test_requalification_writes_only_the_requalified_requirement` |
