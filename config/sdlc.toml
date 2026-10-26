@@ -200,3 +200,11 @@ entity_id = "2be6e169-8e75-5171-9dbe-7740cc63e1b0"
 text = "The guarantee in Acceptance / Verification that a request without credentials receives the response defined by ARP1-FR-0129 or ARP1-FR-0130 applies to syntactically well-formed HTTP requests that reach the application handler for GET /v1/uppercase. Requests rejected before application-handler dispatch because of HTTP framing errors, missing mandatory Host information, header-size limits, or transport failures are protocol-level failures outside that application-response guarantee. The requirement that GET /v1/uppercase be publicly callable without authentication or authorization, and the prohibition on authentication or authorization failures, remain unchanged."
 approved_by = "Rostyslav Bachyk"
 approved_fingerprint = "08af83243a4c7a8d5edf1dffa8096b83c21355be4798df3c22df8bc2d3cdc887"
+
+[[attestations.clarifications]]
+project_code = "ARP1"
+requirement_id = "ARP1-FR-0130"
+entity_id = "30171077-3f8b-5da5-adfc-4305eef70c49"
+text = "For GET /v1/uppercase, rejection before application-handler dispatch because the request-target exceeds a supported server or ingress URI/request-line length limit is a protocol-level request-size failure, distinct from a header-size limit. Such a request may receive HTTP 414 URI Too Long instead of the application-level HTTP 200 or HTTP 400 JSON response, even if its query parameters would otherwise pass or fail ARP1-FR-0129 validation. This allowance applies only to an actual request-target length-limit rejection, does not permit arbitrary pre-handler rejection of in-limit, syntactically well-formed requests, and does not change CON-0133's no-authentication or no-authorization obligations."
+approved_by = "Rostyslav Bachyk"
+approved_fingerprint = "6073a01cdb5fd64b578cbf1c73c2e686a765d685926bec5fda56188e095bc265"
