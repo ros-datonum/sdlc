@@ -192,3 +192,11 @@ entity_id = "30171077-3f8b-5da5-adfc-4305eef70c49"
 text = "The HTTP 400 JSON error response guarantee applies to syntactically well-formed HTTP requests that reach the application handler for GET /v1/uppercase but fail the valid-request definition in ARP1-FR-0129. Requests rejected before application-handler dispatch because of HTTP framing errors, missing mandatory Host information, header-size limits, or transport failures are protocol-level failures and are not invalid-text validation responses."
 approved_by = "Rostyslav Bachyk"
 approved_fingerprint = "d0ff533b0304ebd047a1da134edf8bf151490bdb6aafad5d02d0049b670a2d25"
+
+[[attestations.clarifications]]
+project_code = "ARP1"
+requirement_id = "ARP1-CON-0133"
+entity_id = "2be6e169-8e75-5171-9dbe-7740cc63e1b0"
+text = "The guarantee in Acceptance / Verification that a request without credentials receives the response defined by ARP1-FR-0129 or ARP1-FR-0130 applies to syntactically well-formed HTTP requests that reach the application handler for GET /v1/uppercase. Requests rejected before application-handler dispatch because of HTTP framing errors, missing mandatory Host information, header-size limits, or transport failures are protocol-level failures outside that application-response guarantee. The requirement that GET /v1/uppercase be publicly callable without authentication or authorization, and the prohibition on authentication or authorization failures, remain unchanged."
+approved_by = "Rostyslav Bachyk"
+approved_fingerprint = "08af83243a4c7a8d5edf1dffa8096b83c21355be4798df3c22df8bc2d3cdc887"
