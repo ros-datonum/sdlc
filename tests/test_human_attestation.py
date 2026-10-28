@@ -604,8 +604,9 @@ def test_the_snapshot_carries_attestations_and_delegates_nothing(tmp_path):
 def test_the_repository_ships_exactly_the_approved_attestations():
     """The attestations are exactly the operator-approved ARP1 decisions: the
     ARP1-CON-0132 logging decision (ARP1 Gate 2T), decisions A, B, C and D
-    (ARP1 Gate 3F1), decision D3 (ARP1 Gate 3I1) and decision D4 (ARP1 Gate
-    3K1). Any other, changed or extra attestation fails here."""
+    (ARP1 Gate 3F1), decision D3 (ARP1 Gate 3I1), decision D4 (ARP1 Gate
+    3K1) and decision D5 (ARP1 Gate 3K5). Any other, changed or extra
+    attestation fails here."""
     shipped = load_autonomy_policies().attestations.attestations
     assert [
         (a.project_code, a.requirement_id, a.entity_id, a.approved_by, a.fingerprint)
@@ -645,6 +646,10 @@ def test_the_repository_ships_exactly_the_approved_attestations():
                 FR_0130,
                 "6073a01cdb5fd64b578cbf1c73c2e686a765d685926bec5fda56188e095bc265",
             ),
+            (
+                FR_0130,
+                "a549a710d1fe4834e85ec6e3d8be15313c83ea6d880344dd53128f198c71bb52",
+            ),
         )
     ]
 
@@ -656,12 +661,13 @@ def test_each_shipped_attestation_binds_only_its_own_requirement():
     counts = {
         CON_0132: 3,
         FR_0129: 2,
-        FR_0130: 2,
+        FR_0130: 3,
         CON_0133: 1,
         ("ARP1-NFR-0131", "a5792537-2fdf-5716-ac1d-4b590765e4a8"): 0,
         ("ARP1-CON-0132", FR_0129[1]): 0,
         ("ARP1-CON-0133", FR_0130[1]): 0,
         ("ARP1-FR-0130", CON_0133[1]): 0,
+        ("ARP1-FR-0130", FR_0129[1]): 0,
     }
     for (requirement_id, entity_id), count in counts.items():
         assert len(shipped.for_requirement(entity_id, requirement_id)) == count

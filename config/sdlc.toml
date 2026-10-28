@@ -208,3 +208,11 @@ entity_id = "30171077-3f8b-5da5-adfc-4305eef70c49"
 text = "For GET /v1/uppercase, rejection before application-handler dispatch because the request-target exceeds a supported server or ingress URI/request-line length limit is a protocol-level request-size failure, distinct from a header-size limit. Such a request may receive HTTP 414 URI Too Long instead of the application-level HTTP 200 or HTTP 400 JSON response, even if its query parameters would otherwise pass or fail ARP1-FR-0129 validation. This allowance applies only to an actual request-target length-limit rejection, does not permit arbitrary pre-handler rejection of in-limit, syntactically well-formed requests, and does not change CON-0133's no-authentication or no-authorization obligations."
 approved_by = "Rostyslav Bachyk"
 approved_fingerprint = "6073a01cdb5fd64b578cbf1c73c2e686a765d685926bec5fda56188e095bc265"
+
+[[attestations.clarifications]]
+project_code = "ARP1"
+requirement_id = "ARP1-FR-0130"
+entity_id = "30171077-3f8b-5da5-adfc-4305eef70c49"
+text = "For GET /v1/uppercase, every deployed ingress, proxy, and application server must support an encoded request-target of up to and including 8,000 octets, measured before percent-decoding or normalization, without rejecting it for request-target or request-line length. HTTP/1.1 request-line limits must additionally accommodate the method, separators, protocol version, and line terminator for such request-targets. The deployment must enforce one effective maximum supported request-target length, no lower than 8,000 octets, consistently across all ingress paths and service instances. HTTP 414 URI Too Long is permitted only when the actual encoded request-target exceeds that effective maximum. Within this limit, syntactically well-formed requests remain subject to ARP1-FR-0129 and ARP1-FR-0130 application-response guarantees. This clarification preserves ARP1-FR-0129's application-handler response boundary and ARP1-CON-0133's prohibition on authentication or authorization failures."
+approved_by = "Rostyslav Bachyk"
+approved_fingerprint = "a549a710d1fe4834e85ec6e3d8be15313c83ea6d880344dd53128f198c71bb52"
