@@ -216,3 +216,19 @@ entity_id = "30171077-3f8b-5da5-adfc-4305eef70c49"
 text = "For GET /v1/uppercase, every deployed ingress, proxy, and application server must support an encoded request-target of up to and including 8,000 octets, measured before percent-decoding or normalization, without rejecting it for request-target or request-line length. HTTP/1.1 request-line limits must additionally accommodate the method, separators, protocol version, and line terminator for such request-targets. The deployment must enforce one effective maximum supported request-target length, no lower than 8,000 octets, consistently across all ingress paths and service instances. HTTP 414 URI Too Long is permitted only when the actual encoded request-target exceeds that effective maximum. Within this limit, syntactically well-formed requests remain subject to ARP1-FR-0129 and ARP1-FR-0130 application-response guarantees. This clarification preserves ARP1-FR-0129's application-handler response boundary and ARP1-CON-0133's prohibition on authentication or authorization failures."
 approved_by = "Rostyslav Bachyk"
 approved_fingerprint = "a549a710d1fe4834e85ec6e3d8be15313c83ea6d880344dd53128f198c71bb52"
+
+[[attestations.clarifications]]
+project_code = "ARP1"
+requirement_id = "ARP1-FR-0129"
+entity_id = "d13970e6-a090-5f20-bdb9-6c91f19f3981"
+text = "For GET /v1/uppercase, rejection before application-handler dispatch because the encoded request-target exceeds the deployment's single effective maximum supported request-target length, which must be at least 8,000 octets, is a protocol-level length failure outside this Requirement's HTTP 200 JSON response guarantee. Such a request may receive HTTP 414 URI Too Long even when its query parameters would otherwise satisfy this Requirement's valid-request definition under the WHATWG application/x-www-form-urlencoded parsing algorithm. This clarification does not change the valid-request definition, including the treatment of empty ampersand-delimited segments, does not permit HTTP 414 for request-targets at or below the effective maximum solely because of their length, and does not weaken the HTTP 200 guarantee for valid requests that reach the application handler."
+approved_by = "Rostyslav Bachyk"
+approved_fingerprint = "b2d84d9cdc1ee0539cd7081a9f21e5e4e7f049d7178fc41b78724b5b99c71e49"
+
+[[attestations.clarifications]]
+project_code = "ARP1"
+requirement_id = "ARP1-CON-0133"
+entity_id = "2be6e169-8e75-5171-9dbe-7740cc63e1b0"
+text = "For GET /v1/uppercase, a request rejected before application-handler dispatch because its encoded request-target exceeds the deployment's single effective maximum supported request-target length, which must be at least 8,000 octets, may receive HTTP 414 URI Too Long instead of the application-level response defined by ARP1-FR-0129 or ARP1-FR-0130, regardless of whether its query parameters would otherwise be valid or invalid. This is a protocol-level length rejection outside the application-handler response guarantee in Acceptance / Verification, and is not an authentication or authorization failure. This clarification does not permit HTTP 414 for request-targets at or below the effective maximum solely because of their length, and does not change the requirement that GET /v1/uppercase be publicly callable without authentication or authorization."
+approved_by = "Rostyslav Bachyk"
+approved_fingerprint = "4e5d5904417b0dada354cad48d83235d27effca85231856a65855c093b6aaeae"
