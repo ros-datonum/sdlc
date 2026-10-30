@@ -74,6 +74,7 @@ from test_dependency_bindings import (
 )
 from test_human_attestation import (
     ATTESTED,
+    DECISION,
     QUESTION,
     human_decision_at_ready,
     human_edit,
@@ -620,7 +621,11 @@ def test_reliance_is_recomputed_from_the_requalified_evidence():
     assert caught.value.code is AdmissionResultCode.REQUIREMENT_NOT_ADMISSIBLE
 
     requalify(ws, ws.requirements[requirement.id])
-    model = FakeModelRuntime([analysis_output()])
+    # The attested text stays in its section verbatim (Attested-Text-
+    # Preservation-v0.1); the new evidence simply no longer cites it.
+    model = FakeModelRuntime(
+        [analysis_output(normalized_changes={"constraints_edge_cases": DECISION})]
+    )
     workers = replace(
         real_workers(ws),
         process_standard=functools.partial(

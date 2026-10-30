@@ -1436,6 +1436,7 @@ def _analyze(
             _source_corpus(context, comparison, relations, children, analysis),
         )
         _require_attested(context, brief, bound)
+        _require_preserved(context, bound)
         return bound
     except InvalidAnalysisOutput as error:
         raise _StageFailed(
@@ -1466,6 +1467,91 @@ def _require_attested(
         raise InvalidAnalysisOutput(
             f"{error.message} Unattested items: {', '.join(error.details)}."
         ) from error
+
+
+def _require_preserved(context: _Context, analysis: AnalysisResult) -> None:
+    """Attested text in the Root input comes back verbatim, in place, once each.
+
+    Attested-Text-Preservation-v0.1: for every attestation of this Requirement,
+    the normalized Root must hold its exact text in the same sections, the
+    same number of times and as a whole paragraph exactly where the input
+    did. An attestation absent from the input must stay absent. Code compares
+    the input with the output; the model's account of its output is not read,
+    and nothing is repaired. Diagnostics name the attestation by fingerprint
+    and the section by heading, never the text.
+    """
+    requirement_id = context.requirement.requirement_id or ""
+    before = _sections(context.root_content)
+    after = _sections(analysis.normalized.document(requirement_id))
+    violations = [
+        f"attestation {attestation.fingerprint[:12]} {category} ({sections})"
+        for attestation in context.attestations
+        for category, sections in _preservation_failures(
+            attestation.text, before, after
+        )
+    ]
+    if violations:
+        raise InvalidAnalysisOutput(
+            f"The normalized output of {requirement_id} does not preserve "
+            "operator-attested text verbatim: " + "; ".join(violations) + "."
+        )
+
+
+def _preservation_failures(
+    text: str, before: dict[str, str], after: dict[str, str]
+) -> list[tuple[str, str]]:
+    """(failure category, affected section headings) for one attested text."""
+    within, whole = _placements(text, before)
+    out_within, out_whole = _placements(text, after)
+    if within == out_within and whole == out_whole:
+        return []
+    changed = ", ".join(
+        sorted(
+            heading
+            for heading in set(within) | set(out_within) | set(whole) | set(out_whole)
+            if within.get(heading) != out_within.get(heading)
+            or whole.get(heading) != out_whole.get(heading)
+        )
+    )
+    present, kept = sum(within.values()), sum(out_within.values())
+    if kept < present:
+        return [("ALTERED_OR_DELETED", changed)]
+    if not present:
+        return [("INSERTED", changed)]
+    if kept > present:
+        return [("DUPLICATED", changed)]
+    if within != out_within:
+        return [("MOVED", changed)]
+    return [("PARAGRAPH_CHANGED", changed)]
+
+
+def _placements(
+    text: str, sections: dict[str, str]
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Per section: occurrences of `text`, and paragraphs that are exactly `text`."""
+    within = {h: body.count(text) for h, body in sections.items() if text in body}
+    whole = {
+        heading: count
+        for heading, body in sections.items()
+        if (count := [p.strip() for p in body.split("\n\n")].count(text))
+    }
+    return within, whole
+
+
+def _sections(document: str) -> dict[str, str]:
+    """Body by `## ` heading; text before the first heading under `#`."""
+    parts: dict[str, list[str]] = {}
+    heading = "#"
+    lines: list[str] = []
+    for line in document.splitlines():
+        if line.startswith("## "):
+            parts.setdefault(heading, []).append("\n".join(lines))
+            heading, lines = line[3:].strip(), []
+        else:
+            lines.append(line)
+    parts.setdefault(heading, []).append("\n".join(lines))
+    # A repeated heading keeps every body, so nothing escapes the count.
+    return {heading: "\n\n".join(bodies) for heading, bodies in parts.items()}
 
 
 def _source_corpus(

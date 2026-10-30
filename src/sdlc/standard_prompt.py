@@ -129,6 +129,13 @@ What normalization is:
 - Keep a valid high-level Requirement high-level. Improve wording only where
   the source meaning is unchanged, and never add technical design, mechanisms
   or detail to make it more concrete.
+- A text listed under OPERATOR-ATTESTED CLARIFICATIONS that the current
+  Requirement document contains is a human decision, not wording to improve.
+  Reproduce it character for character, in the same section, as many times
+  as the document contains it and as its own paragraph when it is one there:
+  never reword, re-punctuate, split, merge, shorten, extend or move it. Do
+  not add an attested text the document does not contain. Code compares your
+  output with the document and rejects the whole output otherwise.
 - You are not required to turn every input into a valid Requirement. When the
   source does not establish enough Requirement-level truth to repair it without
   invention, keep its source-established meaning and report the defect as a
