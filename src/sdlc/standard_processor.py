@@ -44,8 +44,6 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
-from markdown_it import MarkdownIt
-
 from sdlc.autonomy_policy import DISABLED, AutonomyPolicies, AutonomyPolicy
 from sdlc.comparison_context import (
     ComparisonContext,
@@ -116,8 +114,7 @@ from sdlc.standard_analysis import (
     parse_analysis_output,
 )
 from sdlc.standard_prompt import build_analysis_prompt
-from sdlc.tsa_markdown import PRESET as MARKDOWN_PRESET
-from sdlc.tsa_markdown import block_token_types
+from sdlc.tsa_markdown import block_tokens
 
 STANDARD_TYPE = "Standard"
 PROCESS_STATE = "Process"
@@ -134,14 +131,17 @@ DUPLICATED = "DUPLICATED"
 MOVED = "MOVED"
 PARAGRAPH_CHANGED = "PARAGRAPH_CHANGED"
 STRUCTURE_UNREADABLE = "STRUCTURE_UNREADABLE"
+SECTIONS_AMBIGUOUS = "SECTIONS_AMBIGUOUS"
 FINGERPRINT_PREFIX = 12
 # Section labels in diagnostics are the schema's own headings or these
 # constants; a document's own heading text is never echoed.
-KNOWN_SECTIONS = frozenset(heading for _, heading in DOCUMENT_SECTIONS)
 PREAMBLE_LABEL = "before the first section"
-UNRECOGNIZED_LABEL = "an unrecognized section"
 WHOLE_DOCUMENT_LABEL = "the whole document"
+# The one form a section heading takes: the line the Standard renderer writes.
+SECTION_HEADING_LINES = tuple(f"## {heading}" for _, heading in DOCUMENT_SECTIONS)
 SECTION_HEADING_TAG = "h2"
+TITLE_HEADING_TAG = "h1"
+OUTLINE_HEADING_TAGS = frozenset({TITLE_HEADING_TAG, SECTION_HEADING_TAG})
 # The blocks that hold text, and the containers that are part of where it is.
 LEAF_BLOCKS = {
     "paragraph_open": "paragraph",
@@ -159,7 +159,7 @@ CONTAINER_BLOCKS = {
 CONTAINER_CLOSINGS = frozenset(
     opening.replace("_open", "_close") for opening in CONTAINER_BLOCKS
 )
-SPANNING_BLOCKS = "spanning blocks"
+OUTSIDE_BLOCKS = "outside blocks"
 # The line endings the parser recognizes (markdown-it `normalize`), no others.
 LINE_ENDING = re.compile(r"\r\n|\r|\n")
 # A block equals an attested text when it differs only by this outer padding.
@@ -1560,27 +1560,37 @@ def _preservation_violations(context: _Context, document: str) -> tuple[str, ...
     """One diagnostic per attestation whose text `document` does not preserve.
 
     For every attestation of this Requirement, the output must hold its exact
-    text at the same placements as the Root this run read: section, block and
-    whether the block is exactly that text, counting overlapping occurrences.
-    An attestation absent from the input must stay absent. Diagnostics name
+    text at the same placements as the Root this run read: for each block an
+    occurrence touches, in order, that block's section, its kind with the
+    quotes and lists around it, and whether the occurrence covers it whole;
+    overlapping occurrences count. An attestation absent from the input must
+    stay absent. When either document's structure or sections cannot be
+    established, every attestation either holds is refused. Diagnostics name
     the attestation by fingerprint prefix and sections by the schema's own
     headings, never by document text.
     """
-    texts = {attestation.text for attestation in context.attestations}
-    if not any(text in context.root_content or text in document for text in texts):
+    involved = [
+        attestation
+        for attestation in context.attestations
+        if attestation.text in context.root_content or attestation.text in document
+    ]
+    if not involved:
         return ()
     before, after = _layout(context.root_content), _layout(document)
+    unestablished = (
+        STRUCTURE_UNREADABLE
+        if before is None or after is None
+        else SECTIONS_AMBIGUOUS
+        if before.sections is None or after.sections is None
+        else None
+    )
     violations = []
-    for attestation in context.attestations:
-        if before is None or after is None:
-            failure = (
-                (STRUCTURE_UNREADABLE, WHOLE_DOCUMENT_LABEL)
-                if attestation.text in context.root_content
-                or attestation.text in document
-                else None
-            )
-        else:
-            failure = _preservation_failure(attestation.text, before, after)
+    for attestation in involved:
+        failure = (
+            (unestablished, WHOLE_DOCUMENT_LABEL)
+            if unestablished
+            else _preservation_failure(attestation.text, before, after)
+        )
         if failure is not None:
             category, sections = failure
             violations.append(
@@ -1598,7 +1608,13 @@ def _preservation_failure(
     if held == kept:
         return None
     changed = ", ".join(
-        sorted({section for section, _, _ in (held - kept) + (kept - held)})
+        sorted(
+            {
+                section
+                for placement in (held - kept) + (kept - held)
+                for section, _, _ in placement
+            }
+        )
     )
     present, returned = held.total(), kept.total()
     if returned < present:
@@ -1612,17 +1628,18 @@ def _preservation_failure(
     return PARAGRAPH_CHANGED, changed
 
 
-def _per_section(placements: Counter[_Placement]) -> Counter[str]:
-    sections: Counter[str] = Counter()
-    for (section, _, _), count in placements.items():
-        sections[section] += count
+def _per_section(placements: Counter[_Placement]) -> Counter[tuple[str, ...]]:
+    sections: Counter[tuple[str, ...]] = Counter()
+    for placement, count in placements.items():
+        sections[tuple(section for section, _, _ in placement)] += count
     return sections
 
 
 def _placements(text: str, layout: _Layout) -> Counter[_Placement]:
     """Where each occurrence of `text` lies, overlapping occurrences included.
 
-    Cost is linear in the document per occurrence; a Root is small.
+    Cost is linear in the document per occurrence, times the blocks for each
+    occurrence's components; a Root is small.
     """
     placements: Counter[_Placement] = Counter()
     start = layout.text.find(text)
@@ -1632,8 +1649,11 @@ def _placements(text: str, layout: _Layout) -> Counter[_Placement]:
     return placements
 
 
-# (section label, block path, whether that block is exactly the text)
-_Placement = tuple[str, str, bool]
+# One block an occurrence touches: (section label, block path, whether the
+# occurrence covers that block's text whole).
+_Component = tuple[str, str, bool]
+# Every block an occurrence touches, in document order.
+_Placement = tuple[_Component, ...]
 
 
 @dataclass(frozen=True)
@@ -1641,54 +1661,105 @@ class _Layout:
     """The sections and text blocks of one document, as offsets into it.
 
     The offsets index the document exactly as read: the parser only locates
-    boundaries, and every comparison reads the untouched characters.
+    boundaries, and every comparison reads the untouched characters. Each
+    block is `(first, last, path)`, its text without outer padding. `sections`
+    is None when the document's sections are not exactly the schema's.
     """
 
     text: str
-    sections: tuple[tuple[int, str], ...]
+    sections: tuple[tuple[int, str], ...] | None
     blocks: tuple[tuple[int, int, str], ...]
 
     def placement(self, start: int, end: int) -> _Placement:
-        section = next(
-            label for offset, label in reversed(self.sections) if offset <= start
+        components = tuple(
+            (self.section_at(first), path, start <= first and last <= end)
+            for first, last, path in self.blocks
+            if first < end and start < last
         )
-        for first, last, path in self.blocks:
-            if first <= start and end <= last:
-                whole = self.text[first:last].strip(BLOCK_PADDING)
-                return section, path, whole == self.text[start:end]
-        return section, SPANNING_BLOCKS, False
+        return components or ((self.section_at(start), OUTSIDE_BLOCKS, False),)
+
+    def section_at(self, offset: int) -> str:
+        return next(
+            label for first, label in reversed(self.sections or ()) if first <= offset
+        )
 
 
 def _layout(document: str) -> _Layout | None:
     """Sections and blocks as the pinned CommonMark parser reads `document`.
 
-    Only a top-level level-2 heading opens a section, so a heading inside
-    fenced or indented code, a quote or a list does not. A section is labelled
-    by its heading only when that is one of the schema's own; anything else is
-    one opaque label. None when the parser cannot vouch for a complete reading.
+    One parse, through the completeness guard; None when the parser cannot
+    vouch for a complete reading or reports a line the document lacks. Only a
+    top-level level-2 heading opens a section, so a heading inside fenced or
+    indented code, a quote or a list does not; the sections must then be the
+    schema's (`_schema_sections`).
     """
-    if block_token_types(document) is None:
+    tokens = block_tokens(document)
+    if tokens is None:
         return None
-    tokens = MarkdownIt(MARKDOWN_PRESET).parse(document)
     starts, ends = _line_bounds(document)
-    sections = [(0, PREAMBLE_LABEL)]
+    headings: list[tuple[str, int]] = []
     blocks = []
     containers: list[str] = []
-    for index, token in enumerate(tokens):
+    for token in tokens:
         if token.type in CONTAINER_BLOCKS:
             containers.append(CONTAINER_BLOCKS[token.type])
         elif token.type in CONTAINER_CLOSINGS:
+            if not containers:
+                return None
             containers.pop()
         elif token.type in LEAF_BLOCKS and token.map:
-            first, last = starts[token.map[0]], ends[token.map[1] - 1]
+            first_line, end_line = token.map
+            if not 0 <= first_line < end_line <= len(starts):
+                return None
+            first, last = _unpadded(document, starts[first_line], ends[end_line - 1])
             blocks.append(
                 (first, last, "/".join([*containers, LEAF_BLOCKS[token.type]]))
             )
-            if token.tag == SECTION_HEADING_TAG and not containers:
-                heading = tokens[index + 1].content
-                label = heading if heading in KNOWN_SECTIONS else UNRECOGNIZED_LABEL
-                sections.append((first, label))
-    return _Layout(document, tuple(sections), tuple(blocks))
+            if not containers and token.tag in OUTLINE_HEADING_TAGS:
+                headings.append((token.tag, first_line))
+    sections = _schema_sections(document, starts, ends, headings)
+    return _Layout(document, sections, tuple(blocks))
+
+
+def _schema_sections(
+    document: str,
+    starts: list[int],
+    ends: list[int],
+    headings: list[tuple[str, int]],
+) -> tuple[tuple[int, str], ...] | None:
+    """The seven schema sections, each at the one line that can open it, or None.
+
+    The top-level headings the parser reads must be, after at most one leading
+    level-1 title, exactly the schema's seven section headings in schema order,
+    each written as the renderer writes it. No other line of the document, in
+    code or anywhere else, may repeat one of those lines: a second copy is a
+    second candidate for the section, which a different reader (the field
+    validator's fence grammar, a renderer) could take instead. Any other
+    top-level level-1 or level-2 heading leaves the sections unestablished.
+    """
+    lines = [document[start:end] for start, end in zip(starts, ends, strict=True)]
+    if headings and headings[0][0] == TITLE_HEADING_TAG:
+        headings = headings[1:]
+    if [tag for tag, _ in headings] != [SECTION_HEADING_TAG] * len(
+        SECTION_HEADING_LINES
+    ) or tuple(lines[line] for _, line in headings) != SECTION_HEADING_LINES:
+        return None
+    copies = Counter(line for line in lines if line in SECTION_HEADING_LINES)
+    if any(count != 1 for count in copies.values()):
+        return None
+    return ((0, PREAMBLE_LABEL),) + tuple(
+        (starts[line], heading)
+        for (_, line), (_, heading) in zip(headings, DOCUMENT_SECTIONS, strict=True)
+    )
+
+
+def _unpadded(document: str, first: int, last: int) -> tuple[int, int]:
+    """`document[first:last]` without its outer padding, as offsets."""
+    while first < last and document[first] in BLOCK_PADDING:
+        first += 1
+    while last > first and document[last - 1] in BLOCK_PADDING:
+        last -= 1
+    return first, last
 
 
 def _line_bounds(document: str) -> tuple[list[int], list[int]]:

@@ -415,3 +415,21 @@ def test_block_token_types_tell_an_inline_tag_from_a_block():
 
 def test_block_token_types_refuse_a_stream_that_may_be_incomplete():
     assert tsa_markdown.block_token_types(">" * 100 + " deep") is None
+
+
+def test_block_tokens_are_the_stream_block_token_types_reports():
+    """Gate 3L8: one parse serves a caller that needs token positions."""
+    for text in ('{"a": <b>}', "> x\n\n- y\n\n```\nz\n```", "# T\n\n## S\n\nbody"):
+        tokens = tsa_markdown.block_tokens(text)
+        assert tuple(t.type for t in tokens) == tsa_markdown.block_token_types(text)
+        assert all(isinstance(token, Token) for token in tokens)
+    assert tsa_markdown.block_tokens(">" * 100 + " deep") is None
+
+
+def test_block_tokens_refuse_a_parser_error_without_its_text(monkeypatch):
+    def broken(_parser, _text, _env=None):
+        raise ValueError("secret text")
+
+    monkeypatch.setattr(MarkdownIt, "parse", broken)
+    assert tsa_markdown.block_tokens("x") is None
+    assert tsa_markdown.block_token_types("x") is None

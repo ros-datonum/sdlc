@@ -28,6 +28,7 @@ __all__ = [
     "CodeBlockClassification",
     "UnclassifiableReason",
     "block_token_types",
+    "block_tokens",
     "classify_code_blocks",
     "has_fence_marker_line",
 ]
@@ -123,6 +124,17 @@ def block_token_types(markdown: str) -> tuple[str, ...] | None:
     parser failed, exactly where rule S is `UNCLASSIFIABLE`, so a caller can
     only refuse then. Inline tokens are reported by type only. Linear cost.
     """
+    tokens = block_tokens(markdown)
+    return None if tokens is None else tuple(token.type for token in tokens)
+
+
+def block_tokens(markdown: str) -> tuple[Token, ...] | None:
+    """The flat token stream behind `block_token_types`, from the same one parse.
+
+    `None` exactly where `block_token_types` is `None`, so a caller that needs
+    token positions reads them from a stream the completeness guard vouched
+    for, without parsing a second time. Nothing of a parser error is kept.
+    """
     # Any ordinary parser failure must refuse, never pass (spec v0.4 section 4).
     try:
         parser = MarkdownIt(PRESET)
@@ -131,7 +143,7 @@ def block_token_types(markdown: str) -> tuple[str, ...] | None:
         return None
     if _may_be_incomplete(tokens, parser.options[NESTING_LIMIT_OPTION]):
         return None
-    return tuple(token.type for token in tokens)
+    return tuple(tokens)
 
 
 def has_fence_marker_line(text: str) -> bool:
