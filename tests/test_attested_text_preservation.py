@@ -14,6 +14,7 @@ from dataclasses import replace
 
 import pytest
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from processor_fake import FakeModelRuntime
 from review_fake import review_output
@@ -432,19 +433,22 @@ def test_the_existing_replay_guards_still_run_first():
 FAKE_SECTION = "## Constraints & Edge Cases"
 
 
-@pytest.mark.parametrize("fence", ["```", "````"])
-def test_a_copy_of_a_section_heading_inside_fenced_code_is_refused(fence):
-    """Gate 3L8: a second copy of a schema heading line, even inside code that
-    every reader treats alike, leaves the sections unestablished."""
+@pytest.mark.parametrize(
+    ("fence", "category"),
+    [("```", "MOVED"), ("````", "SECTIONS_AMBIGUOUS")],
+    ids=["closed-backticks", "four-backticks"],
+)
+def test_a_fenced_heading_cannot_carry_the_attested_text_out(fence, category):
+    """Gate 3M1: inside a closed backtick fence the heading is example text to
+    both readers, so the exact text is judged where it is, in Non-Goals. The
+    schema's fence grammar never closes a four-backtick fence, CommonMark does,
+    so the two readers disagree and the sections are not established."""
     detail = refused(
         D6A_ONLY,
         constraints_edge_cases=PARAPHRASED,
         non_goals=f"{fence}\n{FAKE_SECTION}\n\n{D6A}\n{fence}",
     )
-    assert (
-        f"attestation {fingerprint(D6A_ONLY)} SECTIONS_AMBIGUOUS "
-        "(the whole document)" in detail
-    )
+    assert f"attestation {fingerprint(D6A_ONLY)} {category}" in detail
     assert D6A not in detail
 
 
@@ -459,17 +463,23 @@ def test_a_tilde_fenced_heading_is_refused_by_the_reserved_heading_rule():
     assert "heading levels 1 and 2 are reserved" in detail
 
 
-def test_a_fenced_heading_copy_in_the_input_is_refused_even_if_kept():
+def test_a_fenced_heading_and_text_in_the_input_are_kept_as_they_are():
     root = {
         "constraints": f"{FIRST}\n\n{D1}",
         "non_goals": f"```\n{FAKE_SECTION}\n\n{D6A}\n```",
     }
-    detail = refused_from(D6A_ONLY, root)  # kept as it is
-    assert "SECTIONS_AMBIGUOUS (the whole document)" in detail
+    kept = processed_from(D6A_ONLY, root)  # kept as it is
+    assert kept.count(FAKE_SECTION) == 2 and kept.count(D6A) == 1
 
 
-@pytest.mark.parametrize("fence", ["```", "~~~"])
-def test_a_fenced_heading_copy_in_the_input_is_refused_when_moved_out(fence):
+@pytest.mark.parametrize(
+    ("fence", "category"),
+    [("```", "MOVED"), ("~~~", "SECTIONS_AMBIGUOUS")],
+    ids=["backticks", "tildes"],
+)
+def test_attested_text_in_a_fenced_example_may_not_move_out(fence, category):
+    """The schema reads only backtick fences as literal, so a tilde-fenced
+    heading is a heading to it and not to CommonMark: no established sections."""
     detail = refused_from(
         D6A_ONLY,
         {
@@ -479,7 +489,7 @@ def test_a_fenced_heading_copy_in_the_input_is_refused_when_moved_out(fence):
         constraints_edge_cases=f"{FIRST}\n\n{D1}\n\n{D6A}",
         non_goals="Nothing else.",
     )
-    assert "SECTIONS_AMBIGUOUS (the whole document)" in detail
+    assert f"{category} (" in detail
 
 
 @pytest.mark.parametrize(
@@ -711,13 +721,16 @@ def test_the_malformed_fence_reproduction_is_refused_before_anything_is_written(
     assert D6A not in detail and len(detail) < 400
 
 
-def test_a_malformed_fence_without_a_heading_is_judged_as_commonmark_reads_it():
+def test_a_malformed_fence_without_a_heading_still_splits_the_two_readers():
+    """Gate 3M1: the schema's fence grammar opens a fence at the malformed line
+    and, finding no closing line, runs it over Open Questions; CommonMark reads
+    no fence at all. The readers disagree, so nothing is established."""
     non_goals = f"{MALFORMED_FENCE}\n\n{D6A}\n\n{MALFORMED_FENCE}"
     assert schema_accepts(non_goals)
     detail = refused(
         D6A_ONLY, constraints_edge_cases=f"{FIRST}\n\n{D1}", non_goals=non_goals
     )
-    assert "MOVED (Constraints & Edge Cases, Non-Goals)" in detail
+    assert "SECTIONS_AMBIGUOUS (the whole document)" in detail
 
 
 def test_an_unclosed_fence_may_not_swallow_the_next_section_heading():
@@ -1096,6 +1109,288 @@ def test_a_refused_bypass_leaves_review_nothing_to_admit(root, policies, section
     review = review_standard_requirement(
         ws, reviewer, requirement.id, policies=policies
     )
+    assert not review.is_normal and not reviewer.was_invoked
+    assert artifacts(ws, "Review Result") == []
+    assert ws.requirements[requirement.id].state == "Process"
+
+
+# -- Gate 3M1 G9-01: a heading in a closed backtick example is example text -----
+
+EXAMPLE = f"```markdown\n{FAKE_SECTION}\n\nAn example section.\n```"
+EXAMPLE_ROOT = {
+    "constraints": CONSTRAINTS,
+    "acceptance_verification": f"Example:\n\n{EXAMPLE}",
+}
+
+
+def unchanged_example(document):
+    assert document.count(FAKE_SECTION) == 2 and document.count(D6A) == 1
+
+
+@pytest.mark.parametrize(
+    "section",
+    ["acceptance_verification", "detailed_behavior", "non_goals"],
+    ids=["acceptance", "detailed-behavior", "non-goals"],
+)
+def test_a_closed_backtick_example_holding_a_section_heading_is_accepted(section):
+    assert schema_accepts(EXAMPLE)
+    ws, requirement, root = processed(
+        D6A_ONLY, constraints_edge_cases=CONSTRAINTS, **{section: EXAMPLE}
+    )
+    unchanged_example(ws.content[root.secret])
+    assert ws.requirements[requirement.id].state == "Review"
+    _, result = latest_process(ws)
+    assert result.output_fingerprint and D6A in result.normalized.constraints_edge_cases
+
+
+def test_a_closed_backtick_example_in_the_input_is_kept_or_dropped_freely():
+    unchanged_example(processed_from(D6A_ONLY, EXAMPLE_ROOT))
+    dropped = processed_from(
+        D6A_ONLY, EXAMPLE_ROOT, acceptance_verification="No example."
+    )
+    assert FAKE_SECTION in dropped and dropped.count(FAKE_SECTION) == 1
+    assert dropped.count(D6A) == 1
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        f"Quote the line `{FAKE_SECTION}` as written.",
+        f"The heading reads {FAKE_SECTION} in the document.",
+        f"> {FAKE_SECTION}\n>\n> A quoted example.",
+        f"- {FAKE_SECTION}\n\n  A listed example.",
+        f"Example:\n\n    {FAKE_SECTION}",
+    ],
+    ids=["inline-code", "prose", "quote", "list", "indented-code"],
+)
+def test_a_heading_line_that_no_reader_takes_as_a_section_is_content(example):
+    assert schema_accepts(example)
+    ws, _, root = processed(
+        D6A_ONLY, constraints_edge_cases=CONSTRAINTS, non_goals=example
+    )
+    assert ws.content[root.secret].count(D6A) == 1
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        f"~~~\n{FAKE_SECTION}\n~~~",
+        f"````\n{FAKE_SECTION}\n````",
+        f"<div>\n{FAKE_SECTION}\n</div>",
+        f"{MALFORMED_FENCE}\n{FAKE_SECTION}\n```",
+    ],
+    ids=["tildes", "four-backticks", "html", "malformed"],
+)
+def test_a_root_whose_readers_disagree_about_a_heading_is_refused(example):
+    """Each is a heading to one reader and not to the other. The output drops
+    it, which the output's own check would refuse first for some of them."""
+    detail = refused_from(
+        D6A_ONLY,
+        {"constraints": CONSTRAINTS, "non_goals": example},
+        non_goals="Nothing else.",
+    )
+    assert "SECTIONS_AMBIGUOUS (the whole document)" in detail
+
+
+def test_the_swallowed_heading_is_refused_although_both_readers_agree():
+    """Reading the whole document, both readers put the real Non-Goals heading
+    inside the fence and take the copy as the section; the renderer wrote
+    Non-Goals where the fence now is, so the sections are not where it put them."""
+    constraints = f"{FIRST}\n\n{D1}\n\n```"
+    non_goals = f"```\n\n{D6A}\n\n## Non-Goals\n\nNothing else."
+    detail = refused(
+        D6A_ONLY,
+        constraints_edge_cases=f"{constraints}\n\n{D6A}",
+        non_goals=non_goals.replace(f"{D6A}\n\n", ""),
+    )
+    assert "SECTIONS_AMBIGUOUS (the whole document)" in detail
+
+
+def test_a_requirement_with_a_fenced_example_requalifies_through_rework():
+    ws, requirement, root = processed(
+        D6A_ONLY, constraints_edge_cases=CONSTRAINTS, acceptance_verification=EXAMPLE
+    )
+    reviewer = FakeModelRuntime([review_output(new_findings=[INFO_FINDING])])
+    assert review_standard_requirement(
+        ws, reviewer, requirement.id, policies=D6A_ONLY
+    ).is_normal
+    assert rework_standard_requirement(ws, requirement.id).is_normal
+    model = FakeModelRuntime(
+        [
+            analysis_output(
+                normalized_changes={
+                    "constraints_edge_cases": CONSTRAINTS,
+                    "acceptance_verification": EXAMPLE,
+                },
+                rework=[answered("R0001.N0")],
+            )
+        ]
+    )
+    result = process_standard_requirement(
+        ws, model, requirement.id, policies=D6A_ONLY, authorized_new_cycle=True
+    )
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    assert latest_process(ws)[1].iteration == 2
+    unchanged_example(ws.content[root.secret])
+
+
+def test_a_compliant_replay_of_a_fenced_example_is_applied():
+    ws, requirement, document, node = persisted_from(
+        EXAMPLE_ROOT, requirement="The service must answer every valid request."
+    )
+    result, model = resume(ws, requirement, node, D6A_ONLY)
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    assert not model.was_invoked
+    unchanged_example(ws.content[document.secret])
+    assert ws.requirements[requirement.id].state == "Review"
+
+
+# -- Gate 3M1 G9-02: every component an attested text touches is placed ---------
+
+HR_D6A = f"---\n\n{D6A}"
+HR_ONLY = attested(HR_D6A)
+HR_ROOT = {"constraints": f"{FIRST}\n\n{D1}\n\n{HR_D6A}"}
+
+
+def test_an_attested_thematic_break_kept_in_place_passes():
+    kept = processed_from(
+        HR_ONLY,
+        HR_ROOT,
+        constraints_edge_cases=f"Values are 1 to 32.\n\n{D1}\n\n{HR_D6A}",
+    )
+    assert HR_D6A in kept and "Values are 1 to 32." in kept
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        f"> {HR_D6A}",  # the break quoted, the paragraph not (lazy lines aside)
+        f"* {HR_D6A}",  # the break inside a list item
+        f"    {HR_D6A}",  # the break as indented code
+        f"```\n{HR_D6A}\n```",  # both in one fence: two components become one
+    ],
+    ids=["quote", "list", "indented-code", "fence-one-component"],
+)
+def test_moving_the_thematic_break_into_another_block_is_refused(changed):
+    if changed.startswith("> "):
+        changed = f"> ---\n\n{D6A}"
+    output = f"{FIRST}\n\n{D1}\n\n{changed}"
+    assert HR_D6A in output  # the exact characters are all still there
+    detail = refused_from(HR_ONLY, HR_ROOT, constraints_edge_cases=output)
+    assert "PARAGRAPH_CHANGED (Constraints & Edge Cases)" in detail
+    assert D6A not in detail
+
+
+def test_removing_the_thematic_break_is_refused():
+    detail = refused_from(
+        HR_ONLY, HR_ROOT, constraints_edge_cases=f"{FIRST}\n\n{D1}\n\n{D6A}"
+    )
+    assert "ALTERED_OR_DELETED (Constraints & Edge Cases)" in detail
+
+
+REFERENCE = "[spec]: https://example.com/spec"
+
+
+def test_a_line_no_block_holds_is_still_part_of_the_placement():
+    """A link reference definition yields no token; it is placed as a line in
+    no block, within whatever container holds it."""
+    policies = attested(f"{REFERENCE}\n\n{D6A}")
+    root = {"constraints": f"{FIRST}\n\n{D1}\n\n{REFERENCE}\n\n{D6A}"}
+    processed_from(policies, root)
+    detail = refused_from(
+        policies,
+        root,
+        constraints_edge_cases=f"{FIRST}\n\n{D1}\n\n> {REFERENCE}\n\n{D6A}",
+    )
+    assert "PARAGRAPH_CHANGED (Constraints & Edge Cases)" in detail
+
+
+def test_quote_markers_between_attested_paragraphs_are_placed():
+    quoted = "> First approved sentence.\n>\n> Second approved sentence."
+    policies = attested(quoted)
+    root = {"constraints": f"{FIRST}\n\n{quoted}"}
+    assert quoted in processed_from(policies, root)
+
+
+def test_every_block_token_of_the_pinned_parser_is_known():
+    """The bounded audit: a document using every enabled block rule yields
+    only token types the placement reading names."""
+    from sdlc import standard_processor as processor
+
+    document = (
+        "# T\n\nSetext\n---\n\npara\n\n> q\n>\n> r\n\n- a\n-\n1. b\n\n***\n\n"
+        "    code\n\n```\nf\n```\n\n<div>\nh\n</div>\n\n[r]: /u\n"
+    )
+    known = (
+        set(processor.LEAF_BLOCKS)
+        | set(processor.CONTAINER_BLOCKS)
+        | processor.CONTAINER_CLOSINGS
+        | processor.LEAF_PARTS
+    )
+    assert {token.type for token in block_tokens(document)} <= known
+    assert set(MarkdownIt("commonmark").block.ruler.get_active_rules()) == {
+        "blockquote",
+        "code",
+        "fence",
+        "heading",
+        "hr",
+        "html_block",
+        "lheading",
+        "list",
+        "paragraph",
+        "reference",
+    }
+
+
+def test_a_block_token_the_reading_does_not_know_is_a_refusal(monkeypatch):
+    def with_table(text):
+        table = Token("table_open", "table", 1)
+        table.map = [0, 1]
+        return (*block_tokens(text), table)
+
+    monkeypatch.setattr("sdlc.standard_processor.block_tokens", with_table)
+    detail = refused(D6A_ONLY, constraints_edge_cases=CONSTRAINTS)
+    assert "STRUCTURE_UNREADABLE (the whole document)" in detail
+
+
+def test_a_replay_that_quotes_the_thematic_break_is_refused_without_a_model():
+    ws, requirement, _, node = persisted_from(
+        HR_ROOT, constraints_edge_cases=f"{FIRST}\n\n{D1}\n\n> ---\n\n{D6A}"
+    )
+    history = ws.content[node.secret]
+    before = snapshot(ws)
+    result, model = resume(ws, requirement, node, HR_ONLY)
+    assert result.code is ProcessCode.PROCESSING_STATE_CONFLICT, result
+    assert not model.was_invoked and result.created == ()
+    assert snapshot(ws) == before and ws.content[node.secret] == history
+    assert ws.requirements[requirement.id].state == "Process"
+    assert "PARAGRAPH_CHANGED" in " ".join(result.details)
+
+
+def test_a_compliant_replay_keeping_the_thematic_break_is_applied():
+    ws, requirement, document, node = persisted_from(
+        HR_ROOT, constraints_edge_cases=f"Values are 1 to 32.\n\n{D1}\n\n{HR_D6A}"
+    )
+    result, model = resume(ws, requirement, node, HR_ONLY)
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    assert not model.was_invoked and HR_D6A in ws.content[document.secret]
+
+
+def test_a_refused_thematic_break_change_leaves_review_nothing_to_admit():
+    ws, requirement, _ = rooted(**HR_ROOT)
+    result, _ = run(
+        ws,
+        requirement,
+        HR_ONLY,
+        **(
+            unchanged(HR_ROOT)
+            | {"constraints_edge_cases": f"{FIRST}\n\n{D1}\n\n> ---\n\n{D6A}"}
+        ),
+    )
+    assert result.code is ProcessCode.INVALID_MODEL_OUTPUT
+    assert artifacts(ws, "Process Result") == []
+    reviewer = FakeModelRuntime([review_output()])
+    review = review_standard_requirement(ws, reviewer, requirement.id, policies=HR_ONLY)
     assert not review.is_normal and not reviewer.was_invoked
     assert artifacts(ws, "Review Result") == []
     assert ws.requirements[requirement.id].state == "Process"

@@ -80,8 +80,8 @@ from sdlc.process_result import (
     process_result_name,
     render_process_result,
 )
-from sdlc.raw_processing import DOCUMENT_SECTIONS
-from sdlc.raw_source import content_equivalent
+from sdlc.raw_processing import DOCUMENT_SECTIONS, RESERVED_ATX_HEADING_PATTERN
+from sdlc.raw_source import FENCED_BLOCK_PATTERN, content_equivalent
 from sdlc.resolution_evidence import (
     ResolutionEvidenceError,
     SourceCorpus,
@@ -109,6 +109,7 @@ from sdlc.rework_brief import ReworkBrief, run_input_identity
 from sdlc.standard_analysis import (
     AnalysisResult,
     InvalidAnalysisOutput,
+    NormalizedRequirement,
     RelationKind,
     ReworkExpectation,
     parse_analysis_output,
@@ -142,13 +143,23 @@ SECTION_HEADING_LINES = tuple(f"## {heading}" for _, heading in DOCUMENT_SECTION
 SECTION_HEADING_TAG = "h2"
 TITLE_HEADING_TAG = "h1"
 OUTLINE_HEADING_TAGS = frozenset({TITLE_HEADING_TAG, SECTION_HEADING_TAG})
-# The blocks that hold text, and the containers that are part of where it is.
+# The renderer writes the title line and a blank line before the first section;
+# each section then takes its heading line, a blank line, its text and a blank
+# line: four lines, plus one for each line ending inside its text.
+RENDERED_TITLE_LINES = 2
+RENDERED_SECTION_LINES = 4
+# Every block token the pinned CommonMark preset emits (its rules: paragraph,
+# heading, lheading, code, fence, html_block, hr, blockquote, list, reference).
+# A token of any other type leaves the structure unread, never ignored. The
+# blocks that hold text, the containers that are part of where it is, and the
+# tokens that only close a block or carry its inline text.
 LEAF_BLOCKS = {
     "paragraph_open": "paragraph",
     "heading_open": "heading",
     "fence": "fence",
     "code_block": "code_block",
     "html_block": "html_block",
+    "hr": "hr",
 }
 CONTAINER_BLOCKS = {
     "blockquote_open": "blockquote",
@@ -159,6 +170,10 @@ CONTAINER_BLOCKS = {
 CONTAINER_CLOSINGS = frozenset(
     opening.replace("_open", "_close") for opening in CONTAINER_BLOCKS
 )
+LEAF_PARTS = frozenset({"paragraph_close", "heading_close", "inline"})
+# A nonblank line no block holds: a quote marker alone, an empty list item, a
+# link reference definition (which the parser consumes without a token).
+UNBLOCKED_LINE = "line in no block"
 OUTSIDE_BLOCKS = "outside blocks"
 # The line endings the parser recognizes (markdown-it `normalize`), no others.
 LINE_ENDING = re.compile(r"\r\n|\r|\n")
@@ -1522,9 +1537,7 @@ def _require_preserved(context: _Context, analysis: AnalysisResult) -> None:
     The model's account of its output is not read, and nothing is repaired.
     """
     requirement_id = context.requirement.requirement_id or ""
-    violations = _preservation_violations(
-        context, analysis.normalized.document(requirement_id)
-    )
+    violations = _preservation_violations(context, analysis.normalized, requirement_id)
     if violations:
         raise InvalidAnalysisOutput(
             f"The normalized output of {requirement_id} does not preserve "
@@ -1542,7 +1555,7 @@ def _require_replay_preserves(
     this run read. Nothing calls a model, and the Result stays as it is.
     """
     violations = _preservation_violations(
-        context, result.normalized.document(result.requirement_id)
+        context, result.normalized, result.requirement_id
     )
     if violations:
         raise _StageFailed(
@@ -1556,8 +1569,11 @@ def _require_replay_preserves(
         )
 
 
-def _preservation_violations(context: _Context, document: str) -> tuple[str, ...]:
-    """One diagnostic per attestation whose text `document` does not preserve.
+def _preservation_violations(
+    context: _Context, normalized: NormalizedRequirement, requirement_id: str
+) -> tuple[str, ...]:
+    """One diagnostic per attestation whose text the rendered output does not
+    preserve.
 
     For every attestation of this Requirement, the output must hold its exact
     text at the same placements as the Root this run read: for each block an
@@ -1569,6 +1585,7 @@ def _preservation_violations(context: _Context, document: str) -> tuple[str, ...
     the attestation by fingerprint prefix and sections by the schema's own
     headings, never by document text.
     """
+    document = normalized.document(requirement_id)
     involved = [
         attestation
         for attestation in context.attestations
@@ -1576,7 +1593,8 @@ def _preservation_violations(context: _Context, document: str) -> tuple[str, ...
     ]
     if not involved:
         return ()
-    before, after = _layout(context.root_content), _layout(document)
+    before = _layout(context.root_content)
+    after = _layout(document, _rendered_heading_lines(normalized))
     unestablished = (
         STRUCTURE_UNREADABLE
         if before is None or after is None
@@ -1629,9 +1647,12 @@ def _preservation_failure(
 
 
 def _per_section(placements: Counter[_Placement]) -> Counter[tuple[str, ...]]:
+    """Occurrences by the sections they lie in, in order, each section once:
+    how many blocks of a section an occurrence touches is its form, not where
+    it is."""
     sections: Counter[tuple[str, ...]] = Counter()
     for placement, count in placements.items():
-        sections[tuple(section for section, _, _ in placement)] += count
+        sections[tuple(dict.fromkeys(section for section, _, _ in placement))] += count
     return sections
 
 
@@ -1684,14 +1705,17 @@ class _Layout:
         )
 
 
-def _layout(document: str) -> _Layout | None:
+def _layout(document: str, rendered: tuple[int, ...] | None = None) -> _Layout | None:
     """Sections and blocks as the pinned CommonMark parser reads `document`.
 
     One parse, through the completeness guard; None when the parser cannot
-    vouch for a complete reading or reports a line the document lacks. Only a
-    top-level level-2 heading opens a section, so a heading inside fenced or
-    indented code, a quote or a list does not; the sections must then be the
-    schema's (`_schema_sections`).
+    vouch for a complete reading, reports a line the document lacks, or emits
+    a block token this reading does not know. Every nonblank line belongs to a
+    block: the leaf block whose lines hold it, or else an `UNBLOCKED_LINE` in
+    the innermost container around it. Only a top-level level-1 or level-2
+    heading can open a section; the sections must then be the schema's
+    (`_schema_sections`). `rendered` gives the lines where the renderer wrote
+    the section headings, for a document code rendered from its sections.
     """
     tokens = block_tokens(document)
     if tokens is None:
@@ -1700,25 +1724,51 @@ def _layout(document: str) -> _Layout | None:
     headings: list[tuple[str, int]] = []
     blocks = []
     containers: list[str] = []
+    spans: list[tuple[int, int, str]] = []
+    held = [False] * len(starts)
     for token in tokens:
-        if token.type in CONTAINER_BLOCKS:
-            containers.append(CONTAINER_BLOCKS[token.type])
-        elif token.type in CONTAINER_CLOSINGS:
+        if token.type in LEAF_PARTS:
+            continue
+        if token.type in CONTAINER_CLOSINGS:
             if not containers:
                 return None
             containers.pop()
-        elif token.type in LEAF_BLOCKS and token.map:
-            first_line, end_line = token.map
-            if not 0 <= first_line < end_line <= len(starts):
-                return None
-            first, last = _unpadded(document, starts[first_line], ends[end_line - 1])
-            blocks.append(
-                (first, last, "/".join([*containers, LEAF_BLOCKS[token.type]]))
-            )
-            if not containers and token.tag in OUTLINE_HEADING_TAGS:
-                headings.append((token.tag, first_line))
-    sections = _schema_sections(document, starts, ends, headings)
-    return _Layout(document, sections, tuple(blocks))
+            continue
+        if token.type not in CONTAINER_BLOCKS and token.type not in LEAF_BLOCKS:
+            return None
+        if not token.map or not 0 <= token.map[0] < token.map[1] <= len(starts):
+            return None
+        first_line, end_line = token.map
+        if token.type in CONTAINER_BLOCKS:
+            containers.append(CONTAINER_BLOCKS[token.type])
+            spans.append((first_line, end_line, "/".join(containers)))
+            continue
+        first, last = _unpadded(document, starts[first_line], ends[end_line - 1])
+        blocks.append((first, last, "/".join([*containers, LEAF_BLOCKS[token.type]])))
+        held[first_line:end_line] = [True] * (end_line - first_line)
+        if not containers and token.tag in OUTLINE_HEADING_TAGS:
+            headings.append((token.tag, first_line))
+    blocks += _unblocked_lines(document, starts, ends, held, spans)
+    sections = _schema_sections(document, starts, ends, headings, rendered)
+    return _Layout(document, sections, tuple(sorted(blocks)))
+
+
+def _unblocked_lines(
+    document: str,
+    starts: list[int],
+    ends: list[int],
+    held: list[bool],
+    spans: list[tuple[int, int, str]],
+) -> list[tuple[int, int, str]]:
+    """Each nonblank line no leaf block holds, as a block in the innermost
+    container around it. Cost: lines times containers; a Root is small."""
+    blocks = []
+    for line, is_held in enumerate(held):
+        first, last = _unpadded(document, starts[line], ends[line])
+        if not is_held and first < last:
+            around = [path for top, bottom, path in spans if top <= line < bottom]
+            blocks.append((first, last, "/".join([*around[-1:], UNBLOCKED_LINE])))
+    return blocks
 
 
 def _schema_sections(
@@ -1726,17 +1776,22 @@ def _schema_sections(
     starts: list[int],
     ends: list[int],
     headings: list[tuple[str, int]],
+    rendered: tuple[int, ...] | None,
 ) -> tuple[tuple[int, str], ...] | None:
-    """The seven schema sections, each at the one line that can open it, or None.
+    """The seven schema sections, each at the line that opens it, or None.
 
     The top-level headings the parser reads must be, after at most one leading
     level-1 title, exactly the schema's seven section headings in schema order,
-    each written as the renderer writes it. No other line of the document, in
-    code or anywhere else, may repeat one of those lines: a second copy is a
-    second candidate for the section, which a different reader (the field
-    validator's fence grammar, a renderer) could take instead. Any other
-    top-level level-1 or level-2 heading leaves the sections unestablished.
+    each written as the renderer writes it. They must also be exactly the
+    lines the Document Schema's own reading takes as level-1 or level-2
+    headings (`_schema_heading_lines`), so a heading inside a properly closed
+    backtick fence is example text to both, and any line one reader takes as
+    a heading and the other does not leaves the sections unestablished. For a
+    rendered document, each section must open where the renderer wrote its
+    heading, so section text cannot reopen a fence over the next heading.
     """
+    if {line for _, line in headings} != _schema_heading_lines(document):
+        return None
     lines = [document[start:end] for start, end in zip(starts, ends, strict=True)]
     if headings and headings[0][0] == TITLE_HEADING_TAG:
         headings = headings[1:]
@@ -1744,13 +1799,45 @@ def _schema_sections(
         SECTION_HEADING_LINES
     ) or tuple(lines[line] for _, line in headings) != SECTION_HEADING_LINES:
         return None
-    copies = Counter(line for line in lines if line in SECTION_HEADING_LINES)
-    if any(count != 1 for count in copies.values()):
+    if rendered is not None and tuple(line for _, line in headings) != rendered:
         return None
     return ((0, PREAMBLE_LABEL),) + tuple(
         (starts[line], heading)
         for (_, line), (_, heading) in zip(headings, DOCUMENT_SECTIONS, strict=True)
     )
+
+
+def _schema_heading_lines(document: str) -> set[int]:
+    """The lines the Document Schema reads as level-1 or level-2 headings.
+
+    Its reading (Standard-Requirement-Document-Schema-v0.1 section 5): an ATX
+    heading line outside a fenced block, where a fenced block is the backtick
+    grammar `raw_source` decides document structure with, the same lines
+    `reserved_heading` examines. Lines are numbered as the parser numbers them.
+    """
+    unified = LINE_ENDING.sub("\n", document)
+    fenced: set[int] = set()
+    line = 0
+    for index, segment in enumerate(FENCED_BLOCK_PATTERN.split(unified)):
+        newlines = segment.count("\n")
+        if index % 2 == 1:
+            fenced.update(range(line, line + newlines + 1))
+        line += newlines
+    return {
+        index
+        for index, text in enumerate(unified.split("\n"))
+        if index not in fenced and RESERVED_ATX_HEADING_PATTERN.match(text)
+    }
+
+
+def _rendered_heading_lines(normalized: NormalizedRequirement) -> tuple[int, ...]:
+    """The line of each section heading in `normalized.document(...)`."""
+    lines, line = [], RENDERED_TITLE_LINES
+    for key, _ in DOCUMENT_SECTIONS:
+        lines.append(line)
+        text = getattr(normalized, key)
+        line += RENDERED_SECTION_LINES + len(LINE_ENDING.findall(text))
+    return tuple(lines)
 
 
 def _unpadded(document: str, first: int, last: int) -> tuple[int, int]:
