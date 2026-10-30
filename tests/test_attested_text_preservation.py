@@ -13,12 +13,14 @@ from __future__ import annotations
 import pytest
 
 from processor_fake import FakeModelRuntime
+from review_fake import review_output
 from sdlc.autonomy_policy import DISABLED, AutonomyPolicies
 from sdlc.human_attestation import HumanAttestation, HumanAttestations
 from sdlc.process_result import parse_process_result
 from sdlc.results import StandardProcessResultCode as ProcessCode
 from sdlc.standard_processor import process_standard_requirement
-from standard_fake import REQUIREMENT_ID, analysis_output, rendered_document
+from sdlc.standard_reviewer import review_standard_requirement
+from standard_fake import REQUIREMENT_ID, analysis_output, rendered_document, set_state
 from test_autonomous_resolution import artifacts, latest_process, scene
 from test_human_attestation import (
     DECISION,
@@ -107,6 +109,46 @@ def processed(policies, constraints=CONSTRAINTS, /, **sections):
     result, _ = run(ws, requirement, policies, **sections)
     assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
     return ws, requirement, root
+
+
+def snapshot(ws):
+    return (
+        dict(ws.content),
+        list(ws.documents),
+        dict(ws.requirements),
+        list(ws.mutations),
+    )
+
+
+def unchanged(root):
+    """The output sections that return `root`'s sections as they are, except
+    the ones a test names itself."""
+    return {
+        "constraints_edge_cases" if key == "constraints" else key: value
+        for key, value in root.items()
+    }
+
+
+def refused_from(policies, root, /, **sections):
+    """Run once from a Root holding `root`; require a refusal that wrote nothing."""
+    ws, requirement, _ = rooted(**root)
+    before = snapshot(ws)
+    result, model = run(ws, requirement, policies, **(unchanged(root) | sections))
+    assert result.code is ProcessCode.INVALID_MODEL_OUTPUT, result
+    assert len(model.calls) == 1 and snapshot(ws) == before
+    assert artifacts(ws, "Process Result") == []
+    return " ".join(result.details)
+
+
+def processed_from(policies, root, /, **sections):
+    ws, requirement, document = rooted(**root)
+    result, _ = run(ws, requirement, policies, **(unchanged(root) | sections))
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    return ws.content[document.secret]
+
+
+def fingerprint(policies, index=0):
+    return policies.attestations.attestations[index].fingerprint[:12]
 
 
 # -- the Gate 3L3 regression ---------------------------------------------------
@@ -286,3 +328,360 @@ def test_an_earlier_result_that_paraphrased_an_attested_text_stays_readable():
     node, result = latest_process(ws)
     assert result.iteration == 1
     assert parse_process_result(ws.content[node.secret]).normalized == result.normalized
+
+
+# -- Gate 3L5 F01: a replay applies its output now, so it is checked now ---------
+
+PARAPHRASED = f"{FIRST}\n\n{D1}\n\n{D6A_AS_NORMALIZED}"
+
+
+def persisted_then_reverted(constraints, reviewed=False):
+    """A Result whose output holds `constraints`, persisted while nothing was
+    protected (as before this rule), and then its input restored: the one
+    snapshot `--resume-result` applies to."""
+    ws, requirement, root = rooted()
+    restored = ws.content[root.secret]
+    result, _ = run(ws, requirement, DISABLED, constraints_edge_cases=constraints)
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    if reviewed:
+        reviewer = FakeModelRuntime([review_output()])
+        assert review_standard_requirement(ws, reviewer, requirement.id).is_normal
+    ws.content[root.secret] = restored
+    set_state(ws, requirement, "Process")
+    [node] = artifacts(ws, "Process Result")
+    return ws, requirement, root, node
+
+
+def resume(ws, requirement, node, policies):
+    model = FakeModelRuntime([])
+    result = process_standard_requirement(
+        ws, model, requirement.id, resume_result=node.id, policies=policies
+    )
+    return result, model
+
+
+def test_a_replay_that_paraphrases_the_attested_text_is_refused_without_a_model():
+    ws, requirement, root, node = persisted_then_reverted(PARAPHRASED)
+    before = snapshot(ws)
+    result, model = resume(ws, requirement, node, D6A_ONLY)
+    assert result.code is ProcessCode.PROCESSING_STATE_CONFLICT, result
+    assert not model.was_invoked and result.model_invoked is False
+    assert result.created == ()
+    # No Root rewrite, no State change, no new artifact, history untouched.
+    assert snapshot(ws) == before
+    assert ws.requirements[requirement.id].state == "Process"
+    assert D6A in ws.content[root.secret]
+    assert len(artifacts(ws, "Process Result")) == 1
+    assert "Replaying" in result.message and "no model was run" in result.message
+    assert f"--new-iteration-after {node.id}" in result.message
+    detail = " ".join((result.message, *result.details))
+    assert (
+        f"attestation {fingerprint(D6A_ONLY)} ALTERED_OR_DELETED "
+        "(Constraints & Edge Cases)" in detail
+    )
+    assert D6A not in detail and D6A_AS_NORMALIZED not in detail
+
+
+def test_the_refused_replay_leaves_nothing_for_review_to_consume():
+    ws, requirement, _, node = persisted_then_reverted(PARAPHRASED)
+    resume(ws, requirement, node, D6A_ONLY)
+    # Review admits only State Review; the Requirement never left Process.
+    assert ws.requirements[requirement.id].state == "Process"
+
+
+def test_a_replay_that_preserves_the_attested_text_is_applied_as_before():
+    preserving = f"Values are 1 to 32 characters long.\n\n{D1}\n\n{D6A}"
+    ws, requirement, root, node = persisted_then_reverted(preserving)
+    history = ws.content[node.secret]
+    result, model = resume(ws, requirement, node, D6A_ONLY)
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    assert not model.was_invoked and result.iteration == 1
+    assert ws.requirements[requirement.id].state == "Review"
+    assert "Values are 1 to 32 characters long." in ws.content[root.secret]
+    assert ws.content[root.secret].count(D6A) == 1
+    assert ws.content[node.secret] == history
+
+
+def test_a_replay_with_nothing_attested_for_it_is_unchanged():
+    ws, requirement, root, node = persisted_then_reverted(PARAPHRASED)
+    result, _ = resume(ws, requirement, node, attested(D6A, entity="std-uuid-2"))
+    assert result.code is ProcessCode.REQUIREMENT_PROCESSED, result
+    assert D6A_AS_NORMALIZED in ws.content[root.secret]
+
+
+def test_the_existing_replay_guards_still_run_first():
+    """A reviewed iteration is refused for that reason, exactly as before."""
+    ws, requirement, _, node = persisted_then_reverted(PARAPHRASED, reviewed=True)
+    before = snapshot(ws)
+    result, model = resume(ws, requirement, node, D6A_ONLY)
+    assert result.code is ProcessCode.PROCESSING_STATE_CONFLICT
+    assert "already reviewed iteration 1" in result.message
+    assert not model.was_invoked and snapshot(ws) == before
+
+
+# -- Gate 3L5 F02/F06: structure is the parser's, labels are the schema's -------
+
+FAKE_SECTION = "## Constraints & Edge Cases"
+
+
+@pytest.mark.parametrize("fence", ["```", "````"])
+def test_a_heading_inside_fenced_code_does_not_open_a_section(fence):
+    detail = refused(
+        D6A_ONLY,
+        constraints_edge_cases=PARAPHRASED,
+        non_goals=f"{fence}\n{FAKE_SECTION}\n\n{D6A}\n{fence}",
+    )
+    assert (
+        f"attestation {fingerprint(D6A_ONLY)} MOVED "
+        "(Constraints & Edge Cases, Non-Goals)" in detail
+    )
+    assert D6A not in detail
+
+
+def test_a_tilde_fenced_heading_is_refused_by_the_reserved_heading_rule():
+    """The schema check reads only backtick fences as literal, so a tilde fence
+    holding a section heading is refused before preservation is judged."""
+    detail = refused(
+        D6A_ONLY,
+        constraints_edge_cases=PARAPHRASED,
+        non_goals=f"~~~\n{FAKE_SECTION}\n\n{D6A}\n~~~",
+    )
+    assert "heading levels 1 and 2 are reserved" in detail
+
+
+def test_a_fenced_heading_in_the_input_is_not_a_section_either():
+    """Input side: the copy in Non-Goals' code is in Non-Goals, so bringing it
+    out into the real Constraints section is a move."""
+    root = {
+        "constraints": f"{FIRST}\n\n{D1}",
+        "non_goals": f"```\n{FAKE_SECTION}\n\n{D6A}\n```",
+    }
+    processed_from(D6A_ONLY, root)  # kept as it is
+    detail = refused_from(
+        D6A_ONLY,
+        root,
+        constraints_edge_cases=f"{FIRST}\n\n{D1}\n\n{D6A}",
+        non_goals="Nothing else.",
+    )
+    assert "MOVED (Constraints & Edge Cases, Non-Goals)" in detail
+
+
+@pytest.mark.parametrize(
+    "constraints",
+    [
+        f"{FIRST}\n\n{D1}\n\n```\n{D6A}\n```",
+        f"{FIRST}\n\n{D1}\n\n~~~text\n{D6A}\n~~~",
+        f"{FIRST}\n\n{D1}\n\n    {D6A}",
+        f"{FIRST}\n\n{D1}\n\n> {D6A}",
+        f"{FIRST}\n\n{D1}\n\n- {D6A}",
+    ],
+    ids=["backticks", "tildes", "indented", "quote", "list"],
+)
+def test_turning_the_attested_paragraph_into_another_block_is_refused(constraints):
+    detail = refused(D6A_ONLY, constraints_edge_cases=constraints)
+    assert "PARAGRAPH_CHANGED (Constraints & Edge Cases)" in detail
+
+
+def test_text_inside_a_larger_paragraph_may_not_move_into_code():
+    root = {"constraints": f"{FIRST}\n\n{D1} {D6A}"}
+    processed_from(D6A_ONLY, root, constraints_edge_cases=f"{FIRST}\n\n{D1} {D6A}")
+    detail = refused_from(
+        D6A_ONLY, root, constraints_edge_cases=f"{FIRST}\n\n{D1}\n\n```\n{D6A}\n```"
+    )
+    assert "PARAGRAPH_CHANGED (Constraints & Edge Cases)" in detail
+
+
+def test_a_crafted_heading_in_the_root_is_never_echoed():
+    ws, requirement, root = rooted()
+    ws.content[root.secret] += f"\n## {D6A}\n\nOperator notes.\n"
+    before = snapshot(ws)
+    result, _ = run(ws, requirement, D6A_ONLY, constraints_edge_cases=CONSTRAINTS)
+    assert result.code is ProcessCode.INVALID_MODEL_OUTPUT
+    assert snapshot(ws) == before
+    detail = " ".join(result.details)
+    assert (
+        f"attestation {fingerprint(D6A_ONLY)} ALTERED_OR_DELETED "
+        "(an unrecognized section)" in detail
+    )
+    assert D6A not in detail and "Operator notes" not in detail
+    assert len(detail) < 400
+
+
+def test_a_model_heading_holding_the_text_is_never_echoed():
+    detail = refused(
+        D6A_ONLY, constraints_edge_cases=PARAPHRASED, non_goals=f"### {D6A}"
+    )
+    assert "MOVED (Constraints & Edge Cases, Non-Goals)" in detail
+    assert D6A not in detail and len(detail) < 400
+
+
+# -- Gate 3L5 F03: exact characters, as read ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Retries stop after three attempts.\u2028Each waits two seconds.",
+        "Retries stop after three attempts.\u2029Each waits two seconds.",
+        "Accented names such as caf\u00e9 compare exactly.",
+        r"Paths such as C:\data\*.log keep their \*literal\* backslashes.",
+        r"Write \# and \- when a line must not start a heading or list.",
+    ],
+    ids=["U+2028", "U+2029", "composed", "backslashes", "escapes"],
+)
+def test_unusual_characters_are_compared_exactly(text):
+    policies = attested(text)
+    root = {"constraints": f"{FIRST}\n\n{text}"}
+    assert text in processed_from(
+        policies, root, constraints_edge_cases=f"{FIRST}\n\n{text}"
+    )
+    detail = refused_from(policies, root, constraints_edge_cases=FIRST)
+    assert "ALTERED_OR_DELETED (Constraints & Edge Cases)" in detail
+
+
+def test_a_decomposed_rewrite_of_a_composed_character_is_refused():
+    text = "Accented names such as caf\u00e9 compare exactly."
+    detail = refused_from(
+        attested(text),
+        {"constraints": f"{FIRST}\n\n{text}"},
+        constraints_edge_cases=f"{FIRST}\n\n{text.replace('\u00e9', 'e\u0301')}",
+    )
+    assert "ALTERED_OR_DELETED" in detail
+
+
+def test_unescaping_markdown_is_a_change():
+    text = r"Write \# and \- when a line must not start a heading or list."
+    detail = refused_from(
+        attested(text),
+        {"constraints": f"{FIRST}\n\n{text}"},
+        constraints_edge_cases=f"{FIRST}\n\n{text.replace(chr(92), '')}",
+    )
+    assert "ALTERED_OR_DELETED" in detail
+
+
+@pytest.mark.parametrize("ending", ["\r\n", "\n"])
+def test_a_line_ending_inside_fenced_content_is_compared_exactly(ending):
+    text = f"retry_limit = 3{ending}retry_wait = 2"
+    policies = attested(text)
+    root = {"constraints": f"{FIRST}\n\n```\n{text}\n```"}
+    processed_from(
+        policies, root, constraints_edge_cases=f"{FIRST}\n\n```\n{text}\n```"
+    )
+    detail = refused_from(policies, root, constraints_edge_cases=FIRST)
+    assert "ALTERED_OR_DELETED (Constraints & Edge Cases)" in detail
+
+
+def test_crlf_rewritten_as_lf_is_a_change():
+    text = "retry_limit = 3\r\nretry_wait = 2"
+    detail = refused_from(
+        attested(text),
+        {"constraints": f"{FIRST}\n\n```\n{text}\n```"},
+        constraints_edge_cases=f"{FIRST}\n\n```\n{text.replace(chr(13), '')}\n```",
+    )
+    assert "ALTERED_OR_DELETED" in detail
+
+
+# -- Gate 3L5 F04: Markdown paragraph boundaries --------------------------------
+
+
+@pytest.mark.parametrize("blank", ["  ", "\t", " \t ", ""])
+def test_blank_lines_holding_whitespace_still_bound_the_paragraph(blank):
+    root = {"constraints": f"{FIRST}\n{blank}\n{D6A}\n{blank}\n{D1}"}
+    kept = processed_from(
+        D6A_ONLY,
+        root,
+        constraints_edge_cases=f"Values are 1 to 32 characters long.\n{blank}\n{D6A}\n{blank}\n{D1}",
+    )
+    assert D6A in kept
+    for changed, category in [
+        (
+            f"{FIRST}\n{blank}\n{D6A} Proxies may also answer 431.\n{blank}\n{D1}",
+            "PARAGRAPH_CHANGED",
+        ),
+        (f"{FIRST}\n{blank}\n{D6A}\n{D1}", "PARAGRAPH_CHANGED"),  # merged
+        (f"{FIRST}\n{blank}\n{D1}\n{D6A}", "PARAGRAPH_CHANGED"),  # merged before
+        (
+            f"{FIRST}\n{blank}\n{D6A.replace(' This clarification', chr(10) * 2 + 'This clarification')}\n{blank}\n{D1}",
+            "ALTERED_OR_DELETED",
+        ),  # split into two paragraphs
+    ]:
+        detail = refused_from(D6A_ONLY, root, constraints_edge_cases=changed)
+        assert f"{category} (Constraints & Edge Cases)" in detail
+
+
+# -- Gate 3L5 F05: every occurrence counts, overlapping ones too ----------------
+
+QZQ = attested("QZQ")
+
+
+def test_an_overlapping_second_occurrence_is_a_duplicate():
+    root = {"constraints": "Marker x QZQ y."}
+    processed_from(QZQ, root, constraints_edge_cases="Marker x QZQ y, kept.")
+    detail = refused_from(QZQ, root, constraints_edge_cases="Marker x QZQZQ y.")
+    assert (
+        f"attestation {fingerprint(QZQ)} DUPLICATED (Constraints & Edge Cases)"
+        in detail
+    )
+
+
+def test_repeated_occurrences_are_counted_per_section():
+    root = {
+        "constraints": "First QZQ.\n\nSecond QZQ.",
+        "rationale": "Why QZQ.",
+    }
+    processed_from(
+        QZQ,
+        root,
+        constraints_edge_cases="1st QZQ.\n\n2nd QZQ.",
+        rationale="Because QZQ.",
+    )
+    detail = refused_from(QZQ, root, constraints_edge_cases="First QZQ.")
+    assert "ALTERED_OR_DELETED (Constraints & Edge Cases)" in detail
+    detail = refused_from(
+        QZQ, root, constraints_edge_cases="First QZQ.\n\nSecond QZQ.\n\nThird QZQ."
+    )
+    assert "DUPLICATED (Constraints & Edge Cases)" in detail
+    detail = refused_from(
+        QZQ,
+        root,
+        rationale="Why it matters.",
+        detailed_behavior="Why QZQ.",
+    )
+    assert "MOVED (Detailed Behavior, Rationale)" in detail
+
+
+def test_a_duplicate_in_another_block_of_the_same_section_is_refused():
+    detail = refused_from(
+        QZQ,
+        {"constraints": "Marker QZQ."},
+        constraints_edge_cases="Marker QZQ.\n\n```\nQZQ\n```",
+    )
+    assert "DUPLICATED (Constraints & Edge Cases)" in detail
+
+
+def test_overlapping_attestations_are_judged_independently():
+    policies = attested("alpha beta", "beta gamma")
+    root = {"constraints": "Order: alpha beta gamma."}
+    processed_from(policies, root, constraints_edge_cases="Order: alpha beta gamma!")
+    detail = refused_from(
+        policies, root, constraints_edge_cases="Order: alpha beta, gamma."
+    )
+    assert f"attestation {fingerprint(policies, 1)} ALTERED_OR_DELETED" in detail
+    assert fingerprint(policies, 0) not in detail
+
+
+# -- a structure the parser cannot vouch for -------------------------------------
+
+
+def test_an_unreadable_structure_refuses_when_attested_text_is_involved(monkeypatch):
+    monkeypatch.setattr("sdlc.standard_processor.block_token_types", lambda _: None)
+    detail = refused(D6A_ONLY, constraints_edge_cases=CONSTRAINTS)
+    assert f"attestation {fingerprint(D6A_ONLY)} STRUCTURE_UNREADABLE" in detail
+
+
+def test_nothing_is_parsed_when_no_attested_text_is_involved(monkeypatch):
+    monkeypatch.setattr("sdlc.standard_processor.block_token_types", lambda _: None)
+    processed(DISABLED, constraints_edge_cases=PARAPHRASED)
+    processed(
+        attested("Text that appears nowhere."), constraints_edge_cases=PARAPHRASED
+    )

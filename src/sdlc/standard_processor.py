@@ -40,7 +40,11 @@ rejects the model's output.
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from dataclasses import dataclass, field
+
+from markdown_it import MarkdownIt
 
 from sdlc.autonomy_policy import DISABLED, AutonomyPolicies, AutonomyPolicy
 from sdlc.comparison_context import (
@@ -78,6 +82,7 @@ from sdlc.process_result import (
     process_result_name,
     render_process_result,
 )
+from sdlc.raw_processing import DOCUMENT_SECTIONS
 from sdlc.raw_source import content_equivalent
 from sdlc.resolution_evidence import (
     ResolutionEvidenceError,
@@ -111,6 +116,8 @@ from sdlc.standard_analysis import (
     parse_analysis_output,
 )
 from sdlc.standard_prompt import build_analysis_prompt
+from sdlc.tsa_markdown import PRESET as MARKDOWN_PRESET
+from sdlc.tsa_markdown import block_token_types
 
 STANDARD_TYPE = "Standard"
 PROCESS_STATE = "Process"
@@ -119,6 +126,44 @@ REVIEW_STATE = "Review"
 # Explicit operator choices for the input-equality ambiguity (audit A11).
 RESUME_OPTION = "--resume-result"
 NEW_ITERATION_OPTION = "--new-iteration-after"
+
+# Attested-Text-Preservation-v0.1: failure categories, one per attestation.
+ALTERED_OR_DELETED = "ALTERED_OR_DELETED"
+INSERTED = "INSERTED"
+DUPLICATED = "DUPLICATED"
+MOVED = "MOVED"
+PARAGRAPH_CHANGED = "PARAGRAPH_CHANGED"
+STRUCTURE_UNREADABLE = "STRUCTURE_UNREADABLE"
+FINGERPRINT_PREFIX = 12
+# Section labels in diagnostics are the schema's own headings or these
+# constants; a document's own heading text is never echoed.
+KNOWN_SECTIONS = frozenset(heading for _, heading in DOCUMENT_SECTIONS)
+PREAMBLE_LABEL = "before the first section"
+UNRECOGNIZED_LABEL = "an unrecognized section"
+WHOLE_DOCUMENT_LABEL = "the whole document"
+SECTION_HEADING_TAG = "h2"
+# The blocks that hold text, and the containers that are part of where it is.
+LEAF_BLOCKS = {
+    "paragraph_open": "paragraph",
+    "heading_open": "heading",
+    "fence": "fence",
+    "code_block": "code_block",
+    "html_block": "html_block",
+}
+CONTAINER_BLOCKS = {
+    "blockquote_open": "blockquote",
+    "bullet_list_open": "bullet_list",
+    "ordered_list_open": "ordered_list",
+    "list_item_open": "list_item",
+}
+CONTAINER_CLOSINGS = frozenset(
+    opening.replace("_open", "_close") for opening in CONTAINER_BLOCKS
+)
+SPANNING_BLOCKS = "spanning blocks"
+# The line endings the parser recognizes (markdown-it `normalize`), no others.
+LINE_ENDING = re.compile(r"\r\n|\r|\n")
+# A block equals an attested text when it differs only by this outer padding.
+BLOCK_PADDING = " \t"
 
 
 class _StageFailed(Exception):
@@ -939,13 +984,15 @@ def _select_explicit_resume(
     landed. What can be checked is checked: the Result is the latest, valid,
     tree-bound, its input is the current tree, its output is not, and no
     Review Result has consumed that iteration; a reviewed iteration was
-    applied once already, so replaying it is not recovery.
+    applied once already, so replaying it is not recovery. Its output must
+    also keep the attested text the current Root holds.
     """
     node, result = _require_latest_anchor(context, document_id, RESUME_OPTION)
     _require_input_state(context, node, result, RESUME_OPTION)
     _require_unreviewed(workspace, context, node, result.iteration)
     _require_bound_brief(workspace, context, node, result)
     _require_bound_policy(node, result, policies)
+    _require_replay_preserves(context, node, result)
     return result
 
 
@@ -1470,26 +1517,14 @@ def _require_attested(
 
 
 def _require_preserved(context: _Context, analysis: AnalysisResult) -> None:
-    """Attested text in the Root input comes back verbatim, in place, once each.
+    """A fresh output keeps the attested text of its input (Preservation v0.1).
 
-    Attested-Text-Preservation-v0.1: for every attestation of this Requirement,
-    the normalized Root must hold its exact text in the same sections, the
-    same number of times and as a whole paragraph exactly where the input
-    did. An attestation absent from the input must stay absent. Code compares
-    the input with the output; the model's account of its output is not read,
-    and nothing is repaired. Diagnostics name the attestation by fingerprint
-    and the section by heading, never the text.
+    The model's account of its output is not read, and nothing is repaired.
     """
     requirement_id = context.requirement.requirement_id or ""
-    before = _sections(context.root_content)
-    after = _sections(analysis.normalized.document(requirement_id))
-    violations = [
-        f"attestation {attestation.fingerprint[:12]} {category} ({sections})"
-        for attestation in context.attestations
-        for category, sections in _preservation_failures(
-            attestation.text, before, after
-        )
-    ]
+    violations = _preservation_violations(
+        context, analysis.normalized.document(requirement_id)
+    )
     if violations:
         raise InvalidAnalysisOutput(
             f"The normalized output of {requirement_id} does not preserve "
@@ -1497,61 +1532,173 @@ def _require_preserved(context: _Context, analysis: AnalysisResult) -> None:
         )
 
 
-def _preservation_failures(
-    text: str, before: dict[str, str], after: dict[str, str]
-) -> list[tuple[str, str]]:
-    """(failure category, affected section headings) for one attested text."""
-    within, whole = _placements(text, before)
-    out_within, out_whole = _placements(text, after)
-    if within == out_within and whole == out_whole:
-        return []
-    changed = ", ".join(
-        sorted(
-            heading
-            for heading in set(within) | set(out_within) | set(whole) | set(out_whole)
-            if within.get(heading) != out_within.get(heading)
-            or whole.get(heading) != out_whole.get(heading)
-        )
+def _require_replay_preserves(
+    context: _Context, node: DocumentNode, result: ProcessResult
+) -> None:
+    """A replayed output keeps the attested text of the current Root.
+
+    The Result was persisted under whatever rules held then; replaying it now
+    applies its output now, so the same comparison applies, against the Root
+    this run read. Nothing calls a model, and the Result stays as it is.
+    """
+    violations = _preservation_violations(
+        context, result.normalized.document(result.requirement_id)
     )
-    present, kept = sum(within.values()), sum(out_within.values())
-    if kept < present:
-        return [("ALTERED_OR_DELETED", changed)]
-    if not present:
-        return [("INSERTED", changed)]
-    if kept > present:
-        return [("DUPLICATED", changed)]
-    if within != out_within:
-        return [("MOVED", changed)]
-    return [("PARAGRAPH_CHANGED", changed)]
+    if violations:
+        raise _StageFailed(
+            StandardProcessResultCode.PROCESSING_STATE_CONFLICT,
+            f"Replaying Process Result Document {document_label(node)} would not "
+            f"preserve the operator-attested text of {result.requirement_id} "
+            "that its current Root holds, so replaying it is not recovery; no "
+            f"model was run. Use {NEW_ITERATION_OPTION} {node.id} to process the "
+            "current tree as a fresh iteration. Nothing was written.",
+            violations,
+        )
 
 
-def _placements(
-    text: str, sections: dict[str, str]
-) -> tuple[dict[str, int], dict[str, int]]:
-    """Per section: occurrences of `text`, and paragraphs that are exactly `text`."""
-    within = {h: body.count(text) for h, body in sections.items() if text in body}
-    whole = {
-        heading: count
-        for heading, body in sections.items()
-        if (count := [p.strip() for p in body.split("\n\n")].count(text))
-    }
-    return within, whole
+def _preservation_violations(context: _Context, document: str) -> tuple[str, ...]:
+    """One diagnostic per attestation whose text `document` does not preserve.
 
-
-def _sections(document: str) -> dict[str, str]:
-    """Body by `## ` heading; text before the first heading under `#`."""
-    parts: dict[str, list[str]] = {}
-    heading = "#"
-    lines: list[str] = []
-    for line in document.splitlines():
-        if line.startswith("## "):
-            parts.setdefault(heading, []).append("\n".join(lines))
-            heading, lines = line[3:].strip(), []
+    For every attestation of this Requirement, the output must hold its exact
+    text at the same placements as the Root this run read: section, block and
+    whether the block is exactly that text, counting overlapping occurrences.
+    An attestation absent from the input must stay absent. Diagnostics name
+    the attestation by fingerprint prefix and sections by the schema's own
+    headings, never by document text.
+    """
+    texts = {attestation.text for attestation in context.attestations}
+    if not any(text in context.root_content or text in document for text in texts):
+        return ()
+    before, after = _layout(context.root_content), _layout(document)
+    violations = []
+    for attestation in context.attestations:
+        if before is None or after is None:
+            failure = (
+                (STRUCTURE_UNREADABLE, WHOLE_DOCUMENT_LABEL)
+                if attestation.text in context.root_content
+                or attestation.text in document
+                else None
+            )
         else:
-            lines.append(line)
-    parts.setdefault(heading, []).append("\n".join(lines))
-    # A repeated heading keeps every body, so nothing escapes the count.
-    return {heading: "\n\n".join(bodies) for heading, bodies in parts.items()}
+            failure = _preservation_failure(attestation.text, before, after)
+        if failure is not None:
+            category, sections = failure
+            violations.append(
+                f"attestation {attestation.fingerprint[:FINGERPRINT_PREFIX]} "
+                f"{category} ({sections})"
+            )
+    return tuple(violations)
+
+
+def _preservation_failure(
+    text: str, before: _Layout, after: _Layout
+) -> tuple[str, str] | None:
+    """(failure category, affected section labels) for one attested text."""
+    held, kept = _placements(text, before), _placements(text, after)
+    if held == kept:
+        return None
+    changed = ", ".join(
+        sorted({section for section, _, _ in (held - kept) + (kept - held)})
+    )
+    present, returned = held.total(), kept.total()
+    if returned < present:
+        return ALTERED_OR_DELETED, changed
+    if not present:
+        return INSERTED, changed
+    if returned > present:
+        return DUPLICATED, changed
+    if _per_section(held) != _per_section(kept):
+        return MOVED, changed
+    return PARAGRAPH_CHANGED, changed
+
+
+def _per_section(placements: Counter[_Placement]) -> Counter[str]:
+    sections: Counter[str] = Counter()
+    for (section, _, _), count in placements.items():
+        sections[section] += count
+    return sections
+
+
+def _placements(text: str, layout: _Layout) -> Counter[_Placement]:
+    """Where each occurrence of `text` lies, overlapping occurrences included.
+
+    Cost is linear in the document per occurrence; a Root is small.
+    """
+    placements: Counter[_Placement] = Counter()
+    start = layout.text.find(text)
+    while start != -1:
+        placements[layout.placement(start, start + len(text))] += 1
+        start = layout.text.find(text, start + 1)
+    return placements
+
+
+# (section label, block path, whether that block is exactly the text)
+_Placement = tuple[str, str, bool]
+
+
+@dataclass(frozen=True)
+class _Layout:
+    """The sections and text blocks of one document, as offsets into it.
+
+    The offsets index the document exactly as read: the parser only locates
+    boundaries, and every comparison reads the untouched characters.
+    """
+
+    text: str
+    sections: tuple[tuple[int, str], ...]
+    blocks: tuple[tuple[int, int, str], ...]
+
+    def placement(self, start: int, end: int) -> _Placement:
+        section = next(
+            label for offset, label in reversed(self.sections) if offset <= start
+        )
+        for first, last, path in self.blocks:
+            if first <= start and end <= last:
+                whole = self.text[first:last].strip(BLOCK_PADDING)
+                return section, path, whole == self.text[start:end]
+        return section, SPANNING_BLOCKS, False
+
+
+def _layout(document: str) -> _Layout | None:
+    """Sections and blocks as the pinned CommonMark parser reads `document`.
+
+    Only a top-level level-2 heading opens a section, so a heading inside
+    fenced or indented code, a quote or a list does not. A section is labelled
+    by its heading only when that is one of the schema's own; anything else is
+    one opaque label. None when the parser cannot vouch for a complete reading.
+    """
+    if block_token_types(document) is None:
+        return None
+    tokens = MarkdownIt(MARKDOWN_PRESET).parse(document)
+    starts, ends = _line_bounds(document)
+    sections = [(0, PREAMBLE_LABEL)]
+    blocks = []
+    containers: list[str] = []
+    for index, token in enumerate(tokens):
+        if token.type in CONTAINER_BLOCKS:
+            containers.append(CONTAINER_BLOCKS[token.type])
+        elif token.type in CONTAINER_CLOSINGS:
+            containers.pop()
+        elif token.type in LEAF_BLOCKS and token.map:
+            first, last = starts[token.map[0]], ends[token.map[1] - 1]
+            blocks.append(
+                (first, last, "/".join([*containers, LEAF_BLOCKS[token.type]]))
+            )
+            if token.tag == SECTION_HEADING_TAG and not containers:
+                heading = tokens[index + 1].content
+                label = heading if heading in KNOWN_SECTIONS else UNRECOGNIZED_LABEL
+                sections.append((first, label))
+    return _Layout(document, tuple(sections), tuple(blocks))
+
+
+def _line_bounds(document: str) -> tuple[list[int], list[int]]:
+    """Start and end offset of each line, ending where the parser ends one."""
+    starts, ends = [0], []
+    for ending in LINE_ENDING.finditer(document):
+        ends.append(ending.start())
+        starts.append(ending.end())
+    ends.append(len(document))
+    return starts, ends
 
 
 def _source_corpus(

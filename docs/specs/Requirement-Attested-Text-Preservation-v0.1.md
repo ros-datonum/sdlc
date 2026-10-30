@@ -1,7 +1,7 @@
 # Requirement Attested-Text Preservation — v0.1 (delta)
 
-**Status:** IMPLEMENTED ON BRANCH `fix/attested-normalization-preservation`; NOT LIVE-VERIFIED; independent engineering review pending.
-**Authorization:** human instruction "SDLC Gate 3L4 — Enforce Verbatim Preservation of Operator-Attested Normative Text", for baseline `6e93d554fb7d8973e7f0b5f742cf8c584fc3ea77`. The approval record is that instruction; no signature is claimed.
+**Status:** IMPLEMENTED ON BRANCH `fix/attested-normalization-preservation`; NOT LIVE-VERIFIED. Gate 3L5 independent review returned FIX_REQUIRED (F01–F06); corrected under Gate 3L6; re-review pending.
+**Authorization:** human instructions "SDLC Gate 3L4 — Enforce Verbatim Preservation of Operator-Attested Normative Text", for baseline `6e93d554fb7d8973e7f0b5f742cf8c584fc3ea77`, and "SDLC Gate 3L6 — Correct Independent Review Findings F01–F06". The approval record is those instructions; no signature is claimed.
 **Amends, narrowly and only as stated here:**
 - Standard-Requirement-Process-Spec-v0.1, its normalization contract: what the normalized output must keep;
 - Requirement-Human-Attestation-v0.1 §5, by adding one Process check beside the authority check.
@@ -20,49 +20,76 @@ Proving authority and preserving text are two different controls. This delta add
 
 Let the **protected texts** of a Process run be the attestations of exactly this Requirement: entity id and Requirement ID both match, as in Human Attestation §3. An attestation of another Requirement protects nothing here and authorizes nothing here.
 
-For each protected text, compare the Root Document as this run read it (the input) with the Root the normalized output renders (the output), section by section (`## ` headings; text before the first one counts as one more section). In every section, the output must hold the text:
+For each protected text, compare the Root Document as this run read it (the **input**) with the Root that is about to be written (the **output**). Every occurrence of the text is located, overlapping occurrences included (in `x ababa y`, `aba` occurs twice). Each occurrence has a **placement**:
+
+- its **section**: the top-level level-2 heading it lies under, or the part before the first one;
+- its **block**: the Markdown block that contains it, with the quotes and lists around that block (for example `paragraph`, `fence`, `code_block`, `blockquote/paragraph`, `bullet_list/list_item/paragraph`), or `spanning blocks` when no single block contains it;
+- whether that block is **exactly the text**, ignoring only spaces and tabs around it.
+
+The output must have the same placements, the same number of times, as the input. That means it holds the text:
 
 1. **character for character**: no rewording, re-punctuation, split, merge, shortening or extension, however equivalent in meaning;
 2. **as many times as the input does**: not deleted, not duplicated;
 3. **in the same sections**: not moved;
-4. **as a whole paragraph exactly where the input had it as one**: not merged into, or extended within, a paragraph.
+4. **in the same kind of block, and as a whole paragraph exactly where the input had it as one**: not merged into, extended within or split across paragraphs, and not moved into or out of code, a quote or a list.
 
 A protected text the input does not contain must stay absent from the output. Process never inserts one, and a model that inserts one is refused. Text that is not protected is normalized as before.
 
-The comparison is exact string equality on the input as Process reads it (the rendered Markdown, as for citations) and on the output sections as the model returned them. No model judges equality, nothing is normalized away first, and the model's account of what it kept is never read.
+### 2.1 How the documents are read
+
+- **Characters.** Occurrences are found by exact string search on each document exactly as read: the input as Fibery returned it (the rendered Markdown, as for citations), and the output as the Root it renders to, from the sections the model returned. Nothing is normalized first: line endings (CR LF, CR, LF), U+2028, U+2029, Unicode composition, backslashes and Markdown escapes all count as written. No model or similarity measure judges equality.
+- **Structure.** Sections and blocks are located with the pinned CommonMark parser the TSA code-block rule already uses (`markdown-it-py`, preset `commonmark`, with that rule's completeness guard). The parser is used only to find where blocks begin and end. Those line positions are mapped onto offsets in the untouched document, splitting lines only where the parser does (CR LF, CR, LF). It is never the text the comparison reads.
+- **Sections.** Only a top-level level-2 heading (ATX or setext) opens a section. A heading inside fenced or indented code, a quote or a list opens nothing, so a fake `## Constraints & Edge Cases` inside code is part of the section the code is in.
+- **Paragraph boundaries.** These are CommonMark's: a line holding only spaces or tabs is a blank line and ends a paragraph, and a line with no blank line before it continues one.
+- **Unreadable structure.** When the parser fails, or its completeness guard says a block may have been skipped, the structure of either document is unknown. Every protected text that occurs in either document is then refused as `STRUCTURE_UNREADABLE`. Nothing is parsed when no protected text occurs in either document.
 
 ## 3. Where it is checked
 
-| Point | Check | Refusal |
+| Path | Check | Refusal |
 |---|---|---|
-| Process | After the output is parsed, its citations bound and the authority rule checked; before the Process Result Document is created, its body stored, the Root rewritten or the State moved to Review. Applies to every model run: a new iteration, `--new-iteration-after`, and `--recover-empty-result`. | `INVALID_MODEL_OUTPUT`; nothing written |
+| Fresh analysis: a new iteration, `--new-iteration-after`, `--recover-empty-result` | After the output is parsed, its citations bound and the authority rule checked; before the Process Result Document is created or filled, its body stored, the Root rewritten or the State moved to Review. | `INVALID_MODEL_OUTPUT`; nothing written |
+| Replay: `--resume-result` | After the existing replay guards (latest Result, input matched and output not, unreviewed, bound Brief, bound policy); before the Root rewrite, the State move, or any other write. No model is run and the persisted Result is not changed. | `PROCESSING_STATE_CONFLICT`; nothing written |
 
-The refusal details name the Requirement, each failing attestation by its fingerprint's first 12 hex digits, the affected section headings and one category:
+These are the only three ways a Process Result reaches the Root rewrite. Fresh output passes through the analysis check, and a persisted Result reaches the rewrite only through replay.
 
-- `ALTERED_OR_DELETED`: fewer exact occurrences than the input; it covers paraphrased, re-punctuated, shortened and deleted text alike, which code cannot tell apart;
-- `DUPLICATED`: more exact occurrences than the input;
-- `MOVED`: the same number, in other sections;
-- `PARAGRAPH_CHANGED`: the same occurrences, but no longer a whole paragraph where it was one;
+A replay refusal uses `PROCESSING_STATE_CONFLICT` because no model ran: `INVALID_MODEL_OUTPUT` would misdescribe the operation. That code is also how this processor already refuses every other replay that would not be recovery (an iteration already reviewed, or a Brief that changed). The message says replaying is not recovery and names `--new-iteration-after <id>`, so the operator knows a fresh iteration is needed. No new result code is needed.
+
+### 3.1 Diagnostics
+
+For each failing attestation the details give:
+- the attestation's fingerprint, first 12 hex digits;
+- one category;
+- the sections affected.
+
+The fresh-analysis message names the normalized output; the replay message names the Result being replayed.
+
+Sections are labelled with the schema's own headings (for example `Constraints & Edge Cases`), `before the first section`, `an unrecognized section` or `the whole document`. A document's own heading text is never echoed. Neither the attested text, the model output nor the Root content appears, so the details stay bounded by the number of attestations.
+
+The categories:
+
+- `ALTERED_OR_DELETED`: fewer exact occurrences than the input. This covers paraphrased, re-punctuated, shortened, split and deleted text alike, which code cannot tell apart.
+- `DUPLICATED`: more exact occurrences than the input, counting overlapping ones.
+- `MOVED`: the same number, but not in the same sections.
+- `PARAGRAPH_CHANGED`: the same occurrences in the same sections, but in another kind of block, or no longer a whole paragraph where it was one.
 - `INSERTED`: present in the output, absent from the input.
+- `STRUCTURE_UNREADABLE`: either document's structure could not be read (§2.1).
 
-Neither the attested text nor the model output appears in the diagnostics.
-
-**Prompt.** The Standard Process instruction now says that an attested text in the current document is a human decision to reproduce verbatim, in place, as often as it occurs and as its own paragraph where it is one, and that none may be added. The prompt only helps prevent violations; the code check decides.
+**Prompt.** The Standard Process instruction says that an attested text in the current document is a human decision to reproduce verbatim, in place, as often as it occurs and as its own paragraph where it is one, and that none may be added. The prompt only helps prevent violations; the code check decides.
 
 ## 4. What does not change
 
 - The authority rule, its refusals and its staleness (Human Attestation §4, §5) are unchanged. A material answer citing attested text still passes, and one citing unattested text is still refused, whether or not the text is preserved.
 - SOURCE_GROUNDED and DEPENDENCY_GROUNDED source-kind rules, citation binding, Rework Brief obligations and lineage are unchanged.
-- No Result schema, field, State, configuration key or attestation changes. Persisted Process Results are never re-checked, rewritten or re-certified, and all of them stay readable.
+- No Result schema, field, State, configuration key, result code or attestation changes. Persisted Process Results are never rewritten or re-certified, and all of them stay readable. One is re-checked only when `--resume-result` asks to apply it again (§3).
 - Preservation never promotes text to human authority. Only an attestation in the configuration attests.
 - Child documents of the normative tree are not rewritten by Process, so they are outside this check.
 
 ## 5. Not covered
 
-- **`--resume-result`** replays persisted output without a model call. That output was produced, and checked, when it was persisted, so it carries no new check. A Result persisted before this rule replays as it was.
 - **Existing paraphrases.** An attested text that an earlier iteration already paraphrased is absent from the current input, so it is not protected (§2). Process will not restore it. Restoring it is an operator edit of the Root, followed by a new iteration.
 - **Review, Ready, Apply and TSA admission** add no preservation check. The persisted evidence does not keep the input Root's content, so a later stage cannot recompute what the input held. A Review of an output persisted before this rule judges it as before.
-- **Root edits outside Process**: anything that edits the Root directly is outside this rule, as for Human Attestation §2.
+- **Root edits outside Process**: anything that edits the Root directly, in Fibery or elsewhere, is outside this rule, as for Human Attestation §2. This Process-level guard does not prevent such edits; it only compares what Process itself writes with what it read.
+- **Model-output headings in other refusals.** The existing schema check that refuses a level-1 or level-2 heading inside a returned section quotes that heading line in its message. That check is older than this rule and is unchanged. The same check reads only backtick fences as literal, so a tilde-fenced section heading in returned output is refused there, before preservation is judged.
 
 ## 6. Recovery from a Result persisted before this rule (offline-verified only)
 
@@ -76,7 +103,7 @@ A probe against the fake workspace, using the production dispatcher, processor a
   - the Rework Brief still comes from the latest Review;
   - the unreviewed Result stays unchanged history;
   - the next Review reviews the new iteration, and the Ready evidence is current.
-- **If the restored tree equals that Result's input exactly**, Process refuses with `PROCESSING_STATE_CONFLICT`. Only the existing admin option `normalize --new-iteration-after <id>` continues, and the dispatcher cannot pass it.
+- **If the restored tree equals that Result's input exactly**, Process refuses with `PROCESSING_STATE_CONFLICT`. Only the existing admin option `normalize --new-iteration-after <id>` continues, and the dispatcher cannot pass it. `--resume-result` of that Result is refused too when its output paraphrased the restored text (§3).
 
 `Review -> Process` is not on the normal semantic path of Requirement-Lifecycle-Ownership-v0.2. Standard-Requirement-Process-Spec-v0.1 §11 acknowledges it as a deliberate human move, followed by an edit and a new run. Both the transition and the Root edit therefore need explicit operator authorization. This delta adds no recovery command and no lineage exception.
 
