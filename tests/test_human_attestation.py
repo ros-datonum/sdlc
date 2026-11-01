@@ -82,6 +82,7 @@ CON_0132 = ("ARP1-CON-0132", "7355aefe-25c0-5188-aba7-dbb81b91b919")
 FR_0129 = ("ARP1-FR-0129", "d13970e6-a090-5f20-bdb9-6c91f19f3981")
 FR_0130 = ("ARP1-FR-0130", "30171077-3f8b-5da5-adfc-4305eef70c49")
 CON_0133 = ("ARP1-CON-0133", "2be6e169-8e75-5171-9dbe-7740cc63e1b0")
+NFR_0131 = ("ARP1-NFR-0131", "a5792537-2fdf-5716-ac1d-4b590765e4a8")
 
 
 def attested(*attestations):
@@ -605,8 +606,9 @@ def test_the_repository_ships_exactly_the_approved_attestations():
     """The attestations are exactly the operator-approved ARP1 decisions: the
     ARP1-CON-0132 logging decision (ARP1 Gate 2T), decisions A, B, C and D
     (ARP1 Gate 3F1), decision D3 (ARP1 Gate 3I1), decision D4 (ARP1 Gate
-    3K1), decision D5 (ARP1 Gate 3K5) and decisions D6-A and D6-B (ARP1
-    Gate 3L1). Any other, changed or extra attestation fails here."""
+    3K1), decision D5 (ARP1 Gate 3K5), decisions D6-A and D6-B (ARP1
+    Gate 3L1) and the NFR-0131 availability clarification (ARP1 Gate 3N4).
+    Any other, changed or extra attestation fails here."""
     shipped = load_autonomy_policies().attestations.attestations
     assert [
         (a.project_code, a.requirement_id, a.entity_id, a.approved_by, a.fingerprint)
@@ -658,6 +660,10 @@ def test_the_repository_ships_exactly_the_approved_attestations():
                 CON_0133,
                 "4e5d5904417b0dada354cad48d83235d27effca85231856a65855c093b6aaeae",
             ),
+            (
+                NFR_0131,
+                "450136159794bdbc7941325891a69a5d7f86d17d95918743aa085c733ff8b678",
+            ),
         )
     ]
 
@@ -671,13 +677,15 @@ def test_each_shipped_attestation_binds_only_its_own_requirement():
         FR_0129: 3,
         FR_0130: 3,
         CON_0133: 2,
-        ("ARP1-NFR-0131", "a5792537-2fdf-5716-ac1d-4b590765e4a8"): 0,
+        NFR_0131: 1,
         ("ARP1-CON-0132", FR_0129[1]): 0,
         ("ARP1-CON-0133", FR_0130[1]): 0,
         ("ARP1-FR-0130", CON_0133[1]): 0,
         ("ARP1-FR-0130", FR_0129[1]): 0,
         ("ARP1-FR-0129", CON_0133[1]): 0,
         ("ARP1-CON-0133", FR_0129[1]): 0,
+        ("ARP1-NFR-0131", CON_0132[1]): 0,
+        ("ARP1-CON-0132", NFR_0131[1]): 0,
     }
     for (requirement_id, entity_id), count in counts.items():
         assert len(shipped.for_requirement(entity_id, requirement_id)) == count
